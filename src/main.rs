@@ -1,13 +1,12 @@
 mod make_qt;
 
-use std::{fs::File, io::BufReader, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::Parser;
 use geo::{Point, Rect};
 use quadtree::*;
-use shapefile::ShapeReader;
 
-use crate::make_qt::{make_bounds_qt, make_point_qt, make_qt};
+use crate::make_qt::make_qt;
 
 // TODO: Structure a pipeline for building a quadtree
 //       Limit this to only spherical geometries
@@ -65,15 +64,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize the quadtree as point or bounds, and load the data
     // Bounds default to a whole Earth model
+    // TODO: Sphere and Eucl functions from quadtree should take references
     // TODO: Have the ability to provide values for the bounds
-    // TODO: Allow setting the depth and the max children
+    // TODO: Allow setting the depth and the max children, use the r param
+    // TODO: Investigate a better method of making a polymorphic quadtree than
+    //       making a new trait
     let min = Point::new(-180.0, -90.0).to_radians();
     let max = Point::new(180.0, 90.0).to_radians();
     let bounds = Rect::new(min.0, max.0);
 
     // Load the shapefile, exiting with an error if the file cannot read
     let shapefile = args.shp.unwrap_or(PathBuf::from(DEFAULT_SHP_PATH));
-    let mut shapefile = shapefile::ShapeReader::from_path(shapefile)?;
+    let mut shapefile = shapefile::Reader::from_path(shapefile)?;
 
     // Set up the options for constructing the shapefile
     let opts = QtData {
@@ -83,31 +85,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_children: 10,
     };
 
-    // let mut qt = make_qt(&mut shapefile, opts);
-    let mut qt = if args.bounds == true {
-        make_bounds_qt(&mut shapefile, opts)
-    } else {
-        make_point_qt(&mut shapefile, opts)
-    };
+    let qt = make_qt(&mut shapefile, opts);
 
-    // TODO: This seems to work
-    let qt = make_qt(opts);
+    // for shp in shapefile.iter_shapes() {
+    //     match shp {
+    //         Ok(shapefile::Shape::Point(p)) => println!("{:?}", Point::try_from(p)),
+    //         Ok(_) => println!("Some other shape"),
+    //         Err(err) => println!("{:?}", err),
+    //     }
+    // }
 
-    for shp in shapefile.iter_shapes() {
-        match shp {
-            Ok(shapefile::Shape::Point(p)) => println!("{:?}", Point::try_from(p)),
-            Ok(_) => println!("Some other shape"),
-            Err(err) => println!("{:?}", err),
-        }
-    }
-
-    let _ = qt.insert(min);
-
-    println!("Earth Bounds:\n{:?}", bounds);
-    println!("{}", qt);
-
-    // Run the search using find if k is None of 1, knn otherwise
-    let cmp = eucl(Point::new(-0.5, 0.5));
+    // Run the search using find if k is None or 1, knn otherwise
+    let cmp = Point::new(-0.5, 0.5);
     match args.k {
         None | Some(1) => {
             let res = qt.find(&cmp).unwrap();
