@@ -7,17 +7,22 @@ use geo::{Point, Rect};
 
 use crate::make_qt::make_qt;
 
-// TODO: Structure a pipeline for building a quadtree
-//       Limit this to only spherical geometries
-//       - Take command line arguments for the input shapefile and the input set of test points,
-//       one of them can be subbed by - for stdin
-//       - Auto-detect the type of input from the extension, but stick with just shp at first
-//       - Check that the .shp importer iterates, although not mush to do it is doesn't
-//       - Iterate over the shapes, flatmapping MultiLineString into LineString, will need to
-//       ensure that we have a point to linestring implementation in quadtree for this to work
-//       - Load into a BoundsQuadTree
-//       - Load the test points, iterate through them doing the comparison, outputting to stdout
-//       - Provide options for k and r, defaults to 1 and inifinity using find
+// TODO: Refine the API and implementation
+//       - shp as a positional param?
+//       - Infile as named param, or from stdin if not provided, in what format?
+//       - Output to stdout in dsv format, provide ability to specify delimeters?
+//       - Provide ability to add fields from the matches to the output, maybe
+//         default to id or name, but have ability to pick a field name
+//       - Split up and reorganize make_qt file
+//       - Provide values for bounds in the cli
+//       - Expand input acceptance to formats other than shp (kml, geojson)
+//       - Investigate a better method of making a polymorphic quadtree than
+//         making a new trait
+//       - Support different test file formats and non-point test shapes
+//       - Make the quadtree a service that can be sent points to test
+
+// TODO: Ensure we have a point to linestring implementation in quadtree
+// TODO: Sphere and Eucl functions from quadtree should take references
 
 /// Command line utility to find nearest neighbors using a quadtree. The
 /// quadtree is built from an input shapefile, and tested against an input
@@ -25,14 +30,14 @@ use crate::make_qt::make_qt;
 /// formula.
 #[derive(Parser, Debug)]
 struct Args {
-    /// The shapefile to use to assemble the QuadTree. If none is provided will
-    /// use the default.
+    /// The shapefile to use to assemble the QuadTree. If not provided will use
+    /// {n}the default at ./data.shp.
     #[arg(short, long)]
     shp: Option<std::path::PathBuf>,
 
     /// Pass this flag to generate a bounds quadtree. By default the tool uses
-    /// a point quadtree that only accepts point-like shapefile inputs, but this
-    /// flag enables bounding box distances.
+    /// {n}a point quadtree that only accepts point-like shapefile inputs, but
+    /// {n}this flag enables bounding box distances.
     #[arg(short, long)]
     bounds: bool,
 
@@ -41,10 +46,20 @@ struct Args {
     k: Option<usize>,
 
     /// Constrain the search radius by a maximum distance. If not included, the
-    /// search ring is unbounded, but if provided, no points outside the radius
-    /// will be selected.
+    /// {n}search ring is unbounded, but if provided, no points outside the
+    /// {n}radius will be selected.
     #[arg(short)]
     r: Option<f64>,
+
+    /// Provide a customized maximum depth for the quadtree. Defaults to 10.
+    #[arg(short, long)]
+    depth: Option<u8>,
+
+    /// Provide a customized value for the maximum number of child entries
+    /// {n}before the quadtree splits. Defaults to 10. Does not apply at the
+    /// {n}maximum depth.
+    #[arg(short, long)]
+    children: Option<usize>,
 }
 
 pub struct QtData {
@@ -61,40 +76,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     println!("{:?}", args);
 
-    // Initialize the quadtree as point or bounds, and load the data
-    // Bounds default to a whole Earth model
-    // TODO: Sphere and Eucl functions from quadtree should take references
-    // TODO: Have the ability to provide values for the bounds
-    // TODO: Allow setting the depth and the max children, use the r param
-    // TODO: Investigate a better method of making a polymorphic quadtree than
-    //       making a new trait
+    // Set up the options for constructing the quadtree
     let min = Point::new(-180.0, -90.0).to_radians();
     let max = Point::new(180.0, 90.0).to_radians();
     let bounds = Rect::new(min.0, max.0);
-
-    // Load the shapefile, exiting with an error if the file cannot read
-    let shapefile = args.shp.unwrap_or(PathBuf::from(DEFAULT_SHP_PATH));
-    let mut shapefile = shapefile::Reader::from_path(shapefile)?;
-
-    // Set up the options for constructing the shapefile
     let opts = QtData {
         is_bounds: args.bounds,
         bounds,
-        depth: 10,
-        max_children: 10,
+        depth: args.depth.unwrap_or(10),
+        max_children: args.children.unwrap_or(10),
     };
 
+    // Load the shapefile, exiting with an error if the file cannot read
+    // Then build the quadtree
+    let shapefile = args.shp.unwrap_or(PathBuf::from(DEFAULT_SHP_PATH));
+    let mut shapefile = shapefile::Reader::from_path(shapefile)?;
     let (qt, meta) = make_qt(&mut shapefile, opts);
 
     // Run the search using find if k is None or 1, knn otherwise
     let cmp = Point::new(-0.5, 0.5);
     match args.k {
         None | Some(1) => {
-            let res = qt.find(&cmp).unwrap();
-            println!("{:?}, {:?}", res.0.0, meta[res.0.1]);
+            let res = qt.find(&cmp, args.r).unwrap();
+            println!("{:?}, {:?}", res.0 .0, meta[res.0 .1]);
         }
         Some(k) => {
-            let res = qt.knn(&cmp, k).unwrap();
+            let res = qt.knn(&cmp, k, args.r).unwrap();
             println!("{:?}", res);
         }
     }

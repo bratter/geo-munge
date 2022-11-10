@@ -10,36 +10,46 @@ pub trait Searchable<D>
 where
     D: Datum<f64>,
 {
-    fn find(&self, cmp: &Point) -> Result<(&D, f64), Error>;
+    fn find(&self, cmp: &Point, r: Option<f64>) -> Result<(&D, f64), Error>;
 
-    fn knn(&self, cmp: &Point, k: usize) -> Result<Vec<(&D, f64)>, Error>;
+    fn knn(&self, cmp: &Point, k: usize, r: Option<f64>) -> Result<Vec<(&D, f64)>, Error>;
 }
 
 impl Searchable<IndexedDatum<Geometry<f64>>> for PointQuadTree<IndexedDatum<Geometry<f64>>, f64> {
-    fn find(&self, cmp: &Point) -> Result<(&IndexedDatum<Geometry<f64>>, f64), Error> {
-        QuadTreeSearch::find(self, &sphere(*cmp))
+    fn find(
+        &self,
+        cmp: &Point,
+        r: Option<f64>,
+    ) -> Result<(&IndexedDatum<Geometry<f64>>, f64), Error> {
+        QuadTreeSearch::find_r(self, &sphere(*cmp), r.unwrap_or(f64::INFINITY))
     }
 
     fn knn(
         &self,
         cmp: &Point,
         k: usize,
+        r: Option<f64>,
     ) -> Result<Vec<(&IndexedDatum<Geometry<f64>>, f64)>, Error> {
-        QuadTreeSearch::knn(self, &sphere(*cmp), k)
+        QuadTreeSearch::knn_r(self, &sphere(*cmp), k, r.unwrap_or(f64::INFINITY))
     }
 }
 
 impl Searchable<IndexedDatum<Geometry<f64>>> for BoundsQuadTree<IndexedDatum<Geometry<f64>>, f64> {
-    fn find(&self, cmp: &Point) -> Result<(&IndexedDatum<Geometry<f64>>, f64), Error> {
-        QuadTreeSearch::find(self, &sphere(*cmp))
+    fn find(
+        &self,
+        cmp: &Point,
+        r: Option<f64>,
+    ) -> Result<(&IndexedDatum<Geometry<f64>>, f64), Error> {
+        QuadTreeSearch::find_r(self, &sphere(*cmp), r.unwrap_or(f64::INFINITY))
     }
 
     fn knn(
         &self,
         cmp: &Point,
         k: usize,
+        r: Option<f64>,
     ) -> Result<Vec<(&IndexedDatum<Geometry<f64>>, f64)>, Error> {
-        QuadTreeSearch::knn(self, &sphere(*cmp), k)
+        QuadTreeSearch::knn_r(self, &sphere(*cmp), k, r.unwrap_or(f64::INFINITY))
     }
 }
 
