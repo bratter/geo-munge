@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use geo::{Point, Rect};
-use quadtree::*;
 
 use crate::make_qt::make_qt;
 
@@ -85,22 +84,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_children: 10,
     };
 
-    let qt = make_qt(&mut shapefile, opts);
-
-    // for shp in shapefile.iter_shapes() {
-    //     match shp {
-    //         Ok(shapefile::Shape::Point(p)) => println!("{:?}", Point::try_from(p)),
-    //         Ok(_) => println!("Some other shape"),
-    //         Err(err) => println!("{:?}", err),
-    //     }
-    // }
+    let (qt, meta) = make_qt(&mut shapefile, opts);
 
     // Run the search using find if k is None or 1, knn otherwise
     let cmp = Point::new(-0.5, 0.5);
     match args.k {
         None | Some(1) => {
             let res = qt.find(&cmp).unwrap();
-            println!("{:?}", res);
+            println!("{:?}, {:?}", res.0.0, meta[res.0.1]);
         }
         Some(k) => {
             let res = qt.knn(&cmp, k).unwrap();

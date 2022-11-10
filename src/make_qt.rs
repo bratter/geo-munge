@@ -2,7 +2,7 @@ use std::iter::once;
 
 use geo::Point;
 use quadtree::*;
-use shapefile::{Reader, Shape};
+use shapefile::{dbase::Record, Reader, Shape};
 
 use crate::QtData;
 
@@ -15,85 +15,112 @@ where
     fn knn(&self, cmp: &Point, k: usize) -> Result<Vec<(&D, f64)>, Error>;
 }
 
-impl Searchable<IndexedDatum<Point>> for PointQuadTree<IndexedDatum<Point>, f64> {
-    fn find(&self, cmp: &Point) -> Result<(&IndexedDatum<Point>, f64), Error> {
+impl Searchable<IndexedDatum<Geometry<f64>>> for PointQuadTree<IndexedDatum<Geometry<f64>>, f64> {
+    fn find(&self, cmp: &Point) -> Result<(&IndexedDatum<Geometry<f64>>, f64), Error> {
         QuadTreeSearch::find(self, &sphere(*cmp))
     }
 
-    fn knn(&self, cmp: &Point, k: usize) -> Result<Vec<(&IndexedDatum<Point>, f64)>, Error> {
+    fn knn(
+        &self,
+        cmp: &Point,
+        k: usize,
+    ) -> Result<Vec<(&IndexedDatum<Geometry<f64>>, f64)>, Error> {
         QuadTreeSearch::knn(self, &sphere(*cmp), k)
     }
 }
 
-impl Searchable<Point> for BoundsQuadTree<Point, f64> {
-    fn find(&self, cmp: &Point) -> Result<(&Point, f64), Error> {
+impl Searchable<IndexedDatum<Geometry<f64>>> for BoundsQuadTree<IndexedDatum<Geometry<f64>>, f64> {
+    fn find(&self, cmp: &Point) -> Result<(&IndexedDatum<Geometry<f64>>, f64), Error> {
         QuadTreeSearch::find(self, &sphere(*cmp))
     }
 
-    fn knn(&self, cmp: &Point, k: usize) -> Result<Vec<(&Point, f64)>, Error> {
+    fn knn(
+        &self,
+        cmp: &Point,
+        k: usize,
+    ) -> Result<Vec<(&IndexedDatum<Geometry<f64>>, f64)>, Error> {
         QuadTreeSearch::knn(self, &sphere(*cmp), k)
     }
 }
 
-pub fn make_qt<T>(shp: &mut Reader<T>, opts: QtData) -> Box<dyn Searchable<IndexedDatum<Point>>>
+pub fn make_qt<T>(
+    shp: &mut Reader<T>,
+    opts: QtData,
+) -> (
+    Box<dyn Searchable<IndexedDatum<Geometry<f64>>>>,
+    Vec<Record>,
+)
 where
     T: std::io::Read + std::io::Seek,
 {
     let (bounds, depth, mc) = (opts.bounds, opts.depth, opts.max_children);
 
-    if opts.is_bounds {
-        // TODO: Do this and work through errors
-        // let qt = Box::new(BoundsQuadTree::new(bounds, depth, mc));
+    // Store records in a vector so we only have to allocate for them once
+    // Then create a closure to add to the vector as we iterate over the shapefile
+    // This vector needs to be returned with the qt for later reference
+    let mut records = Vec::new();
+    let add_record = |res| -> Result<(Shape, usize), ()> {
+        match res {
+            Ok((s, r)) => {
+                let i = records.len();
+                records.push(r);
 
-        // qt
-        todo!()
-    } else {
-        let mut qt = Box::new(PointQuadTree::new(bounds, depth, mc));
-
-        // Store records in a vector so we only have to allocate for them once
-        // Then create a closure to add to the vector as we iterate over the shapefile
-        let mut records = Vec::new();
-        let add_record = |res| -> Result<(Shape, usize), ()> {
-            match res {
-                Ok((s, r)) => {
-                    let i = records.len();
-                    records.push(r);
-
-                    Ok((s, i))
-                }
-                Err(_) => Err(()),
+                Ok((s, i))
             }
-        };
+            Err(_) => Err(()),
+        }
+    };
 
-        for shp in shp
-            .iter_shapes_and_records()
-            .map(add_record)
-            .flat_map(convert_shapes)
-        {
-            if let Ok((shape, i)) = shp {
-                if let Geometry::Point(p) = shape {
-                    if qt.insert(IndexedDatum(p, i)).is_err() {
+    let mut qt = Box::new(BoundsQuadTree::new(bounds, depth, mc));
+
+    for shp in shp
+        .iter_shapes_and_records()
+        .map(add_record)
+        .flat_map(convert_shapes)
+    {
+        if let Ok((shape, i)) = shp {
+            if opts.is_bounds {
+                if qt.insert(IndexedDatum(shape, i)).is_err() {
+                    eprintln!("Cannot insert into qt.")
+                }
+            } else {
+                if matches!(Geometry::Point::<f64>, _) {
+                    if qt.insert(IndexedDatum(shape, i)).is_err() {
                         eprintln!("Cannot insert into qt.")
                     }
                 } else {
-                    eprintln!("Invalid shape.")
+                    eprintln!(
+                        "Invalid shape. Can only add Points unless the bounds option is provided."
+                    )
                 }
-            } else {
-                eprintln!("Could not read shape.")
             }
+        } else {
+            eprintln!("Could not read shape.")
         }
-
-        qt
     }
+
+    (qt, records)
 }
 
-// TODO: Can we eliminate the clone?
+// TODO: Can we eliminate the clone? Maybe have to use a box, or return a ref?
 #[derive(Debug)]
-pub struct IndexedDatum<G>(G, usize);
+pub struct IndexedDatum<G>(pub G, pub usize);
 
 impl Datum<f64> for IndexedDatum<Geometry<f64>> {
     fn geometry(&self) -> Geometry<f64> {
         self.0.clone()
+    }
+}
+
+// Hacky solution to get make_qt working for both point and bounds variants
+// Point shoud fail for non-point entities before it hits here, hence use of
+// unreachable.
+impl PointDatum<f64> for IndexedDatum<Geometry<f64>> {
+    fn point(&self) -> Point<f64> {
+        match self.0 {
+            Geometry::Point(p) => p.to_owned(),
+            _ => unreachable!(),
+        }
     }
 }
 
