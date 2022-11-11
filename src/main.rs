@@ -1,8 +1,11 @@
+mod csv;
+mod error;
 mod make_qt;
 
 use std::path::PathBuf;
 
 use clap::Parser;
+use crate::csv::{build_csv_settings, parse_record};
 use geo::{Point, Rect};
 
 use crate::make_qt::make_qt;
@@ -14,12 +17,14 @@ use crate::make_qt::make_qt;
 //       - Provide ability to add fields from the matches to the output, maybe
 //         default to id or name, but have ability to pick a field name
 //       - Split up and reorganize make_qt file
+//       - Better error messages
 //       - Provide values for bounds in the cli
 //       - Expand input acceptance to formats other than shp (kml, geojson)
 //       - Investigate a better method of making a polymorphic quadtree than
 //         making a new trait
 //       - Support different test file formats and non-point test shapes
 //       - Make the quadtree a service that can be sent points to test
+//       - Make a metadata extraction binary
 
 // TODO: Ensure we have a point to linestring implementation in quadtree
 // TODO: Sphere and Eucl functions from quadtree should take references
@@ -74,7 +79,6 @@ const DEFAULT_SHP_PATH: &str = "./data.shp";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    println!("{:?}", args);
 
     // Set up the options for constructing the quadtree
     let min = Point::new(-180.0, -90.0).to_radians();
@@ -87,22 +91,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_children: args.children.unwrap_or(10),
     };
 
+    // Set up csv parsing before building the quadtree so we can abort early if
+    // it crashes on setup
+    let (mut csv, settings) = build_csv_settings(None)?;
+
     // Load the shapefile, exiting with an error if the file cannot read
     // Then build the quadtree
     let shapefile = args.shp.unwrap_or(PathBuf::from(DEFAULT_SHP_PATH));
     let mut shapefile = shapefile::Reader::from_path(shapefile)?;
     let (qt, meta) = make_qt(&mut shapefile, opts);
 
-    // Run the search using find if k is None or 1, knn otherwise
-    let cmp = Point::new(-0.5, 0.5);
-    match args.k {
-        None | Some(1) => {
-            let res = qt.find(&cmp, args.r).unwrap();
-            println!("{:?}, {:?}", res.0 .0, meta[res.0 .1]);
-        }
-        Some(k) => {
-            let res = qt.knn(&cmp, k, args.r).unwrap();
-            println!("{:?}", res);
+    // TODO: Now after building the shapefile, iterate through the records
+    //       Note that we should not quit on errors, just error the line to stderr
+    //       I think this mean we should index the results so people know how to match
+    //       Also push the csv line parsing to a function that returns an error, returns a Result<(Point, id), ()> and does the radian conversion
+    for (i, record) in csv.records().enumerate() {
+        match parse_record(record, &settings) {
+            Ok((p, id)) => {
+                match args.k {
+                    None | Some(1) => {
+                        let res = qt.find(&p, args.r);
+                        println!("{:?}", res);
+                        // TODO: Perhaps a print find function?
+                    }
+                    Some(k) => {
+                        let res = qt.knn(&p, k, args.r);
+                        println!("{:?}", res);
+                        // TODO: Print properly
+                    }
+                }
+            }
+            Err(_) => {
+                eprintln!("Failed to parse record at index {i}.")
+            }
         }
     }
 

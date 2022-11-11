@@ -8,5 +8,6 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.0.18", features = ["derive"] }
 geo = "0.23.0"
-quadtree = { path = "../quadtree" }
 shapefile = { version = "0.3.0", features = ["geo-types"] }
+csv = "1.1"
+quadtree = { path = "../quadtree" }
