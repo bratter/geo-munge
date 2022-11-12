@@ -1,7 +1,10 @@
-use csv::{Reader, ReaderBuilder, StringRecord};
-use geo::Point;
+use std::io::Stdout;
 
-use crate::error::FiberError;
+use csv::{Reader, ReaderBuilder, StringRecord, Writer, WriterBuilder};
+use geo::Point;
+use quadtree::{Geometry, ToRadians, MEAN_EARTH_RADIUS};
+
+use crate::{error::FiberError, make_qt::IndexedDatum};
 
 pub struct CsvSettings {
     pub lat_index: usize,
@@ -20,7 +23,7 @@ pub(crate) fn build_csv_settings(
     let mut reader = ReaderBuilder::new()
         .has_headers(true)
         .delimiter(b',')
-        .from_reader("lat,lng,c\n1,2,3".as_bytes());
+        .from_reader("lat,lng,id\n39,-77,name".as_bytes());
 
     // TODO: Semantics when it can't find? Auto numerically index? Fail silently?
     // Get the label to look for the id
@@ -60,11 +63,16 @@ pub(crate) fn build_csv_settings(
     }
 }
 
-// TODO: Change String return to &str?
-pub fn parse_record(
-    record: Result<StringRecord, csv::Error>,
+pub struct ParsedRecord<'a> {
+    pub record: &'a StringRecord,
+    pub point: Point,
+    pub id: Option<&'a str>,
+}
+
+pub fn parse_record<'a>(
+    record: Result<&'a StringRecord, &csv::Error>,
     settings: &CsvSettings,
-) -> Result<(Point, Option<String>), FiberError> {
+) -> Result<ParsedRecord<'a>, FiberError> {
     let record = record.map_err(|_| FiberError)?;
     let lng = record
         .get(settings.lng_index)
@@ -76,12 +84,62 @@ pub fn parse_record(
         .unwrap()
         .parse::<f64>()
         .map_err(|_| FiberError)?;
-    let id = settings
-        .id_index
-        .and_then(|i| Some(record.get(i).unwrap().to_owned()));
+    let id = settings.id_index.and_then(|i| Some(record.get(i).unwrap()));
 
-    let test = Point::new(lng, lat);
-    test.to_radians();
+    let mut point = Point::new(lng, lat);
+    point.to_radians_in_place();
 
-    Ok((test, id))
+    Ok(ParsedRecord { record, point, id })
+}
+
+// TODO: Have to output the header row with other fields if capturing them from the metadata
+//       Should output the index from the indexed datum if nothing else
+pub fn make_csv_writer(id_label: &str) -> Result<Writer<Stdout>, FiberError> {
+    let mut writer = WriterBuilder::new()
+        .delimiter(b',')
+        .from_writer(std::io::stdout());
+
+    writer
+        .write_record(&[id_label, "lng", "lat", "distance"])
+        .map_err(|_| FiberError)?;
+
+    Ok(writer)
+}
+
+pub struct WriteData<'a> {
+    pub record: &'a StringRecord,
+    pub datum: &'a IndexedDatum<Geometry<f64>>,
+    pub dist: f64,
+    pub id: Option<&'a str>,
+    pub index: usize,
+}
+
+// TODO: This works, but can we avoid allocating strings?
+pub fn write_line(w: &mut Writer<Stdout>, settings: &CsvSettings, data: WriteData) {
+    // If we parsed an id from the input data, then use it here
+    // otherwise use the record's index as a unique id.
+    // This is useful as errors mean you may not be able to just line up the
+    // output with the input
+    let index_string = data.index.to_string();
+    let id = if let Some(id) = data.id {
+        id
+    } else {
+        &index_string[..]
+    };
+
+    // Convert the distance to meters and trucate at mm
+    let dist = format!("{:.3}", data.dist * MEAN_EARTH_RADIUS);
+    if w.write_record(&[
+        id,
+        data.record.get(settings.lng_index).unwrap(),
+        data.record.get(settings.lat_index).unwrap(),
+        dist.as_ref(),
+    ])
+    .is_err()
+    {
+        eprintln!(
+            "Failed to write output line for record at index {}.",
+            data.index
+        );
+    }
 }

@@ -4,8 +4,8 @@ mod make_qt;
 
 use std::path::PathBuf;
 
+use crate::csv::{build_csv_settings, make_csv_writer, parse_record, write_line, WriteData};
 use clap::Parser;
-use crate::csv::{build_csv_settings, parse_record};
 use geo::{Point, Rect};
 
 use crate::make_qt::make_qt;
@@ -94,6 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up csv parsing before building the quadtree so we can abort early if
     // it crashes on setup
     let (mut csv, settings) = build_csv_settings(None)?;
+    let mut csv_writer = make_csv_writer(settings.id_label)?;
 
     // Load the shapefile, exiting with an error if the file cannot read
     // Then build the quadtree
@@ -101,27 +102,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut shapefile = shapefile::Reader::from_path(shapefile)?;
     let (qt, meta) = make_qt(&mut shapefile, opts);
 
-    // TODO: Now after building the shapefile, iterate through the records
-    //       Note that we should not quit on errors, just error the line to stderr
-    //       I think this mean we should index the results so people know how to match
-    //       Also push the csv line parsing to a function that returns an error, returns a Result<(Point, id), ()> and does the radian conversion
+    // After loading the quadtree, iterate through all the incoming test records
     for (i, record) in csv.records().enumerate() {
-        match parse_record(record, &settings) {
-            Ok((p, id)) => {
-                match args.k {
-                    None | Some(1) => {
-                        let res = qt.find(&p, args.r);
-                        println!("{:?}", res);
-                        // TODO: Perhaps a print find function?
-                    }
-                    Some(k) => {
-                        let res = qt.knn(&p, k, args.r);
-                        println!("{:?}", res);
-                        // TODO: Print properly
-                    }
+        match (parse_record(record.as_ref(), &settings), args.k) {
+            (Ok(parsed), None) | (Ok(parsed), Some(1)) => {
+                if let Ok((datum, dist)) = qt.find(&parsed.point, args.r) {
+                    let data = WriteData {
+                        record: parsed.record,
+                        datum,
+                        dist,
+                        id: parsed.id,
+                        index: i,
+                    };
+
+                    write_line(&mut csv_writer, &settings, data);
+                } else {
+                    eprintln!("No result for record at index {i}.");
                 }
             }
-            Err(_) => {
+            (Ok(parsed), Some(k)) => {
+                if let Ok(results) = qt.knn(&parsed.point, k, args.r) {
+                    for (datum, dist) in results {
+                        let data = WriteData {
+                            record: parsed.record,
+                            datum,
+                            dist,
+                            id: parsed.id,
+                            index: i,
+                        };
+
+                        write_line(&mut csv_writer, &settings, data);
+                    }
+                } else {
+                    eprintln!("No result for record at index {i}.");
+                }
+            }
+            _ => {
                 eprintln!("Failed to parse record at index {i}.")
             }
         }
