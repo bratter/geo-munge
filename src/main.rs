@@ -5,21 +5,20 @@ mod make_qt;
 use std::path::PathBuf;
 
 use crate::csv::{build_csv_settings, make_csv_writer, parse_record, write_line, WriteData};
+use crate::error::FiberError;
 use clap::Parser;
 use geo::{Point, Rect};
 
 use crate::make_qt::make_qt;
 
 // TODO: Refine the API and implementation
-//       - shp as a positional param?
-//       - Infile as named param, or from stdin if not provided, in what format?
-//       - Output to stdout in dsv format, provide ability to specify delimeters?
-//       - Provide ability to add fields from the matches to the output, maybe
-//         default to id or name, but have ability to pick a field name
+//       - Provide option to have infile as as file not just stdin
 //       - Split up and reorganize make_qt file
 //       - Better error messages
 //       - Provide values for bounds in the cli
-//       - Expand input acceptance to formats other than shp (kml, geojson)
+//         And option to use bounds from the shapefile
+//       - Expand input acceptance to formats other than shp (kml, geojson, csv points)
+//       - Do some performance testing with perf and flamegraph
 //       - Investigate a better method of making a polymorphic quadtree than
 //         making a new trait
 //       - Support different test file formats and non-point test shapes
@@ -37,7 +36,6 @@ use crate::make_qt::make_qt;
 struct Args {
     /// The shapefile to use to assemble the QuadTree. If not provided will use
     /// {n}the default at ./data.shp.
-    #[arg(short, long)]
     shp: Option<std::path::PathBuf>,
 
     /// Pass this flag to generate a bounds quadtree. By default the tool uses
@@ -65,6 +63,21 @@ struct Args {
     /// {n}maximum depth.
     #[arg(short, long)]
     children: Option<usize>,
+
+    /// Provide an optional list of any metadata fields from the quadtree
+    /// {n}data that should be output with the match. The input's index
+    /// {n}in load order and the `id` field will automatically be added.
+    /// {n}Any other must be provided here as a comma separated list of
+    /// {n}field names.
+    #[arg(long, value_delimiter = ',')]
+    fields: Option<Vec<String>>,
+
+    /// Set the delimiter for both the input test points and the output
+    /// {n}results. Defaults to a comma. Will error of a valid single
+    /// {n}character is not provided. This program will always use the
+    /// {n}same delimiter on output as input.
+    #[arg(long, short = 'l', default_value = ",")]
+    delimiter: String,
 }
 
 pub struct QtData {
@@ -79,6 +92,11 @@ const DEFAULT_SHP_PATH: &str = "./data.shp";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let delimiter = args.delimiter.as_bytes();
+    if delimiter.len() != 1 {
+        return Err(Box::new(FiberError));
+    }
+    let delimiter = delimiter[0];
 
     // Set up the options for constructing the quadtree
     let min = Point::new(-180.0, -90.0).to_radians();
@@ -91,25 +109,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_children: args.children.unwrap_or(10),
     };
 
-    // Set up csv parsing before building the quadtree so we can abort early if
-    // it crashes on setup
-    let (mut csv, settings) = build_csv_settings(None)?;
-    let mut csv_writer = make_csv_writer(settings.id_label)?;
-
     // Load the shapefile, exiting with an error if the file cannot read
     // Then build the quadtree
     let shapefile = args.shp.unwrap_or(PathBuf::from(DEFAULT_SHP_PATH));
     let mut shapefile = shapefile::Reader::from_path(shapefile)?;
+
+    // Set up csv parsing before building the quadtree so we can abort early if
+    // it crashes on setup
+    let (mut csv_reader, settings) = build_csv_settings(None, delimiter)?;
+    let mut csv_writer = make_csv_writer(settings.id_label, delimiter, &args.fields)?;
+
+    // Now build the quadtree
     let (qt, meta) = make_qt(&mut shapefile, opts);
 
     // After loading the quadtree, iterate through all the incoming test records
-    for (i, record) in csv.records().enumerate() {
+    for (i, record) in csv_reader.records().enumerate() {
         match (parse_record(record.as_ref(), &settings), args.k) {
             (Ok(parsed), None) | (Ok(parsed), Some(1)) => {
                 if let Ok((datum, dist)) = qt.find(&parsed.point, args.r) {
                     let data = WriteData {
                         record: parsed.record,
                         datum,
+                        meta: meta.get(datum.1).unwrap(),
+                        fields: &args.fields,
                         dist,
                         id: parsed.id,
                         index: i,
@@ -126,6 +148,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let data = WriteData {
                             record: parsed.record,
                             datum,
+                            meta: meta.get(datum.1).unwrap(),
+                            fields: &args.fields,
                             dist,
                             id: parsed.id,
                             index: i,
