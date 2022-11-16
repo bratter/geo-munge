@@ -1,4 +1,4 @@
-use std::io::{Stdout, Stdin};
+use std::io::{Stdin, Stdout};
 
 use csv::{Reader, ReaderBuilder, StringRecord, Writer, WriterBuilder};
 use geo::Point;
@@ -34,7 +34,16 @@ pub fn build_csv_settings(
     let mut lng_index = None;
 
     // TODO: Make a reasonable Error type/message here
-    for (i, label) in reader.headers().map_err(|_| FiberError)?.iter().enumerate() {
+    for (i, label) in reader
+        .headers()
+        .map_err(|_| {
+            FiberError::IO(
+                "cannot read csv input headers, please check the stdin input and try again",
+            )
+        })?
+        .iter()
+        .enumerate()
+    {
         let label = label.to_lowercase();
         let label = label.as_str();
 
@@ -59,7 +68,7 @@ pub fn build_csv_settings(
             },
         ))
     } else {
-        Err(FiberError)
+        Err(FiberError::IO("cannot find lng and lat fields in csv input headers"))
     }
 }
 
@@ -70,20 +79,21 @@ pub struct ParsedRecord<'a> {
 }
 
 pub fn parse_record<'a>(
+    i: usize,
     record: Result<&'a StringRecord, &csv::Error>,
     settings: &CsvSettings,
-) -> Result<ParsedRecord<'a>, FiberError> {
-    let record = record.map_err(|_| FiberError)?;
+) -> Result<ParsedRecord<'a>, FiberError<'a>> {
+    let record = record.map_err(|_| FiberError::Parse(i, "cannot read csv input row"))?;
     let lng = record
         .get(settings.lng_index)
         .unwrap()
         .parse::<f64>()
-        .map_err(|_| FiberError)?;
+        .map_err(|_| FiberError::Parse(i, "cannot parse lng for csv input row"))?;
     let lat = record
         .get(settings.lat_index)
         .unwrap()
         .parse::<f64>()
-        .map_err(|_| FiberError)?;
+        .map_err(|_| FiberError::Parse(i, "cannot parse lat for csv input row"))?;
     let id = settings.id_index.and_then(|i| Some(record.get(i).unwrap()));
 
     let mut point = Point::new(lng, lat);
@@ -95,11 +105,11 @@ pub fn parse_record<'a>(
 // Output the header row with base and additional `--fields`. Will output the
 // internal index of any matches and an `id` field, which will be balnk if it
 // doesn't exist on the datum.
-pub fn make_csv_writer(
+pub fn make_csv_writer<'a>(
     id_label: &str,
     delimiter: u8,
     fields: &Option<Vec<String>>,
-) -> Result<Writer<Stdout>, FiberError> {
+) -> Result<Writer<Stdout>, FiberError<'a>> {
     let mut writer = WriterBuilder::new()
         .delimiter(delimiter)
         .from_writer(std::io::stdout());
@@ -125,7 +135,7 @@ pub fn make_csv_writer(
 
     writer
         .write_record(base_fields.into_iter().chain(field_slice))
-        .map_err(|_| FiberError)?;
+        .map_err(|_| FiberError::IO("cannot write header row to stdout"))?;
 
     Ok(writer)
 }
