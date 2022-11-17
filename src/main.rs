@@ -1,20 +1,22 @@
+mod args;
 mod csv;
 mod error;
-mod make_qt;
+mod qt;
+mod shp;
 
-use std::path::PathBuf;
-
-use crate::csv::{build_csv_settings, make_csv_writer, parse_record, write_line, WriteData};
-use crate::error::FiberError;
 use clap::Parser;
 use geo::{Point, Rect};
 use quadtree::MEAN_EARTH_RADIUS;
+use std::path::PathBuf;
 
-use crate::make_qt::make_qt;
+use crate::args::Args;
+use crate::csv::reader::{build_input_settings, parse_record};
+use crate::csv::writer::{make_csv_writer, write_line, WriteData};
+use crate::error::FiberError;
+use crate::qt::{make_qt, QtData};
 
 // TODO: Refine the API and implementation
 //       - Provide option to have infile as as file not just stdin
-//       - Split up and reorganize make_qt file
 //       - Provide values for bounds in the cli
 //         And option to use bounds from the shapefile
 //       - Expand input acceptance to formats other than shp (kml, geojson, csv points)
@@ -31,65 +33,6 @@ use crate::make_qt::make_qt;
 
 // TODO: Sphere and Eucl functions from quadtree should take references
 // TODO: Can we use Borrow in places like HashMap::get to ease ergonomics?
-
-/// Command line utility to find nearest neighbors using a quadtree. The
-/// quadtree is built from an input shapefile, and tested against an input
-/// set of points provided as a csv. Distances are measured using the HAversine
-/// formula.
-#[derive(Parser, Debug)]
-struct Args {
-    /// The shapefile to use to assemble the QuadTree. If not provided will use
-    /// {n}the default at ./data.shp.
-    shp: Option<std::path::PathBuf>,
-
-    /// Pass this flag to generate a bounds quadtree. By default the tool uses
-    /// {n}a point quadtree that only accepts point-like shapefile inputs, but
-    /// {n}this flag enables bounding box distances.
-    #[arg(short, long)]
-    bounds: bool,
-
-    /// Retrieve `k` nearest neighbors.
-    #[arg(short)]
-    k: Option<usize>,
-
-    /// Constrain the search radius by a maximum distance in meters. If not
-    /// {n}included, the search ring is unbounded, but if provided, no
-    /// {n}points outside the radius will be selected.
-    #[arg(short)]
-    r: Option<f64>,
-
-    /// Provide a customized maximum depth for the quadtree. Defaults to 10.
-    #[arg(short, long)]
-    depth: Option<u8>,
-
-    /// Provide a customized value for the maximum number of child entries
-    /// {n}before the quadtree splits. Defaults to 10. Does not apply at the
-    /// {n}maximum depth.
-    #[arg(short, long)]
-    children: Option<usize>,
-
-    /// Provide an optional list of any metadata fields from the quadtree
-    /// {n}data that should be output with the match. The input's index
-    /// {n}in load order and the `id` field will automatically be added.
-    /// {n}Any other must be provided here as a comma separated list of
-    /// {n}field names.
-    #[arg(long, value_delimiter = ',')]
-    fields: Option<Vec<String>>,
-
-    /// Set the delimiter for both the input test points and the output
-    /// {n}results. Defaults to a comma. Will error of a valid single
-    /// {n}character is not provided. This program will always use the
-    /// {n}same delimiter on output as input.
-    #[arg(long, short = 'l', default_value = ",")]
-    delimiter: String,
-}
-
-pub struct QtData {
-    is_bounds: bool,
-    bounds: Rect<f64>,
-    depth: u8,
-    max_children: usize,
-}
 
 /// We look in the current directory for a data.shp file by default
 const DEFAULT_SHP_PATH: &str = "./data.shp";
@@ -108,13 +51,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up the options for constructing the quadtree
     let min = Point::new(-180.0, -90.0).to_radians();
     let max = Point::new(180.0, 90.0).to_radians();
-    let bounds = Rect::new(min.0, max.0);
-    let opts = QtData {
-        is_bounds: args.bounds,
-        bounds,
-        depth: args.depth.unwrap_or(10),
-        max_children: args.children.unwrap_or(10),
-    };
+    let opts = QtData::new(
+        args.bounds,
+        Rect::new(min.0, max.0),
+        args.depth,
+        args.children,
+    );
 
     // Load the shapefile, exiting with an error if the file cannot read
     // Then build the quadtree
@@ -125,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set up csv parsing before building the quadtree so we can abort early if
     // it crashes on setup
-    let (mut csv_reader, settings) = build_csv_settings(None, delimiter)?;
+    let (mut csv_reader, settings) = build_input_settings(None, delimiter)?;
     let mut csv_writer = make_csv_writer(settings.id_label, delimiter, &args.fields)?;
 
     // Now build the quadtree
