@@ -8,6 +8,7 @@ use clap::Parser;
 use geo::{Point, Rect};
 use quadtree::MEAN_EARTH_RADIUS;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::args::Args;
 use crate::csv::reader::{build_input_settings, parse_record};
@@ -31,6 +32,7 @@ use crate::qt::{make_qt, QtData};
 //       - Make the quadtree a service that can be sent points to test
 //       - Make a metadata extraction binary
 
+// TODO: Adding points to a Bounds qt does not seem to be inserting correctly
 // TODO: Sphere and Eucl functions from quadtree should take references
 // TODO: Can we use Borrow in places like HashMap::get to ease ergonomics?
 
@@ -71,10 +73,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut csv_writer = make_csv_writer(settings.id_label, delimiter, &args.fields)?;
 
     // Now build the quadtree
+    if args.verbose {
+        let qt_type = if opts.is_bounds { "bounds" } else { "point" };
+        eprintln!(
+            "Building {} quadtree: depth={}, children={}",
+            qt_type, opts.depth, opts.max_children
+        )
+    }
+    let start = Instant::now();
     let (qt, meta) = make_qt(&mut shapefile, opts);
+    if args.verbose || args.print {
+        eprintln!(
+            "Quadtree with {} children built in {} ms",
+            qt.size(),
+            start.elapsed().as_millis()
+        )
+    }
+    if args.print {
+        eprintln!("{}", qt);
+    }
 
     // After loading the quadtree, iterate through all the incoming test records
     for (i, record) in csv_reader.records().enumerate() {
+        let start = Instant::now();
+
         match (parse_record(i, record.as_ref(), &settings), args.k) {
             (Ok(parsed), None) | (Ok(parsed), Some(1)) => {
                 if let Ok((datum, dist)) = qt.find(&parsed.point, r) {
@@ -115,6 +137,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {
                 eprintln!("Failed to parse record at index {i}.")
             }
+        }
+
+        if args.verbose {
+            eprintln!(
+                "Processed record {} in {} ms",
+                i,
+                start.elapsed().as_millis()
+            );
         }
     }
 

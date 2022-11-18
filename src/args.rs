@@ -10,6 +10,15 @@ pub struct Args {
     /// {n}the default at ./data.shp.
     pub shp: Option<std::path::PathBuf>,
 
+    /// Print verbose logging to stderr.
+    #[arg(short, long)]
+    pub verbose: bool,
+
+    /// Print a summary representation of the loaded quadtree to stderr once
+    /// {n}it is built.
+    #[arg(short, long)]
+    pub print: bool,
+
     /// Pass this flag to generate a bounds quadtree. By default the tool uses
     /// {n}a point quadtree that only accepts point-like shapefile inputs, but
     /// {n}this flag enables bounding box distances.

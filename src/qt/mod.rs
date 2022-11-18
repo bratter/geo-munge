@@ -8,14 +8,19 @@ use crate::shp::convert_shapes;
 use datum::*;
 
 pub struct QtData {
-    is_bounds: bool,
-    bounds: Rect<f64>,
-    depth: u8,
-    max_children: usize,
+    pub is_bounds: bool,
+    pub bounds: Rect<f64>,
+    pub depth: u8,
+    pub max_children: usize,
 }
 
 impl QtData {
-    pub fn new(is_bounds: bool, bounds: Rect, depth: Option<u8>, max_children: Option<usize>) -> Self {
+    pub fn new(
+        is_bounds: bool,
+        bounds: Rect,
+        depth: Option<u8>,
+        max_children: Option<usize>,
+    ) -> Self {
         Self {
             is_bounds,
             bounds,
@@ -25,16 +30,32 @@ impl QtData {
     }
 }
 
-pub trait Searchable<D>
+// All quadtrees should implement Display
+pub trait Searchable<D>: std::fmt::Display
 where
     D: Datum<f64>,
 {
+    fn size(&self) -> usize;
+
+    fn insert(&mut self, datum: D) -> Result<(), Error>;
+
     fn find(&self, cmp: &Point, r: Option<f64>) -> Result<(&D, f64), Error>;
 
     fn knn(&self, cmp: &Point, k: usize, r: Option<f64>) -> Result<Vec<(&D, f64)>, Error>;
 }
 
 impl Searchable<IndexedDatum<Geometry<f64>>> for PointQuadTree<IndexedDatum<Geometry<f64>>, f64> {
+    fn size(&self) -> usize {
+        QuadTree::size(self)
+    }
+
+    fn insert(&mut self, datum: IndexedDatum<Geometry<f64>>) -> Result<(), Error> {
+        <PointQuadTree<IndexedDatum<Geometry<f64>>, f64> as QuadTree<
+            IndexedDatum<Geometry<f64>>,
+            f64,
+        >>::insert(self, datum)
+    }
+
     fn find(
         &self,
         cmp: &Point,
@@ -54,6 +75,17 @@ impl Searchable<IndexedDatum<Geometry<f64>>> for PointQuadTree<IndexedDatum<Geom
 }
 
 impl Searchable<IndexedDatum<Geometry<f64>>> for BoundsQuadTree<IndexedDatum<Geometry<f64>>, f64> {
+    fn size(&self) -> usize {
+        QuadTree::size(self)
+    }
+
+    fn insert(&mut self, datum: IndexedDatum<Geometry<f64>>) -> Result<(), Error> {
+        <BoundsQuadTree<IndexedDatum<Geometry<f64>>, f64> as QuadTree<
+            IndexedDatum<Geometry<f64>>,
+            f64,
+        >>::insert(self, datum)
+    }
+
     fn find(
         &self,
         cmp: &Point,
@@ -100,7 +132,11 @@ where
         }
     };
 
-    let mut qt = Box::new(BoundsQuadTree::new(bounds, depth, mc));
+    let mut qt: Box<dyn Searchable<_>> = if opts.is_bounds {
+        Box::new(BoundsQuadTree::new(bounds, depth, mc))
+    } else {
+        Box::new(PointQuadTree::new(bounds, depth, mc))
+    };
 
     for shp in shp
         .iter_shapes_and_records()
