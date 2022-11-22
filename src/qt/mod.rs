@@ -146,16 +146,16 @@ where
         if let Ok((shape, i)) = shp {
             if opts.is_bounds {
                 if qt.insert(IndexedDatum(shape, i)).is_err() {
-                    eprintln!("Cannot insert into qt.")
+                    eprintln!("Cannot insert datum at index {i} into qt")
                 }
             } else {
-                if matches!(Geometry::Point::<f64>, _) {
+                if matches!(shape, Geometry::Point::<f64>(_)) {
                     if qt.insert(IndexedDatum(shape, i)).is_err() {
-                        eprintln!("Cannot insert into qt.")
+                        eprintln!("Cannot insert datum at index {i} into qt")
                     }
                 } else {
                     eprintln!(
-                        "Invalid shape. Can only add Points unless the bounds option is provided."
+                        "Invalid shape at index {i}. Can only add Points unless the bounds option is provided"
                     )
                 }
             }
