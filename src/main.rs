@@ -7,10 +7,10 @@ use shapefile::Reader;
 use std::time::Instant;
 
 use crate::args::Args;
-use fiberdist::csv::reader::{build_input_settings, parse_record};
-use fiberdist::csv::writer::{make_csv_writer, write_line, WriteData};
-use fiberdist::error::FiberError;
-use fiberdist::qt::{make_qt, QtData};
+use geo_munge::csv::reader::{build_input_settings, parse_record};
+use geo_munge::csv::writer::{make_csv_writer, write_line, WriteData};
+use geo_munge::error::FiberError;
+use geo_munge::qt::{make_qt, QtData};
 
 // TODO: Refine the API and implementation
 //       - Provide option to have infile as as file not just stdin

@@ -1,7 +1,7 @@
 use std::{fs::File, io::BufReader, iter::once, path::PathBuf};
 
 use csv::WriterBuilder;
-use fiberdist::{error::FiberError, shp::convert_dbase_field_opt};
+use geo_munge::{error::FiberError, shp::convert_dbase_field_opt};
 use shapefile::Reader;
 
 use crate::{DataOpts, Meta, MetaResult};

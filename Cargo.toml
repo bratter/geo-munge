@@ -1,5 +1,5 @@
 [package]
-name = "fiberdist"
+name = "geo-munge"
 version = "0.1.0"
 edition = "2021"
 
