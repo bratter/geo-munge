@@ -85,7 +85,7 @@ pub fn parse_record<'a>(
     i: usize,
     record: Result<&'a StringRecord, &csv::Error>,
     settings: &InputSettings,
-) -> Result<ParsedRecord<'a>, FiberError<'a>> {
+) -> Result<ParsedRecord<'a>, FiberError> {
     let record = record.map_err(|_| FiberError::Parse(i, "cannot read input record"))?;
     let lng = record
         .get(settings.lng_index)

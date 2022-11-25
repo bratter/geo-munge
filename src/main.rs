@@ -1,8 +1,4 @@
 mod args;
-mod csv;
-mod error;
-mod qt;
-mod shp;
 
 use clap::Parser;
 use geo::{Point, Rect};
@@ -11,15 +7,16 @@ use shapefile::Reader;
 use std::time::Instant;
 
 use crate::args::Args;
-use crate::csv::reader::{build_input_settings, parse_record};
-use crate::csv::writer::{make_csv_writer, write_line, WriteData};
-use crate::error::FiberError;
-use crate::qt::{make_qt, QtData};
+use fiberdist::csv::reader::{build_input_settings, parse_record};
+use fiberdist::csv::writer::{make_csv_writer, write_line, WriteData};
+use fiberdist::error::FiberError;
+use fiberdist::qt::{make_qt, QtData};
 
 // TODO: Refine the API and implementation
 //       - Provide option to have infile as as file not just stdin
 //       - Capture and respond to system interupts (e.g. ctrl-c)
 //       - Expand input acceptance to formats other than shp (kml, geojson/ndjson, csv points)
+//         Do as a dynamic dispatch on a filetype with trait covering the required analysis
 //       - Do some performance testing with perf and flamegraph
 //       - Write concurrent searching, probably with Rayon
 //       - Explore concurrent inserts - should be safe as if we can get an &mut at the node where
@@ -31,12 +28,12 @@ use crate::qt::{make_qt, QtData};
 //         making a new trait
 //       - Support different test file formats and non-point test shapes
 //       - Make the quadtree a service that can be sent points to test
-//       - Make a metadata extraction binary
 
-// TODO: Sphere and Eucl functions from quadtree should take references
+// TODO: Sphere and Eucl functions from quadtree should take references?
 // TODO: Can we use Borrow in places like HashMap::get to ease ergonomics?
+// TODO: Retrieve on bounds qt needs to be able to retrieve for shapes
 
-fn make_bbox<'a, T>(args: &Args, shp: &Reader<T>) -> Result<Rect, FiberError<'a>>
+fn make_bbox<'a, T>(args: &Args, shp: &Reader<T>) -> Result<Rect, FiberError>
 where
     T: std::io::Read + std::io::Seek,
 {
@@ -65,8 +62,8 @@ where
 }
 
 fn bbox_next<'a>(
-    pts: &mut dyn Iterator<Item = Result<f64, FiberError<'a>>>,
-) -> Result<f64, FiberError<'a>> {
+    pts: &mut dyn Iterator<Item = Result<f64, FiberError>>,
+) -> Result<f64, FiberError> {
     pts.next()
         .ok_or(FiberError::Arg("Unexpected end of bbox input"))
         .and_then(|x| x)

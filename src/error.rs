@@ -4,15 +4,15 @@ use std::fmt;
 /// 
 /// Includes custom display, debug traits to produce human-readable error messages.
 #[non_exhaustive]
-pub enum FiberError<'a> {
-    IO(&'a str),
-    Arg(&'a str),
-    Parse(usize, &'a str),
+pub enum FiberError {
+    IO(&'static str),
+    Arg(&'static str),
+    Parse(usize, &'static str),
 }
 
-impl std::error::Error for FiberError<'_> {}
+impl std::error::Error for FiberError {}
 
-impl fmt::Display for FiberError<'_> {
+impl fmt::Display for FiberError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::IO(e) => write!(f, "IO Error: {}", e),
@@ -25,7 +25,7 @@ impl fmt::Display for FiberError<'_> {
 // Custom debug implementation that delegates to Display
 // This is then written on termination by the default Termination
 // implementation
-impl fmt::Debug for FiberError<'_> {
+impl fmt::Debug for FiberError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }

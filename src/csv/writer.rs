@@ -2,11 +2,12 @@ use std::io::Stdout;
 
 use csv::{StringRecord, Writer, WriterBuilder};
 use quadtree::{Geometry, MEAN_EARTH_RADIUS};
-use shapefile::dbase::{FieldValue, Record};
+use shapefile::dbase::Record;
 
 use super::reader::InputSettings;
 use crate::error::FiberError;
 use crate::qt::datum::IndexedDatum;
+use crate::shp::convert_dbase_field_opt;
 
 // Output the header row with base and additional `--fields`. Will output the
 // internal index of any matches and an `id` field, which will be balnk if it
@@ -15,7 +16,7 @@ pub fn make_csv_writer<'a>(
     id_label: &str,
     delimiter: u8,
     fields: &Option<Vec<String>>,
-) -> Result<Writer<Stdout>, FiberError<'a>> {
+) -> Result<Writer<Stdout>, FiberError> {
     let mut writer = WriterBuilder::new()
         .delimiter(delimiter)
         .from_writer(std::io::stdout());
@@ -56,15 +57,6 @@ pub struct WriteData<'a> {
     pub index: usize,
 }
 
-fn dbase_field_match(f: Option<&FieldValue>) -> String {
-    match f {
-        Some(FieldValue::Character(s)) => s.to_owned().unwrap_or(String::default()),
-        Some(FieldValue::Integer(n)) => format!("{}", n),
-        Some(FieldValue::Numeric(n)) => format!("{}", n.unwrap_or(f64::NAN)),
-        _ => String::default(),
-    }
-}
-
 // TODO: This works, but can we avoid allocating strings?
 pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteData) {
     // If we parsed an id from the input data, then use it here
@@ -80,7 +72,7 @@ pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteD
     // Convert the distance to meters and trucate at mm
     let dist = format!("{:.3}", data.dist * MEAN_EARTH_RADIUS);
     let match_index = format!("{}", data.datum.1);
-    let match_id = dbase_field_match(data.meta.get("id"));
+    let match_id = convert_dbase_field_opt(data.meta.get("id"));
 
     // Make the base fields present in all output
     let base_fields = [
@@ -99,7 +91,7 @@ pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteD
         .as_ref()
         .unwrap_or(&tmp_vec)
         .iter()
-        .map(|f| dbase_field_match(data.meta.get(f)));
+        .map(|f| convert_dbase_field_opt(data.meta.get(f)));
 
     if w.write_record(base_fields.into_iter().chain(meta_fields))
         .is_err()

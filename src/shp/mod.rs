@@ -1,7 +1,46 @@
 use std::iter::once;
 
 use quadtree::*;
-use shapefile::Shape;
+use shapefile::{dbase::FieldValue, Shape};
+
+/// Convert dbase fields to a string representation for inclusion in csv output.
+pub fn convert_dbase_field(f: &FieldValue) -> String {
+    match f {
+        FieldValue::Character(s) => s.to_owned().unwrap_or(String::default()),
+        FieldValue::Memo(s) => s.to_owned(),
+        FieldValue::Integer(n) => format!("{}", n),
+        FieldValue::Numeric(n) => format!("{}", n.unwrap_or(f64::NAN)),
+        FieldValue::Double(n) => format!("{}", n),
+        FieldValue::Float(n) => format!("{}", n.unwrap_or(f32::NAN)),
+        FieldValue::Currency(n) => format!("{}", n),
+        FieldValue::Logical(b) => match b {
+            Some(true) => "true".to_owned(),
+            Some(false) => "false".to_owned(),
+            None => String::default(),
+        },
+        FieldValue::Date(d) => d.map(|d| d.to_string()).unwrap_or(String::default()),
+        FieldValue::DateTime(d) => {
+            let date = d.date();
+            let time = d.time();
+            format!(
+                "{:4}-{:2}-{:2} {:2}:{:2}:{:2}",
+                date.year(),
+                date.month(),
+                date.day(),
+                time.hours(),
+                time.minutes(),
+                time.seconds()
+            )
+        }
+    }
+}
+
+pub fn convert_dbase_field_opt(f: Option<&FieldValue>) -> String {
+    match f {
+        Some(f) => convert_dbase_field(f),
+        None => String::default(),
+    }
+}
 
 /// Convert shapefile shapes to their geo-type equivalents. This will only
 /// convert those types that are valid in quadtrees.
