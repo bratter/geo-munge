@@ -14,7 +14,7 @@ pub struct Cli {
     /// The shapefile to read from. If not provided will use
     /// {n}the default at ./data.shp.
     #[arg(global = true, default_value = DEFAULT_SHP_PATH)]
-    pub shp: std::path::PathBuf,
+    pub path: std::path::PathBuf,
 }
 
 #[derive(Subcommand, Debug)]
@@ -25,7 +25,10 @@ pub enum Command {
     /// Print the number of shapes to stdout.
     Count,
 
-    /// Print the metadata field names to stdout.
+    /// Print metadata field names to stdout. Depending on the input
+    /// {n}format, fields may not be easily represented. This command
+    /// {n}makes a best effort only and is not guaranteed to be
+    /// {n}complete.
     Fields {
         /// Print a representation of the field's type with the field.
         /// Only works when --fields is also passed.

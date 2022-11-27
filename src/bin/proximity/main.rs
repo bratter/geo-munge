@@ -23,6 +23,8 @@ use geo_munge::qt::{make_qt, QtData};
 //         we are inserting or subdividing - this can block, but the rest of the qt is fine
 //         can use an atomic usize for size, just need to work out how to get &mut from & when inserting
 //         Perhaps something like fine grained locking or lock-free reads would help?
+//       - Should meta fields support not scannining all the rows to get the fields, 
+//         and a number of rows different from the n when pulling data?
 //       - Support Euclidean distances
 //       - Investigate a better method of making a polymorphic quadtree than
 //         making a new trait
@@ -30,7 +32,7 @@ use geo_munge::qt::{make_qt, QtData};
 //       - Make the quadtree a service that can be sent points to test
 
 // TODO: Sphere and Eucl functions from quadtree should take references?
-// TODO: Can we use Borrow in places like HashMap::get to ease ergonomics?
+// TODO: Can we use Borrow or AsRef in places like HashMap::get to ease ergonomics?
 // TODO: Retrieve on bounds qt needs to be able to retrieve for shapes
 
 fn make_bbox<'a, T>(args: &Args, shp: &Reader<T>) -> Result<Rect, FiberError>
