@@ -268,6 +268,7 @@ fn print_fc_meta(fc: FeatureCollection, opts: DataOpts) -> MetaResult {
         .delimiter(delimiter)
         .from_writer(std::io::stdout());
 
+    // TODO: Different size parameter for the length to scan for headers?
     let (has_id, keys) = make_fields(&fc, Some(opts.start), opts.length);
     let keys: Vec<_> = keys.keys().collect();
 
@@ -285,7 +286,12 @@ fn print_fc_meta(fc: FeatureCollection, opts: DataOpts) -> MetaResult {
         writer.write_record(empty::<&str>())?;
     }
 
-    for (i, f) in fc.into_iter().enumerate() {
+    for (i, f) in fc
+        .into_iter()
+        .skip(opts.start)
+        .take(opts.length.unwrap_or(usize::MAX))
+        .enumerate()
+    {
         if opts.index {
             writer.write_field(i.to_string())?;
         }

@@ -1,12 +1,17 @@
-use std::{iter::FlatMap, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    iter::{empty, FlatMap},
+    path::PathBuf,
+};
 
+use csv::WriterBuilder;
 use geo_munge::error::FiberError;
 use kml::{
     types::{LineString, LinearRing, Location, MultiGeometry, Placemark, Point, Polygon},
     Kml, KmlReader,
 };
 
-use crate::Meta;
+use crate::{DataOpts, Meta, MetaResult};
 
 pub struct KmlMeta {
     path: PathBuf,
@@ -41,41 +46,145 @@ impl KmlMeta {
 }
 
 impl Meta for KmlMeta {
-    fn headers(&self) -> crate::MetaResult {
+    // TODO: It seems to be squashing cdata in the upront description. Why?
+    fn headers(&self) -> MetaResult {
         let kml = self.kml()?;
 
-        // TODO: Probably need an iterator to walk through the kml, can be recursive and should stop at Placemarks or shapes to read
-        match kml {
+        let elements = match kml {
             Kml::KmlDocument(d) => {
-                println!("KmlDocument");
+                // I think that a Document is the only valid child here, but
+                // even if not header only uses Document elements
+                d.elements.into_iter().find_map(|e| match e {
+                    Kml::Document { attrs: _, elements } => Some(elements),
+                    _ => None,
+                })
             }
-            Kml::Document { attrs, elements } => {
-                println!("Attrs\n {:?}", attrs);
-                println!("El\n {:?}", elements);
+            Kml::Document { attrs: _, elements } => Some(elements),
+            _ => None,
+        };
+
+        if let Some(elements) = elements {
+            for el in elements {
+                match el {
+                    Kml::Element(el) => {
+                        if let Some(content) = el.content {
+                            println!("{}: {}", el.name, content)
+                        }
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
         }
 
         Ok(())
     }
 
-    fn fields(&self, show_types: bool) -> crate::MetaResult {
+    /// Limited support of fields for KML - only reports fields from Placemark
+    /// objects.
+    fn fields(&self, _: bool) -> MetaResult {
         let kml = self.kml()?;
 
-        for d in KmlIterator::new(&kml) {
-            println!("{:?}", d);
+        let fields = make_fields(&kml, None, None);
+
+        for field in fields {
+            println!("{field}");
         }
 
         Ok(())
     }
 
-    fn count(&self) -> crate::MetaResult {
-        todo!()
+    fn count(&self) -> MetaResult {
+        let kml = self.kml()?;
+        let count = KmlIterator::new(&kml).count();
+
+        println!("{count}");
+
+        Ok(())
     }
 
-    fn data(&self, opts: crate::DataOpts) -> crate::MetaResult {
-        todo!()
+    fn data(&self, opts: DataOpts) -> MetaResult {
+        let delimiter = opts.delimiter.as_bytes();
+        if delimiter.len() != 1 {
+            return Err(Box::new(FiberError::Arg("Invalid delimiter provided")));
+        }
+        let delimiter = delimiter[0];
+
+        let mut writer = WriterBuilder::new()
+            .delimiter(delimiter)
+            .from_writer(std::io::stdout());
+
+        let kml = self.kml()?;
+        let fields: Vec<_> = make_fields(&kml, Some(opts.start), opts.length)
+            .into_iter()
+            .collect();
+
+        // Write out the header
+        if opts.headers {
+            if opts.index {
+                writer.write_field("index")?;
+            }
+            for field in &fields {
+                writer.write_field(field)?;
+            }
+            writer.write_record(empty::<&str>())?;
+        }
+
+        for (i, item) in KmlIterator::new(&kml)
+            .skip(opts.start)
+            .take(opts.length.unwrap_or(usize::MAX))
+            .enumerate()
+        {
+            if opts.index {
+                writer.write_field(i.to_string())?;
+            }
+            match item {
+                KmlItem::Placemark(p) => {
+                    // Put children into a hash map rather than finding each time
+                    // Unclear that this will be more efficient
+                    let data: HashMap<&String, &Option<String>> =
+                        HashMap::from_iter(p.children.iter().map(|e| (&e.name, &e.content)));
+
+                    writer.write_record(fields.iter().map(|f| {
+                        match f.as_str() {
+                            "name" => p.name.to_owned().unwrap_or_default(),
+                            "description" => p.description.to_owned().unwrap_or_default(),
+                            _ => data
+                                .get(f)
+                                .and_then(|d| d.as_ref())
+                                .map(|s| s.to_owned())
+                                .unwrap_or_default(),
+                        }
+                    }))?;
+                }
+                // No meta for shapes
+                _ => {
+                    writer.write_record(fields.iter().map(|_| ""))?;
+                }
+            }
+        }
+
+        Ok(())
     }
+}
+
+/// Limited support of fields for KML - only reports fields from Placemark
+/// objects.
+fn make_fields(kml: &Kml, skip: Option<usize>, n: Option<usize>) -> HashSet<String> {
+    // Placemarks can always have name and desc,so add them even if not guaranteed
+    let mut fields = HashSet::from(["name".to_string(), "description".to_string()]);
+
+    for d in KmlIterator::new(&kml)
+        .skip(skip.unwrap_or(0))
+        .take(n.unwrap_or(usize::MAX))
+    {
+        if let KmlItem::Placemark(p) = d {
+            for child in &p.children {
+                fields.insert(child.name.to_string());
+            }
+        }
+    }
+
+    fields
 }
 
 type KmlFlatMap<'a> = FlatMap<std::slice::Iter<'a, Kml>, KmlIterator<'a>, fn(&Kml) -> KmlIterator>;
@@ -149,6 +258,7 @@ impl<'a> Iterator for KmlIterator<'a> {
                     }
                     // Shapes for returning, transition to Done performed above, so emit immediately
                     // TODO: How to handle multi geometry? Just emit as one, or break up?
+                    // TODO: Does this capture the Data types?
                     Kml::MultiGeometry(d) => Some(KmlItem::MultiGeometry(d)),
                     Kml::LinearRing(d) => Some(KmlItem::LinearRing(d)),
                     Kml::LineString(d) => Some(KmlItem::LineString(d)),
