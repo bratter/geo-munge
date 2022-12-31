@@ -1,11 +1,15 @@
 pub mod datum;
+mod shapefile;
+
+use std::path::PathBuf;
 
 use geo::{Point, Rect};
 use quadtree::*;
-use shapefile::{dbase::Record, Reader, Shape};
 
-use crate::shp::convert_shapes;
+use crate::error::FiberError;
 use datum::*;
+
+use self::shapefile::shp_build;
 
 pub struct QtData {
     pub is_bounds: bool,
@@ -104,65 +108,61 @@ impl Searchable<IndexedDatum<Geometry<f64>>> for BoundsQuadTree<IndexedDatum<Geo
     }
 }
 
-pub fn make_qt<T>(
-    shp: &mut Reader<T>,
+/// Result type including the original datum, extracted metdata, and the distance.
+pub struct SearchResult<'a> {
+    pub datum: &'a IndexedDatum<Geometry<f64>>,
+    // TODO: This type will need to be fixed
+    //       Can it be &'a dyn instead of box?
+    pub meta: Box<dyn Iterator<Item = String> + 'a>,
+    pub distance: f64,
+}
+
+/// Trait representing the allowable file types for searching and extracting metadata. Used as each
+/// file type requires a different way of managing the meta.
+///
+///  In the meta key of each implementation, implementors should automatically insert the native
+///  `id` key to ensure that the match id is always transfered to the results. The location of this
+///  key is necessarily implementation specific.
+pub trait SearchableWithMeta: std::fmt::Display {
+    fn size(&self) -> usize;
+
+    fn find<'a>(
+        &'a self,
+        cmp: &Point,
+        r: Option<f64>,
+        fields: &'a Option<Vec<String>>,
+    ) -> Result<SearchResult<'a>, Error>;
+
+    fn knn<'a>(
+        &'a self,
+        cmp: &Point,
+        k: usize,
+        r: Option<f64>,
+        fields: &'a Option<Vec<String>>,
+    ) -> Result<Vec<SearchResult<'a>>, Error>;
+}
+
+/// Create the correct quadtree wrapper based on the input options and provided filetype.
+pub fn make_qt_from_path<'a>(
+    path: PathBuf,
     opts: QtData,
-) -> (
-    Box<dyn Searchable<IndexedDatum<Geometry<f64>>>>,
-    Vec<Record>,
-)
-where
-    T: std::io::Read + std::io::Seek,
-{
+) -> Result<Box<dyn SearchableWithMeta>, FiberError> {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .ok_or(FiberError::IO("Cannot parse file extension"))?
+    {
+        "shp" => shp_build(path, opts),
+        _ => Err(FiberError::IO("Unsupported file type")),
+    }
+}
+
+pub fn make_dyn_qt(opts: &QtData) -> Box<dyn Searchable<IndexedDatum<Geometry<f64>>>> {
     let (bounds, depth, mc) = (opts.bounds, opts.depth, opts.max_children);
 
-    // Store records in a vector so we only have to allocate for them once
-    // Then create a closure to add to the vector as we iterate over the shapefile
-    // This vector needs to be returned with the qt for later reference
-    let mut records = Vec::new();
-    let add_record = |res| -> Result<(Shape, usize), ()> {
-        match res {
-            Ok((s, r)) => {
-                let i = records.len();
-                records.push(r);
-
-                Ok((s, i))
-            }
-            Err(_) => Err(()),
-        }
-    };
-
-    let mut qt: Box<dyn Searchable<_>> = if opts.is_bounds {
+    if opts.is_bounds {
         Box::new(BoundsQuadTree::new(bounds, depth, mc))
     } else {
         Box::new(PointQuadTree::new(bounds, depth, mc))
-    };
-
-    for shp in shp
-        .iter_shapes_and_records()
-        .map(add_record)
-        .flat_map(convert_shapes)
-    {
-        if let Ok((shape, i)) = shp {
-            if opts.is_bounds {
-                if qt.insert(IndexedDatum(shape, i)).is_err() {
-                    eprintln!("Cannot insert datum at index {i} into qt")
-                }
-            } else {
-                if matches!(shape, Geometry::Point::<f64>(_)) {
-                    if qt.insert(IndexedDatum(shape, i)).is_err() {
-                        eprintln!("Cannot insert datum at index {i} into qt")
-                    }
-                } else {
-                    eprintln!(
-                        "Invalid shape at index {i}. Can only add Points unless the bounds option is provided"
-                    )
-                }
-            }
-        } else {
-            eprintln!("Could not read shape.")
-        }
     }
-
-    (qt, records)
 }

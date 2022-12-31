@@ -1,13 +1,11 @@
 use std::io::Stdout;
 
 use csv::{StringRecord, Writer, WriterBuilder};
-use quadtree::{Geometry, MEAN_EARTH_RADIUS};
-use shapefile::dbase::Record;
+use quadtree::MEAN_EARTH_RADIUS;
 
 use super::reader::InputSettings;
 use crate::error::FiberError;
-use crate::qt::datum::IndexedDatum;
-use crate::shp::convert_dbase_field_opt;
+use crate::qt::SearchResult;
 
 // Output the header row with base and additional `--fields`. Will output the
 // internal index of any matches and an `id` field, which will be balnk if it
@@ -48,11 +46,12 @@ pub fn make_csv_writer<'a>(
 }
 
 pub struct WriteData<'a> {
+    pub result: SearchResult<'a>,
     pub record: &'a StringRecord,
-    pub datum: &'a IndexedDatum<Geometry<f64>>,
-    pub meta: &'a Record,
+    // pub datum: &'a IndexedDatum<Geometry<f64>>,
+    // pub meta: &'a Record,
     pub fields: &'a Option<Vec<String>>,
-    pub dist: f64,
+    // pub dist: f64,
     pub id: Option<&'a str>,
     pub index: usize,
 }
@@ -69,10 +68,16 @@ pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteD
         data.index.to_string()
     };
 
+    let SearchResult {
+        datum,
+        meta,
+        distance,
+    } = data.result;
+
     // Convert the distance to meters and trucate at mm
-    let dist = format!("{:.3}", data.dist * MEAN_EARTH_RADIUS);
-    let match_index = format!("{}", data.datum.1);
-    let match_id = convert_dbase_field_opt(data.meta.get("id"));
+    let dist = format!("{:.3}", distance * MEAN_EARTH_RADIUS);
+    let match_index = format!("{}", datum.1);
+    // let match_id = convert_dbase_field_opt(meta.get("id"));
 
     // Make the base fields present in all output
     let base_fields = [
@@ -81,21 +86,9 @@ pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteD
         data.record.get(settings.lat_index).unwrap().to_string(),
         dist,
         match_index,
-        match_id,
     ];
 
-    // Print the extra fields, or blank if they don't exist
-    let tmp_vec = Vec::new();
-    let meta_fields = data
-        .fields
-        .as_ref()
-        .unwrap_or(&tmp_vec)
-        .iter()
-        .map(|f| convert_dbase_field_opt(data.meta.get(f)));
-
-    if w.write_record(base_fields.into_iter().chain(meta_fields))
-        .is_err()
-    {
+    if w.write_record(base_fields.into_iter().chain(meta)).is_err() {
         eprintln!(
             "Failed to write output line for record at index {}.",
             data.index

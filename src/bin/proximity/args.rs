@@ -5,14 +5,14 @@ const DEFAULT_SHP_PATH: &str = "./data.shp";
 
 /// Command line utility to find nearest neighbors using a quadtree. The
 /// quadtree is built from an input shapefile, and tested against an input
-/// set of points provided as a csv. Distances are measured using the HAversine
+/// set of points provided as a csv. Distances are measured using the Haversine
 /// formula.
 #[derive(Parser, Debug)]
 pub struct Args {
-    /// The shapefile to use to assemble the QuadTree. If not provided will use
-    /// {n}the default at ./data.shp.
+    /// The file to use to assemble the QuadTree. If not provided will use
+    /// {n}the default at ./data.shp. Supports multiple geographic file types.
     #[arg(default_value = DEFAULT_SHP_PATH)]
-    pub shp: std::path::PathBuf,
+    pub path: std::path::PathBuf,
 
     /// Print verbose logging to stderr.
     #[arg(short, long)]

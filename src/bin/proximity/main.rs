@@ -4,13 +4,14 @@ use clap::Parser;
 use geo::{Point, Rect};
 use quadtree::{ToRadians, MEAN_EARTH_RADIUS};
 use shapefile::Reader;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::args::Args;
 use geo_munge::csv::reader::{build_input_settings, parse_record};
 use geo_munge::csv::writer::{make_csv_writer, write_line, WriteData};
 use geo_munge::error::FiberError;
-use geo_munge::qt::{make_qt, QtData};
+use geo_munge::qt::{make_qt_from_path, QtData};
 
 // TODO: Refine the API and implementation
 //       - Provide option to have infile as as file not just stdin
@@ -23,7 +24,7 @@ use geo_munge::qt::{make_qt, QtData};
 //         we are inserting or subdividing - this can block, but the rest of the qt is fine
 //         can use an atomic usize for size, just need to work out how to get &mut from & when inserting
 //         Perhaps something like fine grained locking or lock-free reads would help?
-//       - Should meta fields support not scannining all the rows to get the fields, 
+//       - Should meta fields support not scannining all the rows to get the fields,
 //         and a number of rows different from the n when pulling data?
 //       - Support Euclidean distances
 //       - Investigate a better method of making a polymorphic quadtree than
@@ -35,13 +36,14 @@ use geo_munge::qt::{make_qt, QtData};
 // TODO: Can we use Borrow or AsRef in places like HashMap::get to ease ergonomics?
 // TODO: Retrieve on bounds qt needs to be able to retrieve for shapes
 
-fn make_bbox<'a, T>(args: &Args, shp: &Reader<T>) -> Result<Rect, FiberError>
-where
-    T: std::io::Read + std::io::Seek,
-{
+/// Build the Bounding Box from provided arguments.
+// TODO: Consider moving this into the make_qt_from_path function, and then avoiding the extra file
+//       handle.
+// TODO: Consider moving this function to a better location, probably near make_qt
+fn make_bbox<'a>(args: &Args, path: &PathBuf) -> Result<Rect, FiberError> {
     // Get the right bbox points given the argument values
     let (a, b) = if args.sphere {
-        // Sphere option builds sphere bounds broken at the anitmeridian
+        // Sphere option builds sphere bounds broken at the antimeridian
         (Point::new(-180.0, -90.0), Point::new(180.0, 90.0))
     } else if let Some(bbox_str) = &args.bbox {
         // Parse from the bbox_str
@@ -54,8 +56,22 @@ where
             Point::new(bbox_next(&mut pts)?, bbox_next(&mut pts)?),
         )
     } else {
-        // Default to the bbox available on the input file
-        (shp.header().bbox.min.into(), shp.header().bbox.max.into())
+        // Default to the bbox available on the input file, matching on the file type
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .ok_or(FiberError::IO("Cannot parse file extension"))?
+        {
+            "shp" => {
+                let shp = Reader::from_path(&args.path).map_err(|_| {
+                    FiberError::IO(
+                        "cannot read shapefile, check path and permissions and try again",
+                    )
+                })?;
+                (shp.header().bbox.min.into(), shp.header().bbox.max.into())
+            }
+            _ => Err(FiberError::IO("Unsupported file type"))?,
+        }
     };
 
     let mut rect = Rect::new(a.0, b.0);
@@ -87,16 +103,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut csv_reader, settings) = build_input_settings(None, delimiter)?;
     let mut csv_writer = make_csv_writer(settings.id_label, delimiter, &args.fields)?;
 
-    // Load the shapefile, exiting with an error if the file cannot read
-    // Then build the quadtree
-    let mut shapefile = shapefile::Reader::from_path(&args.shp).map_err(|_| {
-        FiberError::IO("cannot read shapefile, check path and permissions and try again")
-    })?;
-
     // Set up the options for constructing the quadtree
     let opts = QtData::new(
         args.bounds,
-        make_bbox(&args, &shapefile)?,
+        make_bbox(&args, &args.path)?,
         args.depth,
         args.children,
     );
@@ -110,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     }
     let start = Instant::now();
-    let (qt, meta) = make_qt(&mut shapefile, opts);
+    let qt = make_qt_from_path(args.path, opts)?;
     if args.verbose || args.print {
         eprintln!(
             "Quadtree with {} children built in {} ms",
@@ -127,36 +137,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
 
         match (parse_record(i, record.as_ref(), &settings), args.k) {
-            (Ok(parsed), None) | (Ok(parsed), Some(1)) => match qt.find(&parsed.point, r) {
-                Ok((datum, dist)) => {
-                    let data = WriteData {
-                        record: parsed.record,
-                        datum,
-                        meta: meta.get(datum.1).unwrap(),
-                        fields: &args.fields,
-                        dist,
-                        id: parsed.id,
-                        index: i,
-                    };
-
-                    write_line(&mut csv_writer, &settings, data);
-                }
-                Err(quadtree::Error::OutOfBounds) => {
-                    eprintln!("Input point at index {i} is out of bounds")
-                }
-                Err(_) => {
-                    eprintln!("No result for record at index {i}");
-                }
-            },
-            (Ok(parsed), Some(k)) => match qt.knn(&parsed.point, k, r) {
-                Ok(results) => {
-                    for (datum, dist) in results {
+            (Ok(parsed), None) | (Ok(parsed), Some(1)) => {
+                match qt.find(&parsed.point, r, &args.fields) {
+                    Ok(result) => {
                         let data = WriteData {
+                            result,
                             record: parsed.record,
-                            datum,
-                            meta: meta.get(datum.1).unwrap(),
                             fields: &args.fields,
-                            dist,
+                            id: parsed.id,
+                            index: i,
+                        };
+
+                        write_line(&mut csv_writer, &settings, data);
+                    }
+                    Err(quadtree::Error::OutOfBounds) => {
+                        eprintln!("Input point at index {i} is out of bounds")
+                    }
+                    Err(_) => {
+                        eprintln!("No result for record at index {i}");
+                    }
+                }
+            }
+            (Ok(parsed), Some(k)) => match qt.knn(&parsed.point, k, r, &args.fields) {
+                Ok(results) => {
+                    for result in results {
+                        let data = WriteData {
+                            result,
+                            record: parsed.record,
+                            fields: &args.fields,
                             id: parsed.id,
                             index: i,
                         };
