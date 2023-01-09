@@ -48,10 +48,7 @@ pub fn make_csv_writer<'a>(
 pub struct WriteData<'a> {
     pub result: SearchResult<'a>,
     pub record: &'a StringRecord,
-    // pub datum: &'a IndexedDatum<Geometry<f64>>,
-    // pub meta: &'a Record,
     pub fields: &'a Option<Vec<String>>,
-    // pub dist: f64,
     pub id: Option<&'a str>,
     pub index: usize,
 }
@@ -77,7 +74,6 @@ pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteD
     // Convert the distance to meters and trucate at mm
     let dist = format!("{:.3}", distance * MEAN_EARTH_RADIUS);
     let match_index = format!("{}", datum.1);
-    // let match_id = convert_dbase_field_opt(meta.get("id"));
 
     // Make the base fields present in all output
     let base_fields = [

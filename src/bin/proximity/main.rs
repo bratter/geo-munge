@@ -1,17 +1,14 @@
 mod args;
 
 use clap::Parser;
-use geo::{Point, Rect};
-use quadtree::{ToRadians, MEAN_EARTH_RADIUS};
-use shapefile::Reader;
-use std::path::PathBuf;
+use quadtree::MEAN_EARTH_RADIUS;
 use std::time::Instant;
 
 use crate::args::Args;
 use geo_munge::csv::reader::{build_input_settings, parse_record};
 use geo_munge::csv::writer::{make_csv_writer, write_line, WriteData};
 use geo_munge::error::FiberError;
-use geo_munge::qt::{make_qt_from_path, QtData};
+use geo_munge::qt::{make_bbox, make_qt_from_path, QtData};
 
 // TODO: Refine the API and implementation
 //       - Provide option to have infile as as file not just stdin
@@ -36,57 +33,6 @@ use geo_munge::qt::{make_qt_from_path, QtData};
 // TODO: Can we use Borrow or AsRef in places like HashMap::get to ease ergonomics?
 // TODO: Retrieve on bounds qt needs to be able to retrieve for shapes
 
-/// Build the Bounding Box from provided arguments.
-// TODO: Consider moving this into the make_qt_from_path function, and then avoiding the extra file
-//       handle.
-// TODO: Consider moving this function to a better location, probably near make_qt
-fn make_bbox<'a>(args: &Args, path: &PathBuf) -> Result<Rect, FiberError> {
-    // Get the right bbox points given the argument values
-    let (a, b) = if args.sphere {
-        // Sphere option builds sphere bounds broken at the antimeridian
-        (Point::new(-180.0, -90.0), Point::new(180.0, 90.0))
-    } else if let Some(bbox_str) = &args.bbox {
-        // Parse from the bbox_str
-        let mut pts = bbox_str.split(',').map(|s| {
-            s.parse::<f64>()
-                .map_err(|_| FiberError::Arg("Cannot parse bbox input"))
-        });
-        (
-            Point::new(bbox_next(&mut pts)?, bbox_next(&mut pts)?),
-            Point::new(bbox_next(&mut pts)?, bbox_next(&mut pts)?),
-        )
-    } else {
-        // Default to the bbox available on the input file, matching on the file type
-        match path
-            .extension()
-            .and_then(|e| e.to_str())
-            .ok_or(FiberError::IO("Cannot parse file extension"))?
-        {
-            "shp" => {
-                let shp = Reader::from_path(&args.path).map_err(|_| {
-                    FiberError::IO(
-                        "cannot read shapefile, check path and permissions and try again",
-                    )
-                })?;
-                (shp.header().bbox.min.into(), shp.header().bbox.max.into())
-            }
-            _ => Err(FiberError::IO("Unsupported file type"))?,
-        }
-    };
-
-    let mut rect = Rect::new(a.0, b.0);
-    rect.to_radians_in_place();
-    Ok(rect)
-}
-
-fn bbox_next<'a>(
-    pts: &mut dyn Iterator<Item = Result<f64, FiberError>>,
-) -> Result<f64, FiberError> {
-    pts.next()
-        .ok_or(FiberError::Arg("Unexpected end of bbox input"))
-        .and_then(|x| x)
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let r = args.r.map(|r| r / MEAN_EARTH_RADIUS);
@@ -106,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up the options for constructing the quadtree
     let opts = QtData::new(
         args.bounds,
-        make_bbox(&args, &args.path)?,
+        make_bbox(&args.path, args.sphere, &args.bbox)?,
         args.depth,
         args.children,
     );

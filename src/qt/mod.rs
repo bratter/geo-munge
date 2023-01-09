@@ -1,14 +1,17 @@
 pub mod datum;
+mod geojson;
 mod shapefile;
 
 use std::path::PathBuf;
 
+use ::shapefile::Reader;
 use geo::{Point, Rect};
 use quadtree::*;
 
 use crate::error::FiberError;
 use datum::*;
 
+use self::geojson::geojson_build;
 use self::shapefile::shp_build;
 
 pub struct QtData {
@@ -153,6 +156,7 @@ pub fn make_qt_from_path<'a>(
         .ok_or(FiberError::IO("Cannot parse file extension"))?
     {
         "shp" => shp_build(path, opts),
+        "json" => geojson_build(path, opts),
         _ => Err(FiberError::IO("Unsupported file type")),
     }
 }
@@ -165,4 +169,58 @@ pub fn make_dyn_qt(opts: &QtData) -> Box<dyn Searchable<IndexedDatum<Geometry<f6
     } else {
         Box::new(PointQuadTree::new(bounds, depth, mc))
     }
+}
+
+/// Build the Bounding Box from provided arguments.
+// TODO: Consider moving this into the make_qt_from_path function, and then avoiding the extra file
+//       handle.
+pub fn make_bbox<'a>(
+    path: &PathBuf,
+    sphere: bool,
+    bbox: &Option<String>,
+) -> Result<Rect, FiberError> {
+    // Get the right bbox points given the argument values
+    let (a, b) = if sphere {
+        // Sphere option builds sphere bounds broken at the antimeridian
+        (Point::new(-180.0, -90.0), Point::new(180.0, 90.0))
+    } else if let Some(bbox_str) = &bbox {
+        // Parse from the bbox_str
+        let mut pts = bbox_str.split(',').map(|s| {
+            s.parse::<f64>()
+                .map_err(|_| FiberError::Arg("Cannot parse bbox input"))
+        });
+        (
+            Point::new(bbox_next(&mut pts)?, bbox_next(&mut pts)?),
+            Point::new(bbox_next(&mut pts)?, bbox_next(&mut pts)?),
+        )
+    } else {
+        // Default to the bbox available on the input file, matching on the file type
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .ok_or(FiberError::IO("Cannot parse file extension"))?
+        {
+            "shp" => {
+                let shp = Reader::from_path(&path).map_err(|_| {
+                    FiberError::IO(
+                        "cannot read shapefile, check path and permissions and try again",
+                    )
+                })?;
+                (shp.header().bbox.min.into(), shp.header().bbox.max.into())
+            }
+            _ => Err(FiberError::IO("Unsupported file type"))?,
+        }
+    };
+
+    let mut rect = Rect::new(a.0, b.0);
+    rect.to_radians_in_place();
+    Ok(rect)
+}
+
+fn bbox_next<'a>(
+    pts: &mut dyn Iterator<Item = Result<f64, FiberError>>,
+) -> Result<f64, FiberError> {
+    pts.next()
+        .ok_or(FiberError::Arg("Unexpected end of bbox input"))
+        .and_then(|x| x)
 }
