@@ -1,7 +1,6 @@
 use std::iter::once;
 use std::path::PathBuf;
 
-use quadtree::Geometry;
 use shapefile::{dbase::Record, Reader, Shape};
 
 use crate::shp::convert_shapes;
@@ -12,7 +11,7 @@ use super::{
 };
 
 pub struct ShpWithMeta {
-    qt: Box<dyn Searchable<IndexedDatum<Geometry<f64>>>>,
+    qt: Box<dyn Searchable<IndexedDatum>>,
 
     records: Vec<Record>,
 }
@@ -22,12 +21,15 @@ impl ShpWithMeta {
     /// fields list. Used in both single result and knn form.
     fn make_search_result<'a>(
         &'a self,
-        found: (&'a IndexedDatum<Geometry<f64>>, f64),
+        found: (&'a IndexedDatum, f64),
         fields: &'a Option<Vec<String>>,
     ) -> SearchResult {
         let (datum, distance) = found;
-        let record = self.records.get(datum.1).unwrap();
+        let record = self.records.get(datum.index).unwrap();
         let id_meta = once(String::from("id"));
+        // Inject the 'id' key into the start of the iterator every time, it is looked up by key
+        // along with thte rest of the fields
+        // TODO: Is this right? should the map be outside the chain call?
         let meta: Box<dyn Iterator<Item = String>> = match fields.as_ref() {
             Some(fields) => Box::new(
                 id_meta.chain(
@@ -105,6 +107,8 @@ pub fn shp_build<'a>(
         }
     };
 
+    // TODO: Convert this to inserting the meta record with the datum and generalize from the qt
+    // type
     let mut qt = make_dyn_qt(&opts);
     for shp in shapefile
         .iter_shapes_and_records()
@@ -112,20 +116,8 @@ pub fn shp_build<'a>(
         .flat_map(convert_shapes)
     {
         if let Ok((shape, i)) = shp {
-            if opts.is_bounds {
-                if qt.insert(IndexedDatum(shape, i)).is_err() {
-                    eprintln!("Cannot insert datum at index {i} into qt")
-                }
-            } else {
-                if matches!(shape, Geometry::Point::<f64>(_)) {
-                    if qt.insert(IndexedDatum(shape, i)).is_err() {
-                        eprintln!("Cannot insert datum at index {i} into qt")
-                    }
-                } else {
-                    eprintln!(
-                        "Invalid shape at index {i}. Can only add Points unless the bounds option is provided"
-                    )
-                }
+            if qt.insert(IndexedDatum::without_meta(shape, i)).is_err() {
+                eprintln!("Cannot insert datum at index {i} into qt")
             }
         } else {
             eprintln!("Could not read shape")

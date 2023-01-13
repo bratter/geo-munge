@@ -21,11 +21,11 @@ use geo_munge::qt::{make_bbox, make_qt_from_path, QtData};
 //         we are inserting or subdividing - this can block, but the rest of the qt is fine
 //         can use an atomic usize for size, just need to work out how to get &mut from & when inserting
 //         Perhaps something like fine grained locking or lock-free reads would help?
-//       - Should meta fields support not scannining all the rows to get the fields,
+//       - Should meta fields support not scanning all the rows to get the fields,
 //         and a number of rows different from the n when pulling data?
 //       - Support Euclidean distances
 //       - Investigate a better method of making a polymorphic quadtree than
-//         making a new trait
+//         making a new trait, perhaps something with an enum
 //       - Support different test file formats and non-point test shapes
 //       - Make the quadtree a service that can be sent points to test
 

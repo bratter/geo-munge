@@ -73,7 +73,7 @@ pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteD
 
     // Convert the distance to meters and trucate at mm
     let dist = format!("{:.3}", distance * MEAN_EARTH_RADIUS);
-    let match_index = format!("{}", datum.1);
+    let match_index = format!("{}", datum.index);
 
     // Make the base fields present in all output
     let base_fields = [
