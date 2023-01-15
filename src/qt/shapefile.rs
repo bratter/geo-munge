@@ -26,19 +26,16 @@ impl ShpWithMeta {
     ) -> SearchResult {
         let (datum, distance) = found;
         let record = self.records.get(datum.index).unwrap();
-        let id_meta = once(String::from("id"));
+        let id_meta = once("id");
         // Inject the 'id' key into the start of the iterator every time, it is looked up by key
         // along with thte rest of the fields
-        // TODO: Is this right? should the map be outside the chain call?
         let meta: Box<dyn Iterator<Item = String>> = match fields.as_ref() {
             Some(fields) => Box::new(
-                id_meta.chain(
-                    fields
-                        .iter()
-                        .map(|f| convert_dbase_field_opt(record.get(f))),
-                ),
+                id_meta
+                    .chain(fields.iter().map(|f| f.as_str()))
+                    .map(|f| convert_dbase_field_opt(record.get(f))),
             ),
-            None => Box::new(id_meta),
+            None => Box::new(id_meta.map(|f| convert_dbase_field_opt(record.get(f)))),
         };
 
         SearchResult {
