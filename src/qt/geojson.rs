@@ -1,5 +1,6 @@
+use std::fs::read_to_string;
+use std::iter::{empty, once};
 use std::path::PathBuf;
-use std::{fs::read_to_string, iter::once};
 
 use geojson::feature::Id;
 use geojson::{Feature, GeoJson};
@@ -84,16 +85,18 @@ impl JsonWithMeta {
         // We should be able to eliminate the clone by not using the FeatureOrGeom enum and just
         // matching on the geojson type in here - its not as nice an API, but it does avoid the
         // cloning madness.
-        let id = once(feature.id().unwrap_or_default());
         let meta: Box<dyn Iterator<Item = String>> =
             match (fields.as_ref(), feature.properties().clone()) {
-                (Some(fields), Some(props)) => {
-                    Box::new(id.chain(fields.iter().map(move |field| {
+                (Some(fields), Some(props)) => Box::new(fields.iter().map(move |field| {
+                    // Special handling of id as it is a named property
+                    if field == "id" {
+                        feature.id().unwrap_or_default()
+                    } else {
                         props.get(field).map(map_json_value).unwrap_or_default()
-                    })))
-                }
-                // TODO: Need to echo empty fields when there is no properties key
-                _ => Box::new(id),
+                    }
+                })),
+                (Some(fields), None) => Box::new(fields.iter().map(|_| String::default())),
+                _ => Box::new(empty()),
             };
 
         // TODO: Do we have to make this such that we have an iterator that stores the state? Would

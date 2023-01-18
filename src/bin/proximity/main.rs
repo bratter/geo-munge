@@ -11,6 +11,8 @@ use geo_munge::error::FiberError;
 use geo_munge::qt::{make_bbox, make_qt_from_path, QtData};
 
 // TODO: Refine the API and implementation
+//       - If possible, enable polygon-point distances in quadtree
+//       - Reject loading shape types that will cause an error in retrieval
 //       - Reorganize, including fixing geojson and shp metadata
 //       - Investigate a better method of making a polymorphic quadtree than
 //         making a new trait, perhaps something with an enum

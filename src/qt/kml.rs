@@ -61,8 +61,6 @@ impl SearchableWithMeta for KmlWithMeta {
         fields: &'a Option<Vec<String>>,
     ) -> Result<super::SearchResult<'a>, quadtree::Error> {
         let item = self.qt.find(cmp, r)?;
-        let res = self.make_search_result(item, fields);
-        eprintln!("{:?}", res.geom);
         Ok(self.make_search_result(item, fields))
     }
 
@@ -73,7 +71,6 @@ impl SearchableWithMeta for KmlWithMeta {
         r: Option<f64>,
         fields: &'a Option<Vec<String>>,
     ) -> Result<Vec<SearchResult<'a>>, quadtree::Error> {
-        eprintln!("{:?}", self.qt.knn(cmp, k, r));
         Ok(self
             .qt
             .knn(cmp, k, r)?
@@ -105,7 +102,6 @@ pub fn kml_build(path: PathBuf, opts: QtData) -> Result<Box<dyn SearchableWithMe
 
 /// Make output strings from a field name and the Kml item.
 fn extract_field_value(field: &String, kml: &KmlItem) -> String {
-    eprintln!("{:?}", kml);
     match kml {
         KmlItem::Point(p) => make_string(&p.attrs, field),
         KmlItem::Polygon(p) => make_string(&p.attrs, field),

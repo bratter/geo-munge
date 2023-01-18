@@ -20,14 +20,7 @@ pub fn make_csv_writer<'a>(
         .from_writer(std::io::stdout());
 
     // Base fields to include in the output
-    let base_fields = [
-        id_label,
-        "lng",
-        "lat",
-        "distance",
-        "match_index",
-        "match_id",
-    ];
+    let base_fields = [id_label, "lng", "lat", "distance", "match_index"];
 
     // Set up the slice of additional fields to pull from the metdata
     // TODO: Can this be simplified? It seems like a lot of work
@@ -76,8 +69,6 @@ pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteD
     let dist = format!("{:.3}", distance * MEAN_EARTH_RADIUS);
     let match_index = format!("{}", index);
 
-    // TODO: Add the actual match_id to the search result struct for all
-    let match_id = "match_id".to_string();
     // Make the base fields present in all output
     let base_fields = [
         id,
@@ -85,13 +76,9 @@ pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteD
         data.record.get(settings.lat_index).unwrap().to_string(),
         dist,
         match_index,
-        match_id,
     ];
 
-    let res = w.write_record(base_fields.into_iter().chain(meta));
-    if res.is_err() {
-        //if w.write_record(base_fields.into_iter().chain(meta)).is_err() {
-        eprintln!("{:?}", res);
+    if w.write_record(base_fields.into_iter().chain(meta)).is_err() {
         eprintln!(
             "Failed to write output line for record at index {}.",
             data.index
