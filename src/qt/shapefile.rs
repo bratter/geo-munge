@@ -1,4 +1,4 @@
-use std::iter::once;
+use std::iter::{empty, once};
 use std::path::PathBuf;
 
 use shapefile::{dbase::Record, Reader, Shape};
@@ -27,19 +27,26 @@ impl ShpWithMeta {
         let (datum, distance) = found;
         let record = self.records.get(datum.index).unwrap();
         let id_meta = once("id");
+        // TODO: Re add this directly into the search result
         // Inject the 'id' key into the start of the iterator every time, it is looked up by key
         // along with thte rest of the fields
         let meta: Box<dyn Iterator<Item = String>> = match fields.as_ref() {
             Some(fields) => Box::new(
-                id_meta
-                    .chain(fields.iter().map(|f| f.as_str()))
+                //id_meta
+                //    .chain(fields.iter().map(|f| f.as_str()))
+                //    .map(|f| convert_dbase_field_opt(record.get(f))),
+                fields
+                    .iter()
+                    .map(|f| f.as_str())
                     .map(|f| convert_dbase_field_opt(record.get(f))),
             ),
-            None => Box::new(id_meta.map(|f| convert_dbase_field_opt(record.get(f)))),
+            None => Box::new(empty()),
+            //None => Box::new(id_meta.map(|f| convert_dbase_field_opt(record.get(f)))),
         };
 
         SearchResult {
-            datum,
+            geom: &datum.geom,
+            index: datum.index,
             distance,
             meta,
         }

@@ -66,15 +66,18 @@ pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteD
     };
 
     let SearchResult {
-        datum,
+        geom: _,
+        index,
         meta,
         distance,
     } = data.result;
 
     // Convert the distance to meters and trucate at mm
     let dist = format!("{:.3}", distance * MEAN_EARTH_RADIUS);
-    let match_index = format!("{}", datum.index);
+    let match_index = format!("{}", index);
 
+    // TODO: Add the actual match_id to the search result struct for all
+    let match_id = "match_id".to_string();
     // Make the base fields present in all output
     let base_fields = [
         id,
@@ -82,9 +85,13 @@ pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteD
         data.record.get(settings.lat_index).unwrap().to_string(),
         dist,
         match_index,
+        match_id,
     ];
 
-    if w.write_record(base_fields.into_iter().chain(meta)).is_err() {
+    let res = w.write_record(base_fields.into_iter().chain(meta));
+    if res.is_err() {
+        //if w.write_record(base_fields.into_iter().chain(meta)).is_err() {
+        eprintln!("{:?}", res);
         eprintln!(
             "Failed to write output line for record at index {}.",
             data.index

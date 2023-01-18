@@ -1,9 +1,11 @@
 pub mod datum;
 mod geojson;
+mod kml;
 mod shapefile;
 
 use std::path::PathBuf;
 
+use ::geojson::GeoJson;
 use ::shapefile::Reader;
 use geo::{Point, Rect};
 use quadtree::*;
@@ -11,7 +13,8 @@ use quadtree::*;
 use crate::error::FiberError;
 use datum::*;
 
-use self::geojson::geojson_build;
+use self::geojson::{geojson_build, read_geojson};
+use self::kml::kml_build;
 use self::shapefile::shp_build;
 
 pub struct QtData {
@@ -107,13 +110,14 @@ impl<M> Searchable<IndexedDatum<M>> for BoundsQuadTree<IndexedDatum<M>, f64> {
     }
 }
 
-/// Result type including the original datum, extracted metdata, and the distance.
+/// Result type including the stored geometry, the matched index from the datum, the distance for
+/// the match, and the extracted + harmonized metadata that abstracts from any sort of metadata
+/// generic, original datum, extracted metdata, and the distance.
 pub struct SearchResult<'a> {
-    pub datum: &'a IndexedDatum,
-    // TODO: This type will need to be fixed
-    //       Can it be &'a dyn instead of box?
-    pub meta: Box<dyn Iterator<Item = String> + 'a>,
+    pub geom: &'a Geometry<f64>,
+    pub index: usize,
     pub distance: f64,
+    pub meta: Box<dyn Iterator<Item = String> + 'a>,
 }
 
 /// Trait representing the allowable file types for searching and extracting metadata. Used as each
@@ -122,6 +126,8 @@ pub struct SearchResult<'a> {
 ///  In the meta key of each implementation, implementors should automatically insert the native
 ///  `id` key to ensure that the match id is always transfered to the results. The location of this
 ///  key is necessarily implementation specific.
+// TODO: Can we get a qt and make_search_result private trait and make this work with default
+// implementations?
 pub trait SearchableWithMeta: std::fmt::Display {
     fn size(&self) -> usize;
 
@@ -153,6 +159,7 @@ pub fn make_qt_from_path<'a>(
     {
         "shp" => shp_build(path, opts),
         "json" => geojson_build(path, opts),
+        "kml" | "kmz" => kml_build(path, opts),
         _ => Err(FiberError::IO("Unsupported file type")),
     }
 }
@@ -172,11 +179,8 @@ pub fn make_dyn_qt<'a, M: 'a>(opts: &QtData) -> Box<dyn Searchable<IndexedDatum<
 /// Build the Bounding Box from provided arguments.
 // TODO: Consider moving this into the make_qt_from_path function, and then avoiding the extra file
 //       handle.
-pub fn make_bbox<'a>(
-    path: &PathBuf,
-    sphere: bool,
-    bbox: &Option<String>,
-) -> Result<Rect, FiberError> {
+// TODO: Also move the file specific methods to their own lib files
+pub fn make_bbox(path: &PathBuf, sphere: bool, bbox: &Option<String>) -> Result<Rect, FiberError> {
     // Get the right bbox points given the argument values
     let (a, b) = if sphere {
         // Sphere option builds sphere bounds broken at the antimeridian
@@ -205,6 +209,27 @@ pub fn make_bbox<'a>(
                     )
                 })?;
                 (shp.header().bbox.min.into(), shp.header().bbox.max.into())
+            }
+            "json" => {
+                let json = read_geojson(path)?;
+                let bbox = match json {
+                    GeoJson::Feature(f) => f.bbox,
+                    GeoJson::Geometry(g) => g.bbox,
+                    GeoJson::FeatureCollection(fc) => fc.bbox,
+                };
+                let bbox = bbox.ok_or(FiberError::Arg("No bbox present on GeoJson"))?;
+
+                // Ensure that the bounding box has length 4 to guarantee we can build a proper
+                // bouding box
+                if bbox.len() != 2 {
+                    return Err(FiberError::Arg("Invalid bounding box present in GeoJson"));
+                }
+
+                (Point::new(bbox[0], bbox[1]), Point::new(bbox[2], bbox[3]))
+            }
+            "kml" | "kmz" => {
+                // Appears to be no overall bbox embedded in kml files, so default to sphere
+                (Point::new(-180.0, -90.0), Point::new(180.0, 90.0))
             }
             _ => Err(FiberError::IO("Unsupported file type"))?,
         }

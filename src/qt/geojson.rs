@@ -92,6 +92,7 @@ impl JsonWithMeta {
                         props.get(field).map(map_json_value).unwrap_or_default()
                     })))
                 }
+                // TODO: Need to echo empty fields when there is no properties key
                 _ => Box::new(id),
             };
 
@@ -100,7 +101,8 @@ impl JsonWithMeta {
         // ownership of the feature so that it can be returned safely, but probably becomes moot if
         // we do the unsafe thing
         SearchResult {
-            datum,
+            geom: &datum.geom,
+            index: datum.index,
             distance,
             meta,
         }
@@ -214,6 +216,14 @@ fn map_feature(
     }
 }
 
+// TODO: Move this to a library location
+pub fn read_geojson(path: &PathBuf) -> Result<GeoJson, FiberError> {
+    read_to_string(&path)
+        .map_err(|_| FiberError::IO("Cannot read GeoJson file"))?
+        .parse::<GeoJson>()
+        .map_err(|_| FiberError::IO("Cannot parse GeoJson file"))
+}
+
 // TODO: This conception relies on indexing into a GeoJson FeatureCollection to pull metadata, this
 // is not an ideal solution - it would be better to maintain a reference to tge original data and
 // use that, but because of lifetime issues, it seems this won't be possible without a raw pointer
@@ -221,10 +231,7 @@ pub fn geojson_build<'a>(
     path: PathBuf,
     opts: QtData,
 ) -> Result<Box<dyn SearchableWithMeta>, FiberError> {
-    let geojson = read_to_string(&path)
-        .map_err(|_| FiberError::IO("Cannot read GeoJson file"))?
-        .parse::<GeoJson>()
-        .map_err(|_| FiberError::IO("Cannot parse GeoJson file"))?;
+    let geojson = read_geojson(&path)?;
 
     // Create an iterator that runs through and flattens all geometries in the GeoJson, preparing
     // them for adding to the qt

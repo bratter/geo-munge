@@ -11,7 +11,10 @@ use geo_munge::error::FiberError;
 use geo_munge::qt::{make_bbox, make_qt_from_path, QtData};
 
 // TODO: Refine the API and implementation
-//       - Provide option to have infile as as file not just stdin
+//       - Reorganize, including fixing geojson and shp metadata
+//       - Investigate a better method of making a polymorphic quadtree than
+//         making a new trait, perhaps something with an enum
+//       - Improve error naming and handling
 //       - Capture and respond to system interupts (e.g. ctrl-c)
 //       - Expand input acceptance to formats other than shp (kml, geojson/ndjson, csv points)
 //         Do as a dynamic dispatch on a filetype with trait covering the required analysis
@@ -24,10 +27,9 @@ use geo_munge::qt::{make_bbox, make_qt_from_path, QtData};
 //       - Should meta fields support not scanning all the rows to get the fields,
 //         and a number of rows different from the n when pulling data?
 //       - Support Euclidean distances
-//       - Investigate a better method of making a polymorphic quadtree than
-//         making a new trait, perhaps something with an enum
 //       - Support different test file formats and non-point test shapes
 //       - Make the quadtree a service that can be sent points to test
+//       - Enable additional input acceptance types (ndjson, csv points)
 
 // TODO: Sphere and Eucl functions from quadtree should take references?
 // TODO: Can we use Borrow or AsRef in places like HashMap::get to ease ergonomics?
