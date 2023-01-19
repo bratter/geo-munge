@@ -13,9 +13,9 @@ use quadtree::*;
 use crate::error::FiberError;
 use datum::*;
 
-use self::geojson::{geojson_build, read_geojson};
-use self::kml::kml_build;
-use self::shapefile::shp_build;
+use self::geojson::{build_geojson, read_geojson};
+use self::kml::build_kml;
+use self::shapefile::build_shp;
 
 pub struct QtData {
     pub is_bounds: bool,
@@ -40,76 +40,6 @@ impl QtData {
     }
 }
 
-// All quadtrees should implement Display
-pub trait Searchable<D>: std::fmt::Display
-where
-    D: Datum<f64>,
-{
-    fn size(&self) -> usize;
-
-    fn insert(&mut self, datum: D) -> Result<(), FiberError>;
-
-    fn find(&self, cmp: &Point, r: Option<f64>) -> Result<(&D, f64), Error>;
-
-    fn knn(&self, cmp: &Point, k: usize, r: Option<f64>) -> Result<Vec<(&D, f64)>, Error>;
-}
-
-impl<M> Searchable<IndexedDatum<M>> for PointQuadTree<IndexedDatum<M>, f64> {
-    fn size(&self) -> usize {
-        QuadTree::size(self)
-    }
-
-    fn insert(&mut self, datum: IndexedDatum<M>) -> Result<(), FiberError> {
-        if !matches!(datum.geom, Geometry::Point::<f64>(_)) {
-            return Err(FiberError::Arg(
-                "Invalid shape. Can only insert Points into a Point QuadTree.",
-            ));
-        }
-
-        <PointQuadTree<IndexedDatum<M>, f64> as QuadTree<IndexedDatum<M>, f64>>::insert(self, datum)
-            .map_err(|_| FiberError::Arg("Cannot add item to QuadTree."))
-    }
-
-    fn find(&self, cmp: &Point, r: Option<f64>) -> Result<(&IndexedDatum<M>, f64), Error> {
-        QuadTreeSearch::find_r(self, &sphere(*cmp), r.unwrap_or(f64::INFINITY))
-    }
-
-    fn knn(
-        &self,
-        cmp: &Point,
-        k: usize,
-        r: Option<f64>,
-    ) -> Result<Vec<(&IndexedDatum<M>, f64)>, Error> {
-        QuadTreeSearch::knn_r(self, &sphere(*cmp), k, r.unwrap_or(f64::INFINITY))
-    }
-}
-
-impl<M> Searchable<IndexedDatum<M>> for BoundsQuadTree<IndexedDatum<M>, f64> {
-    fn size(&self) -> usize {
-        QuadTree::size(self)
-    }
-
-    fn insert(&mut self, datum: IndexedDatum<M>) -> Result<(), FiberError> {
-        <BoundsQuadTree<IndexedDatum<M>, f64> as QuadTree<IndexedDatum<M>, f64>>::insert(
-            self, datum,
-        )
-        .map_err(|_| FiberError::Arg("Cannot add item to QuadTree."))
-    }
-
-    fn find(&self, cmp: &Point, r: Option<f64>) -> Result<(&IndexedDatum<M>, f64), Error> {
-        QuadTreeSearch::find_r(self, &sphere(*cmp), r.unwrap_or(f64::INFINITY))
-    }
-
-    fn knn(
-        &self,
-        cmp: &Point,
-        k: usize,
-        r: Option<f64>,
-    ) -> Result<Vec<(&IndexedDatum<M>, f64)>, Error> {
-        QuadTreeSearch::knn_r(self, &sphere(*cmp), k, r.unwrap_or(f64::INFINITY))
-    }
-}
-
 /// Result type including the stored geometry, the matched index from the datum, the distance for
 /// the match, and the extracted + harmonized metadata that abstracts from any sort of metadata
 /// generic, original datum, extracted metdata, and the distance.
@@ -120,59 +50,123 @@ pub struct SearchResult<'a> {
     pub meta: Box<dyn Iterator<Item = String> + 'a>,
 }
 
-/// Trait representing the allowable file types for searching and extracting metadata. Used as each
-/// file type requires a different way of managing the meta.
-///
-///  In the meta key of each implementation, implementors should automatically insert the native
-///  `id` key to ensure that the match id is always transfered to the results. The location of this
-///  key is necessarily implementation specific.
-// TODO: Can we get a qt and make_search_result private trait and make this work with default
-// implementations?
-pub trait SearchableWithMeta: std::fmt::Display {
-    fn size(&self) -> usize;
-
-    fn find<'a>(
-        &'a self,
-        cmp: &Point,
-        r: Option<f64>,
-        fields: &'a Option<Vec<String>>,
-    ) -> Result<SearchResult<'a>, Error>;
-
-    fn knn<'a>(
-        &'a self,
-        cmp: &Point,
-        k: usize,
-        r: Option<f64>,
-        fields: &'a Option<Vec<String>>,
-    ) -> Result<Vec<SearchResult<'a>>, Error>;
-}
-
 /// Create the correct quadtree wrapper based on the input options and provided filetype.
-pub fn make_qt_from_path<'a>(
-    path: PathBuf,
-    opts: QtData,
-) -> Result<Box<dyn SearchableWithMeta>, FiberError> {
+pub fn make_qt(path: PathBuf, opts: QtData) -> Result<VarQt, FiberError> {
     match path
         .extension()
         .and_then(|e| e.to_str())
         .ok_or(FiberError::IO("Cannot parse file extension"))?
     {
-        "shp" => shp_build(path, opts),
-        "json" => geojson_build(path, opts),
-        "kml" | "kmz" => kml_build(path, opts),
+        "shp" => build_shp(path, opts),
+        "json" => build_geojson(path, opts),
+        "kml" | "kmz" => build_kml(path, opts),
         _ => Err(FiberError::IO("Unsupported file type")),
     }
 }
 
-// TODO: Is there some way around having the static here?
-//       Adding the 'a seems to do it, but does it create other side effects?
-pub fn make_dyn_qt<'a, M: 'a>(opts: &QtData) -> Box<dyn Searchable<IndexedDatum<M>> + 'a> {
-    let (bounds, depth, mc) = (opts.bounds, opts.depth, opts.max_children);
+// TODO: This needs to be renamed
+pub enum VarQt {
+    Point(PointQuadTree<VarDatum, f64>),
+    Bounds(BoundsQuadTree<VarDatum, f64>),
+}
 
-    if opts.is_bounds {
-        Box::new(BoundsQuadTree::new(bounds, depth, mc))
-    } else {
-        Box::new(PointQuadTree::new(bounds, depth, mc))
+// TODO: Any chance of implementing QT and QTSearch for this, or is the type param insurmountable?
+impl VarQt {
+    pub fn new(opts: QtData) -> Self {
+        let QtData {
+            is_bounds,
+            bounds,
+            depth,
+            max_children,
+        } = opts;
+
+        if is_bounds {
+            Self::Bounds(BoundsQuadTree::new(bounds, depth, max_children))
+        } else {
+            Self::Point(PointQuadTree::new(bounds, depth, max_children))
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Bounds(b) => b.size(),
+            Self::Point(p) => p.size(),
+        }
+    }
+
+    pub fn insert(&mut self, datum: VarDatum) -> Result<(), Error> {
+        match self {
+            Self::Bounds(b) => b.insert(datum),
+            Self::Point(p) => {
+                if matches!(datum.geometry(), Geometry::Point::<f64>(_)) {
+                    p.insert(datum)
+                } else {
+                    // TODO: Fix the Error here - should say that only points can be added to a
+                    // point quadtree
+                    Err(Error::OutOfBounds)
+                }
+            }
+        }
+    }
+
+    // TODO: Consider not collecting here and having a wrapper enum or a Box dyn
+    pub fn retrieve(&self, datum: &VarDatum) -> Vec<&VarDatum> {
+        match self {
+            Self::Bounds(b) => b.retrieve(datum).collect(),
+            Self::Point(p) => p.retrieve(datum).collect(),
+        }
+    }
+
+    // TODO: Look at the sphere wrapper in QuadTree - it needs to be better
+    pub fn find<'a>(
+        &'a self,
+        cmp: &Point,
+        r: Option<f64>,
+        fields: &'a Option<Vec<String>>,
+    ) -> Result<SearchResult<'a>, Error> {
+        let (datum, distance) = match self {
+            Self::Bounds(b) => b.find_r(&sphere(*cmp), r.unwrap_or(f64::INFINITY)),
+            Self::Point(p) => p.find_r(&sphere(*cmp), r.unwrap_or(f64::INFINITY)),
+        }?;
+
+        Ok(SearchResult {
+            geom: &datum.geom(),
+            index: datum.index(),
+            distance,
+            meta: datum.meta_iter(fields),
+        })
+    }
+
+    pub fn knn<'a>(
+        &'a self,
+        cmp: &Point,
+        k: usize,
+        r: Option<f64>,
+        fields: &'a Option<Vec<String>>,
+    ) -> Result<Vec<SearchResult<'a>>, Error> {
+        let found = match self {
+            Self::Bounds(b) => b.knn_r(&sphere(*cmp), k, r.unwrap_or(f64::INFINITY)),
+            Self::Point(p) => p.knn_r(&sphere(*cmp), k, r.unwrap_or(f64::INFINITY)),
+        }?;
+
+        Ok(found
+            .into_iter()
+            .map(|(datum, distance)| SearchResult {
+                geom: &datum.geom(),
+                index: datum.index(),
+                distance,
+                meta: datum.meta_iter(fields),
+            })
+            .collect())
+    }
+}
+
+impl std::fmt::Display for VarQt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VarQt::Bounds(b) => b.fmt(f),
+            VarQt::Point(p) => p.fmt(f),
+        }
     }
 }
 
@@ -180,6 +174,7 @@ pub fn make_dyn_qt<'a, M: 'a>(opts: &QtData) -> Box<dyn Searchable<IndexedDatum<
 // TODO: Consider moving this into the make_qt_from_path function, and then avoiding the extra file
 //       handle.
 // TODO: Also move the file specific methods to their own lib files
+//       The basic struct for each type of file can have a read and a bbox method
 pub fn make_bbox(path: &PathBuf, sphere: bool, bbox: &Option<String>) -> Result<Rect, FiberError> {
     // Get the right bbox points given the argument values
     let (a, b) = if sphere {

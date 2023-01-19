@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    iter::{empty, once, Once},
+    iter::{once, Once},
     path::PathBuf,
 };
 
@@ -12,96 +12,12 @@ use crate::{
 };
 
 use super::{
-    datum::IndexedDatum, make_dyn_qt, QtData, SearchResult, Searchable, SearchableWithMeta,
+    datum::{VarDatum, VarMeta},
+    QtData, VarQt,
 };
 
-pub struct KmlWithMeta {
-    qt: Box<dyn Searchable<IndexedDatum<KmlItem>>>,
-}
-
-impl KmlWithMeta {
-    fn make_search_result<'a>(
-        &'a self,
-        found: (&'a IndexedDatum<KmlItem>, f64),
-        fields: &'a Option<Vec<String>>,
-    ) -> SearchResult {
-        let (datum, distance) = found;
-        let meta: Box<dyn Iterator<Item = String>> = match (fields, &datum.meta) {
-            (Some(fields), Some(kml)) => {
-                Box::new(fields.iter().map(move |f| extract_field_value(f, &kml)))
-            }
-            (Some(fields), None) => Box::new(fields.iter().map(|_| String::default())),
-            _ => Box::new(empty()),
-        };
-
-        SearchResult {
-            geom: &datum.geom,
-            index: datum.index,
-            distance,
-            meta,
-        }
-    }
-}
-
-impl std::fmt::Display for KmlWithMeta {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.qt.fmt(f)
-    }
-}
-
-impl SearchableWithMeta for KmlWithMeta {
-    fn size(&self) -> usize {
-        self.qt.size()
-    }
-
-    fn find<'a>(
-        &'a self,
-        cmp: &geo::Point,
-        r: Option<f64>,
-        fields: &'a Option<Vec<String>>,
-    ) -> Result<super::SearchResult<'a>, quadtree::Error> {
-        let item = self.qt.find(cmp, r)?;
-        Ok(self.make_search_result(item, fields))
-    }
-
-    fn knn<'a>(
-        &'a self,
-        cmp: &geo::Point,
-        k: usize,
-        r: Option<f64>,
-        fields: &'a Option<Vec<String>>,
-    ) -> Result<Vec<SearchResult<'a>>, quadtree::Error> {
-        Ok(self
-            .qt
-            .knn(cmp, k, r)?
-            .into_iter()
-            .map(|item| self.make_search_result(item, fields))
-            .collect())
-    }
-}
-
-pub fn kml_build(path: PathBuf, opts: QtData) -> Result<Box<dyn SearchableWithMeta>, FiberError> {
-    let kml = Kml::from_path(&path)?;
-    let mut qt = make_dyn_qt(&opts);
-
-    // Get the set of kml items that we want to attempt to load into the qt
-    // The iterator here only emits a subset of Kml types
-    for datum in kml.into_iter().enumerate().flat_map(map_kml_item) {
-        if let Ok(datum) = datum {
-            let i = datum.index;
-            if qt.insert(datum).is_err() {
-                eprintln!("Cannot insert datum at index {i} into qt");
-            }
-        } else {
-            eprintln!("Could not read shape");
-        }
-    }
-
-    Ok(Box::new(KmlWithMeta { qt }))
-}
-
 /// Make output strings from a field name and the Kml item.
-fn extract_field_value(field: &String, kml: &KmlItem) -> String {
+pub fn kml_field_val(kml: &KmlItem, field: &String) -> String {
     match kml {
         KmlItem::Point(p) => make_string(&p.attrs, field),
         KmlItem::Polygon(p) => make_string(&p.attrs, field),
@@ -125,13 +41,31 @@ fn make_string(attrs: &HashMap<String, String>, field: &String) -> String {
     attrs.get(field).map(|s| s.to_string()).unwrap_or_default()
 }
 
+/// Build the quadtree for kml-based input data
+pub fn build_kml(path: PathBuf, opts: QtData) -> Result<VarQt, FiberError> {
+    let kml = Kml::from_path(&path)?;
+    let mut qt = VarQt::new(opts);
+
+    for (index, datum) in kml.into_iter().enumerate().flat_map(map_kml_item) {
+        if let Ok(datum) = datum {
+            if qt.insert(datum).is_err() {
+                eprintln!("Cannot insert datum at index {index} into qt");
+            }
+        } else {
+            eprintln!("Could not read shape at index {index}");
+        }
+    }
+
+    Ok(qt)
+}
+
 /// Map from a [`KmlItem`] and its associated index to an iterator of [`IndexedDatum`]. Most items
 /// are wrapped in a single item iterator, but multi-kml types are expanded. This relies on copying
 /// which is both time and space inefficient for large geometries, but this is required in order to
 /// keep both.
 fn map_kml_item(
     (index, item): (usize, KmlItem),
-) -> Box<dyn Iterator<Item = Result<IndexedDatum<KmlItem>, FiberError>>> {
+) -> Box<dyn Iterator<Item = (usize, Result<VarDatum, FiberError>)>> {
     match item {
         KmlItem::Point(ref p) => {
             let mut geo = geo::Point::from(p.clone());
@@ -153,19 +87,16 @@ fn map_kml_item(
             geo.to_radians_in_place();
             bood(Geometry::LineString(geo), item, index)
         }
-        KmlItem::Placemark(p) => Box::new(once(
+        KmlItem::Placemark(p) => Box::new(once((
+            index,
             // TODO: Clone required here to ensure placemark is provided as the meta, but
             // should be eliminated by reworking something
             p.clone()
                 .geometry
                 .ok_or(FiberError::Arg("Placemark does not have any geometry"))
                 .and_then(convert_kml_geom)
-                .map(|(geom, _)| IndexedDatum {
-                    geom,
-                    index,
-                    meta: Some(KmlItem::Placemark(p)),
-                }),
-        )),
+                .map(|(geom, _)| VarDatum::new(geom, VarMeta::Kml(KmlItem::Placemark(p)), index)),
+        ))),
         KmlItem::Location(ref l) => bood(
             Geometry::Point(geo::point! {
                 x: l.latitude,
@@ -175,11 +106,11 @@ fn map_kml_item(
             index,
         ),
         KmlItem::MultiGeometry(mg) => Box::new(mg.geometries.into_iter().map(move |g| {
-            convert_kml_geom(g).map(|(geom, meta)| IndexedDatum {
-                geom,
+            (
                 index,
-                meta: Some(meta),
-            })
+                convert_kml_geom(g)
+                    .map(|(geom, meta)| VarDatum::new(geom, VarMeta::Kml(meta), index)),
+            )
         })),
     }
 }
@@ -190,12 +121,11 @@ fn bood(
     geom: Geometry<f64>,
     meta: KmlItem,
     index: usize,
-) -> Box<Once<Result<IndexedDatum<KmlItem>, FiberError>>> {
-    Box::new(once(Ok(IndexedDatum {
-        geom,
+) -> Box<Once<(usize, Result<VarDatum, FiberError>)>> {
+    Box::new(once((
         index,
-        meta: Some(meta),
-    })))
+        Ok(VarDatum::new(geom, VarMeta::Kml(meta), index)),
+    )))
 }
 
 /// Helper function to convert kml geometries into geo-type geometries when kml geomerties are

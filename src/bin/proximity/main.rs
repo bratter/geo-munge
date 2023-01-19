@@ -8,18 +8,11 @@ use crate::args::Args;
 use geo_munge::csv::reader::{build_input_settings, parse_record};
 use geo_munge::csv::writer::{make_csv_writer, write_line, WriteData};
 use geo_munge::error::FiberError;
-use geo_munge::qt::{make_bbox, make_qt_from_path, QtData};
+use geo_munge::qt::{make_bbox, make_qt, QtData};
 
 // TODO: Refine the API and implementation
-//       - If possible, enable polygon-point distances in quadtree
-//       - Reject loading shape types that will cause an error in retrieval
-//       - Reorganize, including fixing geojson and shp metadata
-//       - Investigate a better method of making a polymorphic quadtree than
-//         making a new trait, perhaps something with an enum
 //       - Improve error naming and handling
 //       - Capture and respond to system interupts (e.g. ctrl-c)
-//       - Expand input acceptance to formats other than shp (kml, geojson/ndjson, csv points)
-//         Do as a dynamic dispatch on a filetype with trait covering the required analysis
 //       - Do some performance testing with perf and flamegraph
 //       - Write concurrent searching, probably with Rayon
 //       - Explore concurrent inserts - should be safe as if we can get an &mut at the node where
@@ -70,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     }
     let start = Instant::now();
-    let qt = make_qt_from_path(args.path, opts)?;
+    let qt = make_qt(args.path, opts)?;
     if args.verbose || args.print {
         eprintln!(
             "Quadtree with {} children built in {} ms",
