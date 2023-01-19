@@ -1,26 +1,18 @@
-use std::fs::read_to_string;
 use std::iter::once;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use geo::Point;
 use geojson::feature::Id;
 use geojson::{Feature, GeoJson};
-use quadtree::*;
 use serde_json::Value;
 
 use crate::error::FiberError;
+use crate::geojson::{convert_geom, read_geojson};
 
-use super::datum::{VarDatum, VarMeta};
+use super::datum::{BaseData, Datum};
 use super::QtData;
-use super::VarQt;
-
-// TODO: Move this to a library location
-pub fn read_geojson(path: &PathBuf) -> Result<GeoJson, FiberError> {
-    read_to_string(&path)
-        .map_err(|_| FiberError::IO("Cannot read GeoJson file"))?
-        .parse::<GeoJson>()
-        .map_err(|_| FiberError::IO("Cannot parse GeoJson file"))
-}
+use super::Quadtree;
 
 pub fn json_field_val(feature: &Feature, field: &String) -> String {
     // Special handling of id as it is a named property
@@ -31,28 +23,23 @@ pub fn json_field_val(feature: &Feature, field: &String) -> String {
             None => String::default(),
         }
     } else if let Some(props) = &feature.properties {
-        props.get(field).map(map_json_value).unwrap_or_default()
+        match props.get(field) {
+            Some(Value::Null) => String::default(),
+            Some(Value::Number(n)) => n.to_string(),
+            Some(Value::String(s)) => s.to_owned(),
+            Some(Value::Bool(b)) => b.to_string(),
+            Some(Value::Array(_)) => String::default(),
+            Some(Value::Object(_)) => String::default(),
+            None => String::default(),
+        }
     } else {
         String::default()
     }
 }
 
-// TODO: Should we deal with arrays and objects differently?
-// TODO: Move to lib
-fn map_json_value(val: &Value) -> String {
-    match val {
-        Value::Null => String::default(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s.to_owned(),
-        Value::Bool(b) => b.to_string(),
-        Value::Array(_) => String::default(),
-        Value::Object(_) => String::default(),
-    }
-}
-
-pub fn build_geojson(path: PathBuf, opts: QtData) -> Result<VarQt, FiberError> {
+pub fn build_geojson(path: PathBuf, opts: QtData) -> Result<Quadtree, FiberError> {
     let geojson = read_geojson(&path)?;
-    let mut qt = VarQt::new(opts);
+    let mut qt = Quadtree::new(opts);
 
     // Create an iterator that runs through and flattens all geometries in the GeoJson, preparing
     // them for adding to the qt
@@ -62,7 +49,7 @@ pub fn build_geojson(path: PathBuf, opts: QtData) -> Result<VarQt, FiberError> {
             Box::new(convert_geom(&g).map(|res| {
                 (
                     0,
-                    res.map(|geom| VarDatum::new(geom, VarMeta::None, 0))
+                    res.map(|geom| Datum::new(geom, BaseData::None, 0))
                         .map_err(|_| FiberError::Arg("GeoJson error")),
                 )
             }))
@@ -91,63 +78,29 @@ pub fn build_geojson(path: PathBuf, opts: QtData) -> Result<VarQt, FiberError> {
     Ok(qt)
 }
 
-/// Convert a GeoJson geometry into the appropriate quadtree-enabled type. Outputs an iterator as
-/// it flattens multi-geometries into their single geometry counterparts.
-pub fn convert_geom(
-    input: &geojson::Geometry,
-) -> Box<dyn Iterator<Item = Result<Geometry<f64>, geojson::Error>>> {
-    match &input.value {
-        d @ geojson::Value::Point(_) => Box::new(once(d.try_into().map(|mut p: geo::Point| {
-            p.to_radians_in_place();
-            Geometry::Point(p)
-        }))),
-        d @ geojson::Value::Polygon(_) => {
-            Box::new(once(d.try_into().map(|mut p: geo::Polygon| {
-                p.to_radians_in_place();
-                Geometry::Polygon(p)
-            })))
-        }
-        d @ geojson::Value::LineString(_) => {
-            Box::new(once(d.try_into().map(|mut l: geo::LineString| {
-                l.to_radians_in_place();
-                Geometry::LineString(l)
-            })))
-        }
-        d @ geojson::Value::MultiPoint(_) => match geo::MultiPoint::try_from(d) {
-            Ok(mp) => Box::new(mp.into_iter().map(|mut p| {
-                p.to_radians_in_place();
-                Ok(Geometry::Point(p))
-            })),
-            Err(err) => Box::new(once(Err(err))),
-        },
-        d @ geojson::Value::MultiPolygon(_) => match geo::MultiPolygon::try_from(d) {
-            Ok(mp) => Box::new(mp.into_iter().map(|mut p| {
-                p.to_radians_in_place();
-                Ok(Geometry::Polygon(p))
-            })),
-            Err(err) => Box::new(once(Err(err))),
-        },
-        d @ geojson::Value::MultiLineString(_) => match geo::MultiLineString::try_from(d) {
-            Ok(mls) => Box::new(mls.into_iter().map(|mut l| {
-                l.to_radians_in_place();
-                Ok(Geometry::LineString(l))
-            })),
-            Err(err) => Box::new(once(Err(err))),
-        },
-        geojson::Value::GeometryCollection(_) => {
-            Box::new(once(Err(geojson::Error::ExpectedType {
-                expected: "not GeometryCollection".to_string(),
-                actual: "GeomtryCollection".to_string(),
-            })))
-        }
+pub fn geojson_bbox(path: &PathBuf) -> Result<(Point, Point), FiberError> {
+    let json = read_geojson(path)?;
+    let bbox = match json {
+        GeoJson::Feature(f) => f.bbox,
+        GeoJson::Geometry(g) => g.bbox,
+        GeoJson::FeatureCollection(fc) => fc.bbox,
+    };
+    let bbox = bbox.ok_or(FiberError::Arg("No bbox present on GeoJson"))?;
+
+    // Ensure that the bounding box has length 4 to guarantee we can build a proper
+    // bouding box
+    if bbox.len() != 2 {
+        return Err(FiberError::Arg("Invalid bounding box present in GeoJson"));
     }
+
+    Ok((Point::new(bbox[0], bbox[1]), Point::new(bbox[2], bbox[3])))
 }
 
 /// Convenience function to build a feature iterator over a single geojson feature, using, for
 /// convenience, output in the form of an `enumerate` on an `Iterator`.
 fn map_feature(
     (i, f): (usize, Feature),
-) -> Box<dyn Iterator<Item = (usize, Result<VarDatum, FiberError>)>> {
+) -> Box<dyn Iterator<Item = (usize, Result<Datum, FiberError>)>> {
     // The feature needs to be an Rc so it can be duplicated into each datum
     let f = Rc::new(f);
 
@@ -156,7 +109,7 @@ fn map_feature(
         Box::new(convert_geom(&g).map(move |res| {
             (
                 i,
-                res.map(|geom| VarDatum::new(geom, VarMeta::Json(Rc::clone(&f)), i))
+                res.map(|geom| Datum::new(geom, BaseData::Json(Rc::clone(&f)), i))
                     .map_err(|_| FiberError::Arg("GeoJson error")),
             )
         }))

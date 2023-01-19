@@ -3,7 +3,7 @@ use std::{iter::empty, rc::Rc};
 use geo::Point;
 
 use geojson::Feature;
-use quadtree::*;
+use quadtree::{Geometry, PointDatum};
 use shapefile::dbase::Record;
 
 use crate::kml::KmlItem;
@@ -12,15 +12,15 @@ use super::{geojson::json_field_val, kml::kml_field_val, shapefile::shp_field_va
 
 /// Datum to store in the quadtree, includes the index from the input file and the underlying data
 /// to build output metadata fields as an enum by input file type.
-pub struct VarDatum {
+pub struct Datum {
     geom: Geometry<f64>,
-    meta: VarMeta,
+    base: BaseData,
     index: usize,
 }
 
-impl VarDatum {
-    pub fn new(geom: Geometry<f64>, meta: VarMeta, index: usize) -> Self {
-        Self { geom, meta, index }
+impl Datum {
+    pub fn new(geom: Geometry<f64>, base: BaseData, index: usize) -> Self {
+        Self { geom, base, index }
     }
 
     // TODO: See note on geometry in datum below, but use this when we need references for now
@@ -37,11 +37,11 @@ impl VarDatum {
         &'a self,
         fields: &'a Option<Vec<String>>,
     ) -> Box<dyn Iterator<Item = String> + 'a> {
-        self.meta.iter_str(fields)
+        self.base.iter_str(fields)
     }
 }
 
-impl Datum<f64> for VarDatum {
+impl quadtree::Datum<f64> for Datum {
     // TODO: Can we change this in quadtree so that getting the geometry only returns a ref
     //       It is not that easy if we want to use the individual geo-types as datums as we won't
     //       be able to return references. Either have to change Geometry to take a ref or an rc
@@ -50,7 +50,7 @@ impl Datum<f64> for VarDatum {
     }
 }
 
-impl PointDatum<f64> for VarDatum {
+impl PointDatum<f64> for Datum {
     fn point(&self) -> Point<f64> {
         // This is a somewhat hacky solution to get both points and bounds variants working for the
         // same datum type. Requires that insertion of non-point geometries into Point Quadtrees
@@ -65,7 +65,7 @@ impl PointDatum<f64> for VarDatum {
 
 /// Enum to capture underlying data to build metadata fields. Separate variant provided for each
 /// input file type.
-pub enum VarMeta {
+pub enum BaseData {
     Shp(Rc<Record>),
     Json(Rc<Feature>),
     // Kml doesn't need an RC because in this setup there are no mutligeometries with metadata that
@@ -74,7 +74,7 @@ pub enum VarMeta {
     None,
 }
 
-impl VarMeta {
+impl BaseData {
     pub fn iter_str<'a>(
         &'a self,
         fields: &'a Option<Vec<String>>,

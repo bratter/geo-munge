@@ -1,6 +1,7 @@
 use std::{iter::FlatMap, path::PathBuf};
 
 use kml::{types::*, KmlReader};
+use quadtree::{Geometry, ToRadians};
 
 use crate::error::FiberError;
 
@@ -26,6 +27,44 @@ pub fn read_kml(path: &PathBuf) -> Result<kml::Kml, FiberError> {
             })
     } else {
         Err(FiberError::IO("Invalid extension"))
+    }
+}
+
+/// Helper function to convert kml geometries into geo-type geometries when kml geomerties are
+/// available from a MultiGeomety field.
+pub fn convert_kml_geom(
+    item: kml::types::Geometry,
+) -> Result<(Geometry<f64>, KmlItem), FiberError> {
+    match item {
+        kml::types::Geometry::Point(p) => {
+            let mut geo = geo::Point::from(p.clone());
+            geo.to_radians_in_place();
+            Ok((Geometry::Point(geo), KmlItem::Point(p)))
+        }
+        kml::types::Geometry::Polygon(p) => {
+            let mut geo = geo::Polygon::from(p.clone());
+            geo.to_radians_in_place();
+            Ok((Geometry::Polygon(geo), KmlItem::Polygon(p)))
+        }
+        kml::types::Geometry::LineString(l) => {
+            let mut geo = geo::LineString::from(l.clone());
+            geo.to_radians_in_place();
+
+            Ok((Geometry::LineString(geo), KmlItem::LineString(l)))
+        }
+        kml::types::Geometry::LinearRing(l) => {
+            let mut geo = geo::LineString::from(l.clone());
+            geo.to_radians_in_place();
+
+            Ok((Geometry::LineString(geo), KmlItem::LinearRing(l)))
+        }
+        kml::types::Geometry::MultiGeometry(_) => Err(FiberError::Arg(
+            "Nested KML MultiGeometries are not supported",
+        )),
+        kml::types::Geometry::Element(_) => {
+            Err(FiberError::Arg("Elements do not contain geometry data"))
+        }
+        _ => Err(FiberError::Arg("Unknown type")),
     }
 }
 
@@ -135,7 +174,7 @@ impl<'a> IntoIterator for &'a Kml {
     }
 }
 
-/// Holds a subset of Kml members that might be emitted by the iterator
+/// Holds a subset of Kml members that might be emitted by a reference iterator
 #[derive(Debug, Clone)]
 pub enum KmlItemRef<'a> {
     MultiGeometry(&'a MultiGeometry),

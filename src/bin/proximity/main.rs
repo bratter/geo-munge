@@ -8,7 +8,7 @@ use crate::args::Args;
 use geo_munge::csv::reader::{build_input_settings, parse_record};
 use geo_munge::csv::writer::{make_csv_writer, write_line, WriteData};
 use geo_munge::error::FiberError;
-use geo_munge::qt::{make_bbox, make_qt, QtData};
+use geo_munge::qt::{make_bbox, QtData, Quadtree};
 
 // TODO: Refine the API and implementation
 //       - Improve error naming and handling
@@ -26,7 +26,7 @@ use geo_munge::qt::{make_bbox, make_qt, QtData};
 //       - Make the quadtree a service that can be sent points to test
 //       - Enable additional input acceptance types (ndjson, csv points)
 
-// TODO: Sphere and Eucl functions from quadtree should take references?
+// TODO: Sphere and Eucl functions from quadtree should take references? Or just be better in general
 // TODO: Can we use Borrow or AsRef in places like HashMap::get to ease ergonomics?
 // TODO: Retrieve on bounds qt needs to be able to retrieve for shapes
 
@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     }
     let start = Instant::now();
-    let qt = make_qt(args.path, opts)?;
+    let qt = Quadtree::from_path(args.path, opts)?;
     if args.verbose || args.print {
         eprintln!(
             "Quadtree with {} children built in {} ms",

@@ -8,12 +8,12 @@ use quadtree::{Geometry, ToRadians};
 
 use crate::{
     error::FiberError,
-    kml::{Kml, KmlItem},
+    kml::{convert_kml_geom, Kml, KmlItem},
 };
 
 use super::{
-    datum::{VarDatum, VarMeta},
-    QtData, VarQt,
+    datum::{BaseData, Datum},
+    QtData, Quadtree,
 };
 
 /// Make output strings from a field name and the Kml item.
@@ -42,9 +42,9 @@ fn make_string(attrs: &HashMap<String, String>, field: &String) -> String {
 }
 
 /// Build the quadtree for kml-based input data
-pub fn build_kml(path: PathBuf, opts: QtData) -> Result<VarQt, FiberError> {
+pub fn build_kml(path: PathBuf, opts: QtData) -> Result<Quadtree, FiberError> {
     let kml = Kml::from_path(&path)?;
-    let mut qt = VarQt::new(opts);
+    let mut qt = Quadtree::new(opts);
 
     for (index, datum) in kml.into_iter().enumerate().flat_map(map_kml_item) {
         if let Ok(datum) = datum {
@@ -65,7 +65,7 @@ pub fn build_kml(path: PathBuf, opts: QtData) -> Result<VarQt, FiberError> {
 /// keep both.
 fn map_kml_item(
     (index, item): (usize, KmlItem),
-) -> Box<dyn Iterator<Item = (usize, Result<VarDatum, FiberError>)>> {
+) -> Box<dyn Iterator<Item = (usize, Result<Datum, FiberError>)>> {
     match item {
         KmlItem::Point(ref p) => {
             let mut geo = geo::Point::from(p.clone());
@@ -95,7 +95,7 @@ fn map_kml_item(
                 .geometry
                 .ok_or(FiberError::Arg("Placemark does not have any geometry"))
                 .and_then(convert_kml_geom)
-                .map(|(geom, _)| VarDatum::new(geom, VarMeta::Kml(KmlItem::Placemark(p)), index)),
+                .map(|(geom, _)| Datum::new(geom, BaseData::Kml(KmlItem::Placemark(p)), index)),
         ))),
         KmlItem::Location(ref l) => bood(
             Geometry::Point(geo::point! {
@@ -109,7 +109,7 @@ fn map_kml_item(
             (
                 index,
                 convert_kml_geom(g)
-                    .map(|(geom, meta)| VarDatum::new(geom, VarMeta::Kml(meta), index)),
+                    .map(|(geom, meta)| Datum::new(geom, BaseData::Kml(meta), index)),
             )
         })),
     }
@@ -121,45 +121,9 @@ fn bood(
     geom: Geometry<f64>,
     meta: KmlItem,
     index: usize,
-) -> Box<Once<(usize, Result<VarDatum, FiberError>)>> {
+) -> Box<Once<(usize, Result<Datum, FiberError>)>> {
     Box::new(once((
         index,
-        Ok(VarDatum::new(geom, VarMeta::Kml(meta), index)),
+        Ok(Datum::new(geom, BaseData::Kml(meta), index)),
     )))
-}
-
-/// Helper function to convert kml geometries into geo-type geometries when kml geomerties are
-/// available from a MultiGeomety field.
-fn convert_kml_geom(item: kml::types::Geometry) -> Result<(Geometry<f64>, KmlItem), FiberError> {
-    match item {
-        kml::types::Geometry::Point(p) => {
-            let mut geo = geo::Point::from(p.clone());
-            geo.to_radians_in_place();
-            Ok((Geometry::Point(geo), KmlItem::Point(p)))
-        }
-        kml::types::Geometry::Polygon(p) => {
-            let mut geo = geo::Polygon::from(p.clone());
-            geo.to_radians_in_place();
-            Ok((Geometry::Polygon(geo), KmlItem::Polygon(p)))
-        }
-        kml::types::Geometry::LineString(l) => {
-            let mut geo = geo::LineString::from(l.clone());
-            geo.to_radians_in_place();
-
-            Ok((Geometry::LineString(geo), KmlItem::LineString(l)))
-        }
-        kml::types::Geometry::LinearRing(l) => {
-            let mut geo = geo::LineString::from(l.clone());
-            geo.to_radians_in_place();
-
-            Ok((Geometry::LineString(geo), KmlItem::LinearRing(l)))
-        }
-        kml::types::Geometry::MultiGeometry(_) => Err(FiberError::Arg(
-            "Nested KML MultiGeometries are not supported",
-        )),
-        kml::types::Geometry::Element(_) => {
-            Err(FiberError::Arg("Elements do not contain geometry data"))
-        }
-        _ => Err(FiberError::Arg("Unknown type")),
-    }
 }
