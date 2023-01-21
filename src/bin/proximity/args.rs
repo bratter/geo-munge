@@ -1,17 +1,17 @@
 use clap::Parser;
 
 /// We look in the current directory for a data.shp file by default
-const DEFAULT_SHP_PATH: &str = "./data.shp";
+const DEFAULT_PATH: &str = "./data.shp";
 
 /// Command line utility to find nearest neighbors using a quadtree. The
-/// quadtree is built from an input shapefile, and tested against an input
-/// set of points provided as a csv. Distances are measured using the Haversine
+/// quadtree is built from an input file, and tested against an set of points
+/// provided as csv on stdin. Distances are measured using the Haversine
 /// formula.
 #[derive(Parser, Debug)]
 pub struct Args {
     /// The file to use to assemble the QuadTree. If not provided will use
     /// {n}the default at ./data.shp. Supports multiple geographic file types.
-    #[arg(default_value = DEFAULT_SHP_PATH)]
+    #[arg(default_value = DEFAULT_PATH)]
     pub path: std::path::PathBuf,
 
     /// Print verbose logging to stderr.
@@ -20,14 +20,15 @@ pub struct Args {
 
     /// Print a summary representation of the loaded quadtree to stderr once
     /// {n}it is built.
-    #[arg(short, long)]
+    #[arg(short = 't', long)]
     pub print: bool,
 
-    /// Pass this flag to generate a bounds quadtree. By default the tool uses
-    /// {n}a point quadtree that only accepts point-like shapefile inputs, but
-    /// {n}this flag enables bounding box distances.
+    /// Pass this flag to generate a point quadtree. By default the tool uses
+    /// {n}a bounds quadtree that accepts a variety of geometric inputs for
+    /// {n}comparisons, but this flag enables a point version that only accepts
+    /// {n}point-like inputs, but is slightly more efficient.
     #[arg(short, long)]
-    pub bounds: bool,
+    pub point: bool,
 
     /// Retrieve `k` nearest neighbors.
     #[arg(short)]

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Display, fs::read_to_string, iter::empty, path::PathBuf};
 
 use csv::WriterBuilder;
-use geo_munge::error::FiberError;
+use geo_munge::error::Error;
 use geojson::{feature::Id, FeatureCollection, GeoJson, JsonValue};
 
 use crate::{DataOpts, Meta, MetaResult};
@@ -15,11 +15,11 @@ impl GeoJsonMeta {
         Self { path }
     }
 
-    fn geojson(&self) -> Result<GeoJson, FiberError> {
+    fn geojson(&self) -> Result<GeoJson, Error> {
         let geojson = read_to_string(&self.path)
-            .map_err(|_| FiberError::IO("Cannot read GeoJson file"))?
+            .map_err(|_| Error::CannotReadFile(self.path.clone()))?
             .parse::<GeoJson>()
-            .map_err(|_| FiberError::IO("Cannot parse GeoJson file"))?;
+            .map_err(|_| Error::CannotParseFile(self.path.clone()))?;
 
         Ok(geojson)
     }
@@ -27,14 +27,12 @@ impl GeoJsonMeta {
 
 fn print_bbox(bbox: &Option<Vec<f64>>) -> MetaResult {
     if let Some(bbox) = bbox {
-        let str = "Bounding box present but invalid";
-
         println!(
             "Bounding box: [{}, {}, {}, {}]",
-            bbox.get(0).ok_or(FiberError::Parse(0, str))?,
-            bbox.get(1).ok_or(FiberError::Parse(0, str))?,
-            bbox.get(2).ok_or(FiberError::Parse(0, str))?,
-            bbox.get(3).ok_or(FiberError::Parse(0, str))?
+            bbox.get(0).ok_or(Error::InvalidBoundingBox)?,
+            bbox.get(1).ok_or(Error::InvalidBoundingBox)?,
+            bbox.get(2).ok_or(Error::InvalidBoundingBox)?,
+            bbox.get(3).ok_or(Error::InvalidBoundingBox)?
         );
     }
 
@@ -77,10 +75,7 @@ impl Meta for GeoJsonMeta {
     fn fields(&self, show_types: bool) -> MetaResult {
         match self.geojson()? {
             GeoJson::Geometry(_) => {
-                Err(FiberError::Parse(
-                    0,
-                    "GeoJson Geometry types do not contain metadata",
-                ))?;
+                Err(Error::TypeDoesNotContainMetadata)?;
             }
             GeoJson::Feature(f) => {
                 // The id, if it exists, can be a string or a number
@@ -149,10 +144,7 @@ impl Meta for GeoJsonMeta {
     fn data(&self, opts: DataOpts) -> MetaResult {
         match self.geojson()? {
             GeoJson::Geometry(_) => {
-                Err(FiberError::Parse(
-                    0,
-                    "GeoJson Geometry types do not contain metadata",
-                ))?;
+                Err(Error::TypeDoesNotContainMetadata)?;
             }
             GeoJson::Feature(f) => {
                 let fc = FeatureCollection {
@@ -260,7 +252,7 @@ fn json_value_to_string(v: Option<&JsonValue>) -> String {
 fn print_fc_meta(fc: FeatureCollection, opts: DataOpts) -> MetaResult {
     let delimiter = opts.delimiter.as_bytes();
     if delimiter.len() != 1 {
-        return Err(Box::new(FiberError::Arg("Invalid delimiter provided")));
+        return Err(Box::new(Error::InvalidDelimiter));
     }
     let delimiter = delimiter[0];
 

@@ -3,13 +3,13 @@ use std::{fs::read_to_string, iter::once, path::PathBuf};
 use geojson::GeoJson;
 use quadtree::{Geometry, ToRadians};
 
-use crate::error::FiberError;
+use crate::error::Error;
 
-pub fn read_geojson(path: &PathBuf) -> Result<GeoJson, FiberError> {
+pub fn read_geojson(path: &PathBuf) -> Result<GeoJson, Error> {
     read_to_string(&path)
-        .map_err(|_| FiberError::IO("Cannot read GeoJson file"))?
+        .map_err(|_| Error::CannotReadFile(path.clone()))?
         .parse::<GeoJson>()
-        .map_err(|_| FiberError::IO("Cannot parse GeoJson file"))
+        .map_err(|_| Error::CannotParseFile(path.clone()))
 }
 
 /// Convert a GeoJson geometry into the appropriate quadtree-enabled type. Outputs an iterator as
@@ -58,7 +58,7 @@ pub fn convert_geom(
         geojson::Value::GeometryCollection(_) => {
             Box::new(once(Err(geojson::Error::ExpectedType {
                 expected: "not GeometryCollection".to_string(),
-                actual: "GeomtryCollection".to_string(),
+                actual: "GeometryCollection".to_string(),
             })))
         }
     }

@@ -7,7 +7,7 @@ use std::time::Instant;
 use crate::args::Args;
 use geo_munge::csv::reader::{build_input_settings, parse_record};
 use geo_munge::csv::writer::{make_csv_writer, write_line, WriteData};
-use geo_munge::error::FiberError;
+use geo_munge::error::Error;
 use geo_munge::qt::{make_bbox, QtData, Quadtree};
 
 // TODO: Refine the API and implementation
@@ -35,9 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let r = args.r.map(|r| r / MEAN_EARTH_RADIUS);
     let delimiter = args.delimiter.as_bytes();
     if delimiter.len() != 1 {
-        return Err(Box::new(FiberError::Arg(
-            "delimeter option must be a single character",
-        )));
+        return Err(Box::new(Error::InvalidDelimiter));
     }
     let delimiter = delimiter[0];
 
@@ -48,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set up the options for constructing the quadtree
     let opts = QtData::new(
-        args.bounds,
+        args.point,
         make_bbox(&args.path, args.sphere, &args.bbox)?,
         args.depth,
         args.children,
@@ -56,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Now build the quadtree
     if args.verbose {
-        let qt_type = if opts.is_bounds { "bounds" } else { "point" };
+        let qt_type = if opts.is_point_qt { "point" } else { "bounds" };
         eprintln!(
             "Building {} quadtree: depth={}, children={}",
             qt_type, opts.depth, opts.max_children
@@ -79,52 +77,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (i, record) in csv_reader.records().enumerate() {
         let start = Instant::now();
 
-        match (parse_record(i, record.as_ref(), &settings), args.k) {
-            (Ok(parsed), None) | (Ok(parsed), Some(1)) => {
-                match qt.find(&parsed.point, r, &args.fields) {
-                    Ok(result) => {
-                        let data = WriteData {
-                            result,
-                            record: parsed.record,
-                            fields: &args.fields,
-                            id: parsed.id,
-                            index: i,
-                        };
+        match (parse_record(i, record, &settings), args.k) {
+            (Ok(parsed), None) | (Ok(parsed), Some(1)) => match qt.find(&parsed, r, &args.fields) {
+                Ok(result) => {
+                    let data = WriteData {
+                        result,
+                        record: &parsed.record,
+                        fields: &args.fields,
+                        id: &parsed.id,
+                        index: i,
+                    };
 
-                        write_line(&mut csv_writer, &settings, data);
-                    }
-                    Err(quadtree::Error::OutOfBounds) => {
-                        eprintln!("Input point at index {i} is out of bounds")
-                    }
-                    Err(_) => {
-                        eprintln!("No result for record at index {i}");
-                    }
+                    write_line(&mut csv_writer, &settings, data);
                 }
-            }
-            (Ok(parsed), Some(k)) => match qt.knn(&parsed.point, k, r, &args.fields) {
+                Err(err) => eprintln!("{err}"),
+            },
+            (Ok(parsed), Some(k)) => match qt.knn(&parsed, k, r, &args.fields) {
                 Ok(results) => {
                     for result in results {
                         let data = WriteData {
                             result,
-                            record: parsed.record,
+                            record: &parsed.record,
                             fields: &args.fields,
-                            id: parsed.id,
+                            id: &parsed.id,
                             index: i,
                         };
 
                         write_line(&mut csv_writer, &settings, data);
                     }
                 }
-                Err(quadtree::Error::OutOfBounds) => {
-                    eprintln!("Input point at index {i} is out of bounds")
-                }
-                Err(_) => {
-                    eprintln!("No result for record at index {i}");
-                }
+                Err(err) => eprintln!("{err}"),
             },
-            _ => {
-                eprintln!("Failed to parse record at index {i}")
-            }
+            (Err(err), _) => eprintln!("{err}"),
         }
 
         if args.verbose {

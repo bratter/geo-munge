@@ -7,11 +7,12 @@ use std::path::PathBuf;
 
 use geo::{Point, Rect};
 use quadtree::{
-    sphere, BoundsQuadTree, Datum as QtDatum, Error as QtError, Geometry, PointQuadTree,
-    QuadTree as QT, QuadTreeSearch, ToRadians,
+    sphere, BoundsQuadTree, Datum as QtDatum, Geometry, PointQuadTree, QuadTree as QT,
+    QuadTreeSearch, ToRadians,
 };
 
-use crate::error::FiberError;
+use crate::csv::reader::ParsedRecord;
+use crate::error::Error;
 use datum::*;
 
 use self::geojson::{build_geojson, geojson_bbox};
@@ -19,7 +20,7 @@ use self::kml::build_kml;
 use self::shapefile::{build_shp, shp_bbox};
 
 pub struct QtData {
-    pub is_bounds: bool,
+    pub is_point_qt: bool,
     pub bounds: Rect<f64>,
     pub depth: u8,
     pub max_children: usize,
@@ -33,7 +34,7 @@ impl QtData {
         max_children: Option<usize>,
     ) -> Self {
         Self {
-            is_bounds,
+            is_point_qt: is_bounds,
             bounds,
             depth: depth.unwrap_or(10),
             max_children: max_children.unwrap_or(10),
@@ -62,29 +63,29 @@ pub enum Quadtree {
 impl Quadtree {
     pub fn new(opts: QtData) -> Self {
         let QtData {
-            is_bounds,
+            is_point_qt,
             bounds,
             depth,
             max_children,
         } = opts;
 
-        if is_bounds {
-            Self::Bounds(BoundsQuadTree::new(bounds, depth, max_children))
-        } else {
+        if is_point_qt {
             Self::Point(PointQuadTree::new(bounds, depth, max_children))
+        } else {
+            Self::Bounds(BoundsQuadTree::new(bounds, depth, max_children))
         }
     }
 
-    pub fn from_path(path: PathBuf, opts: QtData) -> Result<Self, FiberError> {
+    pub fn from_path(path: PathBuf, opts: QtData) -> Result<Self, Error> {
         match path
             .extension()
             .and_then(|e| e.to_str())
-            .ok_or(FiberError::IO("Cannot parse file extension"))?
+            .ok_or(Error::CannotParseFileExtension(path.clone()))?
         {
             "shp" => build_shp(path, opts),
             "json" => build_geojson(path, opts),
             "kml" | "kmz" => build_kml(path, opts),
-            _ => Err(FiberError::IO("Unsupported file type")),
+            _ => Err(Error::UnsupportedFileType),
         }
     }
 
@@ -95,16 +96,15 @@ impl Quadtree {
         }
     }
 
-    pub fn insert(&mut self, datum: Datum) -> Result<(), QtError> {
+    pub fn insert(&mut self, datum: Datum) -> Result<(), Error> {
+        let i = datum.index();
         match self {
-            Self::Bounds(b) => b.insert(datum),
+            Self::Bounds(b) => b.insert(datum).map_err(|err| Error::InsertFailed(i, err)),
             Self::Point(p) => {
                 if matches!(datum.geometry(), Geometry::Point::<f64>(_)) {
-                    p.insert(datum)
+                    p.insert(datum).map_err(|err| Error::InsertFailed(i, err))
                 } else {
-                    // TODO: Fix the Error here - should say that only points can be added to a
-                    // point quadtree
-                    Err(QtError::OutOfBounds)
+                    Err(Error::InsertFailedRequiresPoint(i))
                 }
             }
         }
@@ -119,14 +119,16 @@ impl Quadtree {
 
     pub fn find<'a>(
         &'a self,
-        cmp: &Point,
+        record: &ParsedRecord,
         r: Option<f64>,
         fields: &'a Option<Vec<String>>,
-    ) -> Result<SearchResult<'a>, QtError> {
+    ) -> Result<SearchResult<'a>, Error> {
+        let pt = record.point;
         let (datum, distance) = match self {
-            Self::Bounds(b) => b.find_r(&sphere(*cmp), r.unwrap_or(f64::INFINITY)),
-            Self::Point(p) => p.find_r(&sphere(*cmp), r.unwrap_or(f64::INFINITY)),
-        }?;
+            Self::Bounds(b) => b.find_r(&sphere(pt), r.unwrap_or(f64::INFINITY)),
+            Self::Point(p) => p.find_r(&sphere(pt), r.unwrap_or(f64::INFINITY)),
+        }
+        .map_err(|err| Error::FindError(record.index, err))?;
 
         Ok(SearchResult {
             geom: &datum.geom(),
@@ -138,15 +140,17 @@ impl Quadtree {
 
     pub fn knn<'a>(
         &'a self,
-        cmp: &Point,
+        record: &ParsedRecord,
         k: usize,
         r: Option<f64>,
         fields: &'a Option<Vec<String>>,
-    ) -> Result<Vec<SearchResult<'a>>, QtError> {
+    ) -> Result<Vec<SearchResult<'a>>, Error> {
+        let pt = record.point;
         let found = match self {
-            Self::Bounds(b) => b.knn_r(&sphere(*cmp), k, r.unwrap_or(f64::INFINITY)),
-            Self::Point(p) => p.knn_r(&sphere(*cmp), k, r.unwrap_or(f64::INFINITY)),
-        }?;
+            Self::Bounds(b) => b.knn_r(&sphere(pt), k, r.unwrap_or(f64::INFINITY)),
+            Self::Point(p) => p.knn_r(&sphere(pt), k, r.unwrap_or(f64::INFINITY)),
+        }
+        .map_err(|err| Error::FindError(record.index, err))?;
 
         Ok(found
             .into_iter()
@@ -170,21 +174,16 @@ impl std::fmt::Display for Quadtree {
 }
 
 /// Build the Bounding Box from provided arguments.
-// TODO: Consider moving this into the make_qt_from_path function, and then avoiding the extra file
-//       handle.
-// TODO: Also move the file specific methods to their own lib files
-//       The basic struct for each type of file can have a read and a bbox method
-pub fn make_bbox(path: &PathBuf, sphere: bool, bbox: &Option<String>) -> Result<Rect, FiberError> {
+pub fn make_bbox(path: &PathBuf, sphere: bool, bbox: &Option<String>) -> Result<Rect, Error> {
     // Get the right bbox points given the argument values
     let (a, b) = if sphere {
         // Sphere option builds sphere bounds broken at the antimeridian
         (Point::new(-180.0, -90.0), Point::new(180.0, 90.0))
     } else if let Some(bbox_str) = &bbox {
         // Parse from the bbox_str
-        let mut pts = bbox_str.split(',').map(|s| {
-            s.parse::<f64>()
-                .map_err(|_| FiberError::Arg("Cannot parse bbox input"))
-        });
+        let mut pts = bbox_str
+            .split(',')
+            .map(|s| s.parse::<f64>().map_err(|_| Error::InvalidBoundingBox));
         (
             Point::new(bbox_next(&mut pts)?, bbox_next(&mut pts)?),
             Point::new(bbox_next(&mut pts)?, bbox_next(&mut pts)?),
@@ -194,7 +193,7 @@ pub fn make_bbox(path: &PathBuf, sphere: bool, bbox: &Option<String>) -> Result<
         match path
             .extension()
             .and_then(|e| e.to_str())
-            .ok_or(FiberError::IO("Cannot parse file extension"))?
+            .ok_or(Error::CannotParseFileExtension(path.clone()))?
         {
             "shp" => shp_bbox(path)?,
             "json" => geojson_bbox(path)?,
@@ -202,7 +201,7 @@ pub fn make_bbox(path: &PathBuf, sphere: bool, bbox: &Option<String>) -> Result<
                 // Appears to be no overall bbox embedded in kml files, so default to sphere
                 (Point::new(-180.0, -90.0), Point::new(180.0, 90.0))
             }
-            _ => Err(FiberError::IO("Unsupported file type"))?,
+            _ => Err(Error::UnsupportedFileType)?,
         }
     };
 
@@ -211,10 +210,6 @@ pub fn make_bbox(path: &PathBuf, sphere: bool, bbox: &Option<String>) -> Result<
     Ok(rect)
 }
 
-fn bbox_next<'a>(
-    pts: &mut dyn Iterator<Item = Result<f64, FiberError>>,
-) -> Result<f64, FiberError> {
-    pts.next()
-        .ok_or(FiberError::Arg("Unexpected end of bbox input"))
-        .and_then(|x| x)
+fn bbox_next<'a>(pts: &mut dyn Iterator<Item = Result<f64, Error>>) -> Result<f64, Error> {
+    pts.next().ok_or(Error::InvalidBoundingBox).and_then(|x| x)
 }

@@ -1,17 +1,17 @@
 mod args;
 mod geojson;
-mod shapefile;
 mod kml;
+mod shapefile;
 
 use std::path::PathBuf;
 
 use clap::Parser;
-use geo_munge::error::FiberError;
+use geo_munge::error::Error;
 
 use crate::args::{Cli, Command};
-use crate::shapefile::ShapefileMeta;
 use crate::geojson::GeoJsonMeta;
 use crate::kml::KmlMeta;
+use crate::shapefile::ShapefileMeta;
 
 type MetaResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -70,15 +70,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn get_meta_from_path(path: PathBuf) -> Result<Box<dyn Meta>, FiberError> {
+fn get_meta_from_path(path: PathBuf) -> Result<Box<dyn Meta>, Error> {
     match path
         .extension()
         .and_then(|ext| ext.to_str())
-        .ok_or(FiberError::IO("Cannot parse file extension"))?
+        .ok_or(Error::CannotParseFileExtension(path.clone()))?
     {
         "shp" => Ok(Box::new(ShapefileMeta::new(path))),
         "json" | "geojson" => Ok(Box::new(GeoJsonMeta::new(path))),
         "kml" | "kmz" => Ok(Box::new(KmlMeta::new(path))),
-        _ => Err(FiberError::IO("Unsupported file type")),
+        _ => Err(Error::UnsupportedFileType),
     }
 }

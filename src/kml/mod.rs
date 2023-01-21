@@ -3,38 +3,30 @@ use std::{iter::FlatMap, path::PathBuf};
 use kml::{types::*, KmlReader};
 use quadtree::{Geometry, ToRadians};
 
-use crate::error::FiberError;
+use crate::error::{Error, UnsupportedGeoType};
 
 /// Return a [`kml::Kml`] object loaded from a `.kml` or `.kmz` file.
-pub fn read_kml(path: &PathBuf) -> Result<kml::Kml, FiberError> {
+pub fn read_kml(path: &PathBuf) -> Result<kml::Kml, Error> {
     let ext = path
         .extension()
-        .ok_or(FiberError::IO("Invalid extension"))?;
+        .ok_or(Error::CannotParseFileExtension(path.clone()))?;
 
     if ext == "kml" {
         KmlReader::<_, f64>::from_path(path.clone())
-            .map_err(|_| FiberError::IO("Cannot read KML file"))
-            .and_then(|mut r| {
-                r.read()
-                    .map_err(|_| FiberError::Parse(0, "Couldn't parse KML file"))
-            })
+            .map_err(|_| Error::CannotReadFile(path.clone()))
+            .and_then(|mut r| r.read().map_err(|_| Error::CannotParseFile(path.clone())))
     } else if ext == "kmz" {
         KmlReader::<_, f64>::from_kmz_path(path.clone())
-            .map_err(|_| FiberError::IO("Cannot read KMZ file"))
-            .and_then(|mut r| {
-                r.read()
-                    .map_err(|_| FiberError::Parse(0, "Couldn't parse KMZ file"))
-            })
+            .map_err(|_| Error::CannotReadFile(path.clone()))
+            .and_then(|mut r| r.read().map_err(|_| Error::CannotParseFile(path.clone())))
     } else {
-        Err(FiberError::IO("Invalid extension"))
+        Err(Error::UnsupportedFileType)
     }
 }
 
 /// Helper function to convert kml geometries into geo-type geometries when kml geomerties are
 /// available from a MultiGeomety field.
-pub fn convert_kml_geom(
-    item: kml::types::Geometry,
-) -> Result<(Geometry<f64>, KmlItem), FiberError> {
+pub fn convert_kml_geom(item: kml::types::Geometry) -> Result<(Geometry<f64>, KmlItem), Error> {
     match item {
         kml::types::Geometry::Point(p) => {
             let mut geo = geo::Point::from(p.clone());
@@ -58,13 +50,13 @@ pub fn convert_kml_geom(
 
             Ok((Geometry::LineString(geo), KmlItem::LinearRing(l)))
         }
-        kml::types::Geometry::MultiGeometry(_) => Err(FiberError::Arg(
-            "Nested KML MultiGeometries are not supported",
+        kml::types::Geometry::MultiGeometry(_) => Err(Error::UnsupportedGeometry(
+            UnsupportedGeoType::NestedKmlMulti,
         )),
         kml::types::Geometry::Element(_) => {
-            Err(FiberError::Arg("Elements do not contain geometry data"))
+            Err(Error::UnsupportedGeometry(UnsupportedGeoType::KmlElement))
         }
-        _ => Err(FiberError::Arg("Unknown type")),
+        _ => Err(Error::UnsupportedGeometry(UnsupportedGeoType::UnknownKml)),
     }
 }
 
@@ -76,7 +68,7 @@ pub struct Kml {
 
 impl Kml {
     /// Build a new Kml document from the path to a KML or KMZ file.
-    pub fn from_path(path: &PathBuf) -> Result<Self, FiberError> {
+    pub fn from_path(path: &PathBuf) -> Result<Self, Error> {
         Ok(Self {
             kml: read_kml(path)?,
         })

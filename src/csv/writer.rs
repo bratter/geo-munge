@@ -4,7 +4,7 @@ use csv::{StringRecord, Writer, WriterBuilder};
 use quadtree::MEAN_EARTH_RADIUS;
 
 use super::reader::InputSettings;
-use crate::error::FiberError;
+use crate::error::Error;
 use crate::qt::SearchResult;
 
 // Output the header row with base and additional `--fields`. Will output the
@@ -14,7 +14,7 @@ pub fn make_csv_writer<'a>(
     id_label: &str,
     delimiter: u8,
     fields: &Option<Vec<String>>,
-) -> Result<Writer<Stdout>, FiberError> {
+) -> Result<Writer<Stdout>, Error> {
     let mut writer = WriterBuilder::new()
         .delimiter(delimiter)
         .from_writer(std::io::stdout());
@@ -23,7 +23,6 @@ pub fn make_csv_writer<'a>(
     let base_fields = [id_label, "lng", "lat", "distance", "match_index"];
 
     // Set up the slice of additional fields to pull from the metdata
-    // TODO: Can this be simplified? It seems like a lot of work
     let tmp_vec = Vec::new();
     let field_slice = fields
         .as_ref()
@@ -33,7 +32,7 @@ pub fn make_csv_writer<'a>(
 
     writer
         .write_record(base_fields.into_iter().chain(field_slice))
-        .map_err(|_| FiberError::IO("cannot write header row to stdout"))?;
+        .map_err(|err| Error::CsvWriteError(err))?;
 
     Ok(writer)
 }
@@ -42,11 +41,11 @@ pub struct WriteData<'a> {
     pub result: SearchResult<'a>,
     pub record: &'a StringRecord,
     pub fields: &'a Option<Vec<String>>,
-    pub id: Option<&'a str>,
+    pub id: &'a Option<String>,
     pub index: usize,
 }
 
-// TODO: This works, but can we avoid allocating strings?
+// TODO: Can we avoid allocating some of the strings?
 pub fn write_line(w: &mut Writer<Stdout>, settings: &InputSettings, data: WriteData) {
     // If we parsed an id from the input data, then use it here
     // otherwise use the record's index as a unique id.

@@ -6,7 +6,7 @@ use std::{
 
 use csv::WriterBuilder;
 use geo_munge::{
-    error::FiberError,
+    error::Error,
     kml::{read_kml, Kml, KmlItemRef},
 };
 
@@ -82,7 +82,7 @@ impl Meta for KmlMeta {
     fn data(&self, opts: DataOpts) -> MetaResult {
         let delimiter = opts.delimiter.as_bytes();
         if delimiter.len() != 1 {
-            return Err(Box::new(FiberError::Arg("Invalid delimiter provided")));
+            return Err(Box::new(Error::InvalidDelimiter));
         }
         let delimiter = delimiter[0];
 

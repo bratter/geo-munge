@@ -1,7 +1,7 @@
 use std::{fs::File, io::BufReader, iter::once, path::PathBuf};
 
 use csv::WriterBuilder;
-use geo_munge::{error::FiberError, shp::convert_dbase_field_opt};
+use geo_munge::{error::Error, shp::convert_dbase_field_opt};
 use shapefile::Reader;
 
 use crate::{DataOpts, Meta, MetaResult};
@@ -15,21 +15,20 @@ impl ShapefileMeta {
         Self { path }
     }
 
-    pub fn reader(&self) -> Result<Reader<BufReader<File>>, FiberError> {
+    pub fn reader(&self) -> Result<Reader<BufReader<File>>, Error> {
         // Load the shapefile, exiting with an error if the file cannot read
         // Then build the quadtree
-        shapefile::Reader::from_path(&self.path).map_err(|_| {
-            FiberError::IO("cannot read shapefile, check path and permissions and try again")
-        })
+        shapefile::Reader::from_path(&self.path)
+            .map_err(|_| Error::CannotReadFile(self.path.clone()))
     }
 
-    fn field_iter(&self, show_types: bool) -> Result<impl Iterator<Item = String>, FiberError> {
+    fn field_iter(&self, show_types: bool) -> Result<impl Iterator<Item = String>, Error> {
         let (_, record) = self
             .reader()?
             .iter_shapes_and_records()
             .next()
-            .ok_or(FiberError::Parse(0, "No records in file"))
-            .and_then(|r| r.map_err(|_| FiberError::Parse(0, "Cannot read record")))?;
+            .ok_or(Error::UnexpectedEndOfInput)
+            .and_then(|r| r.map_err(|err| Error::ShapefileParseError(err)))?;
 
         Ok(record.into_iter().map(move |(name, value)| {
             if show_types {
@@ -79,7 +78,7 @@ impl Meta for ShapefileMeta {
     fn data(&self, opts: DataOpts) -> MetaResult {
         let delimiter = opts.delimiter.as_bytes();
         if delimiter.len() != 1 {
-            return Err(Box::new(FiberError::Arg("Invalid delimiter provided")));
+            return Err(Box::new(Error::InvalidDelimiter));
         }
         let delimiter = delimiter[0];
 

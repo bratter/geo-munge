@@ -7,7 +7,7 @@ use std::{
 use quadtree::{Geometry, ToRadians};
 
 use crate::{
-    error::FiberError,
+    error::{Error, ParseType},
     kml::{convert_kml_geom, Kml, KmlItem},
 };
 
@@ -42,17 +42,14 @@ fn make_string(attrs: &HashMap<String, String>, field: &String) -> String {
 }
 
 /// Build the quadtree for kml-based input data
-pub fn build_kml(path: PathBuf, opts: QtData) -> Result<Quadtree, FiberError> {
+pub fn build_kml(path: PathBuf, opts: QtData) -> Result<Quadtree, Error> {
     let kml = Kml::from_path(&path)?;
     let mut qt = Quadtree::new(opts);
 
-    for (index, datum) in kml.into_iter().enumerate().flat_map(map_kml_item) {
-        if let Ok(datum) = datum {
-            if qt.insert(datum).is_err() {
-                eprintln!("Cannot insert datum at index {index} into qt");
-            }
-        } else {
-            eprintln!("Could not read shape at index {index}");
+    // Insert into the qt, printing any errors to stdout
+    for datum in kml.into_iter().enumerate().flat_map(map_kml_item) {
+        if let Some(err) = datum.and_then(|d| qt.insert(d)).err() {
+            eprintln!("{err}");
         }
     }
 
@@ -63,9 +60,7 @@ pub fn build_kml(path: PathBuf, opts: QtData) -> Result<Quadtree, FiberError> {
 /// are wrapped in a single item iterator, but multi-kml types are expanded. This relies on copying
 /// which is both time and space inefficient for large geometries, but this is required in order to
 /// keep both.
-fn map_kml_item(
-    (index, item): (usize, KmlItem),
-) -> Box<dyn Iterator<Item = (usize, Result<Datum, FiberError>)>> {
+fn map_kml_item((index, item): (usize, KmlItem)) -> Box<dyn Iterator<Item = Result<Datum, Error>>> {
     match item {
         KmlItem::Point(ref p) => {
             let mut geo = geo::Point::from(p.clone());
@@ -87,16 +82,13 @@ fn map_kml_item(
             geo.to_radians_in_place();
             bood(Geometry::LineString(geo), item, index)
         }
-        KmlItem::Placemark(p) => Box::new(once((
-            index,
-            // TODO: Clone required here to ensure placemark is provided as the meta, but
-            // should be eliminated by reworking something
-            p.clone()
-                .geometry
-                .ok_or(FiberError::Arg("Placemark does not have any geometry"))
+        KmlItem::Placemark(p) => Box::new(once(
+            p.geometry
+                .clone()
+                .ok_or(Error::CannotParseRecord(index, ParseType::MissingGeometry))
                 .and_then(convert_kml_geom)
                 .map(|(geom, _)| Datum::new(geom, BaseData::Kml(KmlItem::Placemark(p)), index)),
-        ))),
+        )),
         KmlItem::Location(ref l) => bood(
             Geometry::Point(geo::point! {
                 x: l.latitude,
@@ -106,24 +98,13 @@ fn map_kml_item(
             index,
         ),
         KmlItem::MultiGeometry(mg) => Box::new(mg.geometries.into_iter().map(move |g| {
-            (
-                index,
-                convert_kml_geom(g)
-                    .map(|(geom, meta)| Datum::new(geom, BaseData::Kml(meta), index)),
-            )
+            convert_kml_geom(g).map(|(geom, meta)| Datum::new(geom, BaseData::Kml(meta), index))
         })),
     }
 }
 
 /// (B)ox (O)nce (O)k (D)atum. Convenience function to wrap the inputs in the appropriate
 /// containers for subsequent use.
-fn bood(
-    geom: Geometry<f64>,
-    meta: KmlItem,
-    index: usize,
-) -> Box<Once<(usize, Result<Datum, FiberError>)>> {
-    Box::new(once((
-        index,
-        Ok(Datum::new(geom, BaseData::Kml(meta), index)),
-    )))
+fn bood(geom: Geometry<f64>, meta: KmlItem, index: usize) -> Box<Once<Result<Datum, Error>>> {
+    Box::new(once(Ok(Datum::new(geom, BaseData::Kml(meta), index))))
 }

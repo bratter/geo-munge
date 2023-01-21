@@ -3,6 +3,8 @@ use std::iter::once;
 use quadtree::*;
 use shapefile::{dbase::FieldValue, Shape};
 
+use crate::error::{Error, UnsupportedGeoType};
+
 /// Convert dbase fields to a string representation for inclusion in csv output.
 pub fn convert_dbase_field(f: &FieldValue) -> String {
     match f {
@@ -44,7 +46,7 @@ pub fn convert_dbase_field_opt(f: Option<&FieldValue>) -> String {
 
 /// Convert shapefile shapes to their geo-type equivalents. This will only
 /// convert those types that are valid in quadtrees.
-pub fn convert_shape(shape: Shape) -> Box<dyn Iterator<Item = Result<Geometry<f64>, ()>>> {
+pub fn convert_shape(shape: Shape) -> Box<dyn Iterator<Item = Result<Geometry<f64>, Error>>> {
     match shape {
         Shape::Point(p) => point_to_iter(p),
         Shape::PointM(p) => point_to_iter(p),
@@ -59,11 +61,16 @@ pub fn convert_shape(shape: Shape) -> Box<dyn Iterator<Item = Result<Geometry<f6
         Shape::PolygonM(p) => mpoly_to_iter(p),
         Shape::PolygonZ(p) => mpoly_to_iter(p),
         // NullShape and MultiPatch are not covered
-        _ => Box::new(once(Err(()))),
+        Shape::Multipatch(_) => Box::new(once(Err(Error::UnsupportedGeometry(
+            UnsupportedGeoType::MultipatchShp,
+        )))),
+        Shape::NullShape => Box::new(once(Err(Error::UnsupportedGeometry(
+            UnsupportedGeoType::NullShp,
+        )))),
     }
 }
 
-fn point_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, ()>>>
+fn point_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, Error>>>
 where
     S: Into<geo::Point>,
 {
@@ -72,7 +79,7 @@ where
     Box::new(once(Ok(Geometry::Point(p))))
 }
 
-fn mls_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, ()>>>
+fn mls_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, Error>>>
 where
     S: Into<geo::MultiLineString>,
 {
@@ -83,7 +90,7 @@ where
     }))
 }
 
-fn mp_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, ()>>>
+fn mp_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, Error>>>
 where
     S: Into<geo::MultiPoint>,
 {
@@ -94,7 +101,7 @@ where
     }))
 }
 
-fn mpoly_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, ()>>>
+fn mpoly_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, Error>>>
 where
     S: Into<geo::MultiPolygon>,
 {

@@ -7,7 +7,7 @@ use geojson::feature::Id;
 use geojson::{Feature, GeoJson};
 use serde_json::Value;
 
-use crate::error::FiberError;
+use crate::error::{Error, ParseType};
 use crate::geojson::{convert_geom, read_geojson};
 
 use super::datum::{BaseData, Datum};
@@ -37,7 +37,7 @@ pub fn json_field_val(feature: &Feature, field: &String) -> String {
     }
 }
 
-pub fn build_geojson(path: PathBuf, opts: QtData) -> Result<Quadtree, FiberError> {
+pub fn build_geojson(path: PathBuf, opts: QtData) -> Result<Quadtree, Error> {
     let geojson = read_geojson(&path)?;
     let mut qt = Quadtree::new(opts);
 
@@ -47,11 +47,8 @@ pub fn build_geojson(path: PathBuf, opts: QtData) -> Result<Quadtree, FiberError
         GeoJson::Geometry(g) => {
             // Note that geometries don't contain any metadata, so using the None meta here
             Box::new(convert_geom(&g).map(|res| {
-                (
-                    0,
-                    res.map(|geom| Datum::new(geom, BaseData::None, 0))
-                        .map_err(|_| FiberError::Arg("GeoJson error")),
-                )
+                res.map(|geom| Datum::new(geom, BaseData::None, 0))
+                    .map_err(|_| Error::CannotParseRecord(0, ParseType::GeoJson))
             }))
         }
         GeoJson::Feature(f) => {
@@ -65,32 +62,29 @@ pub fn build_geojson(path: PathBuf, opts: QtData) -> Result<Quadtree, FiberError
         }
     };
 
-    for (index, datum_res) in geometries {
-        if let Ok(datum) = datum_res {
-            if qt.insert(datum).is_err() {
-                eprintln!("Cannot insert datum at index {index} into qt");
-            }
-        } else {
-            eprintln!("Could not read shape at index {index}");
+    // Insert into the quadtree, chaining errors to print to stderr if the insertion fails
+    for datum in geometries {
+        if let Some(err) = datum.and_then(|d| qt.insert(d)).err() {
+            eprintln!("{err}");
         }
     }
 
     Ok(qt)
 }
 
-pub fn geojson_bbox(path: &PathBuf) -> Result<(Point, Point), FiberError> {
+pub fn geojson_bbox(path: &PathBuf) -> Result<(Point, Point), Error> {
     let json = read_geojson(path)?;
     let bbox = match json {
         GeoJson::Feature(f) => f.bbox,
         GeoJson::Geometry(g) => g.bbox,
         GeoJson::FeatureCollection(fc) => fc.bbox,
     };
-    let bbox = bbox.ok_or(FiberError::Arg("No bbox present on GeoJson"))?;
+    let bbox = bbox.ok_or(Error::MissingBoundingBox)?;
 
     // Ensure that the bounding box has length 4 to guarantee we can build a proper
     // bouding box
     if bbox.len() != 2 {
-        return Err(FiberError::Arg("Invalid bounding box present in GeoJson"));
+        return Err(Error::InvalidBoundingBox);
     }
 
     Ok((Point::new(bbox[0], bbox[1]), Point::new(bbox[2], bbox[3])))
@@ -98,25 +92,20 @@ pub fn geojson_bbox(path: &PathBuf) -> Result<(Point, Point), FiberError> {
 
 /// Convenience function to build a feature iterator over a single geojson feature, using, for
 /// convenience, output in the form of an `enumerate` on an `Iterator`.
-fn map_feature(
-    (i, f): (usize, Feature),
-) -> Box<dyn Iterator<Item = (usize, Result<Datum, FiberError>)>> {
+fn map_feature((i, f): (usize, Feature)) -> Box<dyn Iterator<Item = Result<Datum, Error>>> {
     // The feature needs to be an Rc so it can be duplicated into each datum
     let f = Rc::new(f);
 
     // The geometry member is an option, without which the feature is irrelevant
     if let Some(g) = &f.geometry {
         Box::new(convert_geom(&g).map(move |res| {
-            (
-                i,
-                res.map(|geom| Datum::new(geom, BaseData::Json(Rc::clone(&f)), i))
-                    .map_err(|_| FiberError::Arg("GeoJson error")),
-            )
+            res.map(|geom| Datum::new(geom, BaseData::Json(Rc::clone(&f)), i))
+                .map_err(|_| Error::CannotParseRecord(i, ParseType::GeoJson))
         }))
     } else {
-        Box::new(once((
+        Box::new(once(Err(Error::CannotParseRecord(
             i,
-            Err(FiberError::Arg("Feature does not have a geometry")),
-        )))
+            ParseType::MissingGeometry,
+        ))))
     }
 }
