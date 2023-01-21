@@ -664,7 +664,8 @@ dependencies = [
 
 [[package]]
 name = "quadtree"
-version = "0.1.0"
+version = "0.0.1"
+source = "git+file:///home/bratter/code/quadtree/.git?tag=v0.0.1#91ba6f5fb2844e7bdb817937d14423cfaa05dd41"
 dependencies = [
  "geo",
  "num-traits",
