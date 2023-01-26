@@ -1,14 +1,15 @@
-use std::{iter::empty, rc::Rc};
+use std::{collections::HashMap, iter::empty, rc::Rc};
 
 use geo::Point;
-
 use geojson::Feature;
-use quadtree::{Geometry, PointDatum};
+use quadtree::{AsGeom, AsPoint, Geometry, GeometryRef};
 use shapefile::dbase::Record;
 
 use crate::kml::KmlItem;
 
-use super::{geojson::json_field_val, kml::kml_field_val, shapefile::shp_field_val};
+use super::{
+    csv::csv_field_val, geojson::json_field_val, kml::kml_field_val, shapefile::shp_field_val,
+};
 
 /// Datum to store in the quadtree, includes the index from the input file and the underlying data
 /// to build output metadata fields as an enum by input file type.
@@ -21,11 +22,6 @@ pub struct Datum {
 impl Datum {
     pub fn new(geom: Geometry<f64>, base: BaseData, index: usize) -> Self {
         Self { geom, base, index }
-    }
-
-    // TODO: See note on geometry in datum below, but use this when we need references for now
-    pub fn geom(&self) -> &Geometry<f64> {
-        &self.geom
     }
 
     pub fn index(&self) -> usize {
@@ -41,23 +37,20 @@ impl Datum {
     }
 }
 
-impl quadtree::Datum<f64> for Datum {
-    // TODO: Can we change this in quadtree so that getting the geometry only returns a ref
-    //       It is not that easy if we want to use the individual geo-types as datums as we won't
-    //       be able to return references. Either have to change Geometry to take a ref or an rc
-    fn geometry(&self) -> Geometry<f64> {
-        self.geom.clone()
+impl AsGeom<f64> for Datum {
+    fn as_geom(&self) -> GeometryRef<f64> {
+        self.geom.as_geom()
     }
 }
 
-impl PointDatum<f64> for Datum {
-    fn point(&self) -> Point<f64> {
+impl AsPoint for Datum {
+    fn as_point(&self) -> Point {
         // This is a somewhat hacky solution to get both points and bounds variants working for the
         // same datum type. Requires that insertion of non-point geometries into Point Quadtrees
         // fails so that while a Datum can be constructed, the quadtree itself won't be polluted by
         // invalid data
         match self.geom {
-            Geometry::Point(p) => p.to_owned(),
+            Geometry::Point(p) => p,
             _ => unreachable!(),
         }
     }
@@ -71,10 +64,15 @@ pub enum BaseData {
     // Kml doesn't need an RC because in this setup there are no mutligeometries with metadata that
     // get broken up with each requiring a reference to the KmlItem
     Kml(KmlItem),
+    // Csvs only support points and therefore can never be spilt apart
+    // But we have to store the records as a hasmap for efficient lookup later
+    Csv(HashMap<String, String>),
     None,
 }
 
 impl BaseData {
+    /// Iterate through the stored underlying data only retrieving a `String` version of metadata
+    /// fields matching the keys provided in the `fields` vector.
     pub fn iter_str<'a>(
         &'a self,
         fields: &'a Option<Vec<String>>,
@@ -85,6 +83,7 @@ impl BaseData {
                 Self::Shp(record) => shp_field_val(record, f),
                 Self::Json(feature) => json_field_val(feature, f),
                 Self::Kml(kml) => kml_field_val(kml, f),
+                Self::Csv(record) => csv_field_val(record, f),
                 Self::None => String::default(),
             }))
         } else {

@@ -1,4 +1,6 @@
 pub mod datum;
+
+mod csv;
 mod geojson;
 mod kml;
 mod shapefile;
@@ -7,14 +9,15 @@ use std::path::PathBuf;
 
 use geo::{Point, Rect};
 use quadtree::{
-    sphere, BoundsQuadTree, Datum as QtDatum, Geometry, PointQuadTree, QuadTree as QT,
-    QuadTreeSearch, ToRadians,
+    AsGeom, BoundsQuadTree, CalcMethod, GeometryRef, PointQuadTree, QuadTree as QT, QuadTreeSearch,
+    ToRadians,
 };
 
 use crate::csv::reader::ParsedRecord;
 use crate::error::Error;
 use datum::*;
 
+use self::csv::build_csv;
 use self::geojson::{build_geojson, geojson_bbox};
 use self::kml::build_kml;
 use self::shapefile::{build_shp, shp_bbox};
@@ -46,7 +49,7 @@ impl QtData {
 /// the match, and the extracted + harmonized metadata that abstracts from any sort of metadata
 /// generic, original datum, extracted metdata, and the distance.
 pub struct SearchResult<'a> {
-    pub geom: &'a Geometry<f64>,
+    pub geom: GeometryRef<'a, f64>,
     pub index: usize,
     pub distance: f64,
     pub meta: Box<dyn Iterator<Item = String> + 'a>,
@@ -70,9 +73,19 @@ impl Quadtree {
         } = opts;
 
         if is_point_qt {
-            Self::Point(PointQuadTree::new(bounds, depth, max_children))
+            Self::Point(PointQuadTree::new(
+                bounds,
+                CalcMethod::Spherical,
+                depth,
+                max_children,
+            ))
         } else {
-            Self::Bounds(BoundsQuadTree::new(bounds, depth, max_children))
+            Self::Bounds(BoundsQuadTree::new(
+                bounds,
+                CalcMethod::Spherical,
+                depth,
+                max_children,
+            ))
         }
     }
 
@@ -85,6 +98,7 @@ impl Quadtree {
             "shp" => build_shp(path, opts),
             "json" => build_geojson(path, opts),
             "kml" | "kmz" => build_kml(path, opts),
+            "csv" => build_csv(path, opts),
             _ => Err(Error::UnsupportedFileType),
         }
     }
@@ -101,7 +115,7 @@ impl Quadtree {
         match self {
             Self::Bounds(b) => b.insert(datum).map_err(|err| Error::InsertFailed(i, err)),
             Self::Point(p) => {
-                if matches!(datum.geometry(), Geometry::Point::<f64>(_)) {
+                if matches!(datum.as_geom(), GeometryRef::Point::<f64>(_)) {
                     p.insert(datum).map_err(|err| Error::InsertFailed(i, err))
                 } else {
                     Err(Error::InsertFailedRequiresPoint(i))
@@ -123,15 +137,14 @@ impl Quadtree {
         r: Option<f64>,
         fields: &'a Option<Vec<String>>,
     ) -> Result<SearchResult<'a>, Error> {
-        let pt = record.point;
         let (datum, distance) = match self {
-            Self::Bounds(b) => b.find_r(&sphere(pt), r.unwrap_or(f64::INFINITY)),
-            Self::Point(p) => p.find_r(&sphere(pt), r.unwrap_or(f64::INFINITY)),
+            Self::Bounds(b) => b.find_r(&record.point, r.unwrap_or(f64::INFINITY)),
+            Self::Point(p) => p.find_r(&record.point, r.unwrap_or(f64::INFINITY)),
         }
         .map_err(|err| Error::FindError(record.index, err))?;
 
         Ok(SearchResult {
-            geom: &datum.geom(),
+            geom: datum.as_geom(),
             index: datum.index(),
             distance,
             meta: datum.meta_iter(fields),
@@ -145,17 +158,16 @@ impl Quadtree {
         r: Option<f64>,
         fields: &'a Option<Vec<String>>,
     ) -> Result<Vec<SearchResult<'a>>, Error> {
-        let pt = record.point;
         let found = match self {
-            Self::Bounds(b) => b.knn_r(&sphere(pt), k, r.unwrap_or(f64::INFINITY)),
-            Self::Point(p) => p.knn_r(&sphere(pt), k, r.unwrap_or(f64::INFINITY)),
+            Self::Bounds(b) => b.knn_r(&record.point, k, r.unwrap_or(f64::INFINITY)),
+            Self::Point(p) => p.knn_r(&record.point, k, r.unwrap_or(f64::INFINITY)),
         }
         .map_err(|err| Error::FindError(record.index, err))?;
 
         Ok(found
             .into_iter()
             .map(|(datum, distance)| SearchResult {
-                geom: &datum.geom(),
+                geom: datum.as_geom(),
                 index: datum.index(),
                 distance,
                 meta: datum.meta_iter(fields),
@@ -197,8 +209,8 @@ pub fn make_bbox(path: &PathBuf, sphere: bool, bbox: &Option<String>) -> Result<
         {
             "shp" => shp_bbox(path)?,
             "json" => geojson_bbox(path)?,
-            "kml" | "kmz" => {
-                // Appears to be no overall bbox embedded in kml files, so default to sphere
+            "kml" | "kmz" | "csv" => {
+                // Appears to be no overall bbox embedded in kml files and csv files, so default to sphere
                 (Point::new(-180.0, -90.0), Point::new(180.0, 90.0))
             }
             _ => Err(Error::UnsupportedFileType)?,
@@ -207,6 +219,7 @@ pub fn make_bbox(path: &PathBuf, sphere: bool, bbox: &Option<String>) -> Result<
 
     let mut rect = Rect::new(a, b);
     rect.to_radians_in_place();
+    eprintln!("{:?}", rect);
     Ok(rect)
 }
 

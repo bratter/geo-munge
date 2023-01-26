@@ -30,6 +30,7 @@ pub enum ParseType {
     Lat,
     GeoJson,
     Shapefile,
+    Csv,
     MissingGeometry,
 }
 
@@ -86,6 +87,7 @@ impl fmt::Display for Error {
                     ParseType::Lat => "Lat parsing failed",
                     ParseType::GeoJson => "GeoJson feature parsing failed",
                     ParseType::Shapefile => "Shapefile parsing failed",
+                    ParseType::Csv => "CSV parsing failed",
                     ParseType::MissingGeometry => "Missing geometry",
                 };
                 write!(f, "Failed to parse record at index {}: {}", i, type_str)

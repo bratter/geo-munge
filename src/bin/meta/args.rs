@@ -54,7 +54,7 @@ pub enum Command {
         #[arg(long, short = 'n')]
         length: Option<usize>,
 
-        /// Add a sequaential index field to each record
+        /// Add a sequential index field to each record
         #[arg(short, long)]
         index: bool,
     },

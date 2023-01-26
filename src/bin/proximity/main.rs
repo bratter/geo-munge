@@ -11,23 +11,22 @@ use geo_munge::error::Error;
 use geo_munge::qt::{make_bbox, QtData, Quadtree};
 
 // TODO: Refine the API and implementation
-//       - Improve error naming and handling
 //       - Capture and respond to system interupts (e.g. ctrl-c)
 //       - Do some performance testing with perf and flamegraph
-//       - Write concurrent searching, probably with Rayon
+//       - Write concurrent searching, probably with Rayon, this can be done in proximity itself
 //       - Explore concurrent inserts - should be safe as if we can get an &mut at the node where
 //         we are inserting or subdividing - this can block, but the rest of the qt is fine
 //         can use an atomic usize for size, just need to work out how to get &mut from & when inserting
 //         Perhaps something like fine grained locking or lock-free reads would help?
+//         Two options: AtomicPtr for lock free or fine grained locking per node (each node in a
+//         mutex) - lock free might be more efficient when getting shared references on read
 //       - Should meta fields support not scanning all the rows to get the fields,
 //         and a number of rows different from the n when pulling data?
 //       - Support Euclidean distances
 //       - Support different test file formats and non-point test shapes
 //       - Make the quadtree a service that can be sent points to test
-//       - Enable additional input acceptance types (ndjson, csv points)
-
-// TODO: Sphere and Eucl functions from quadtree should take references? Or just be better in general
-// TODO: Can we use Borrow or AsRef in places like HashMap::get to ease ergonomics?
+//       - Enable additional input acceptance types (e.g. ndjson)
+//
 // TODO: Retrieve on bounds qt needs to be able to retrieve for shapes
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
