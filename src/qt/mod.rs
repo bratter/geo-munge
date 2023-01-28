@@ -219,7 +219,7 @@ pub fn make_bbox(path: &PathBuf, sphere: bool, bbox: &Option<String>) -> Result<
 
     let mut rect = Rect::new(a, b);
     rect.to_radians_in_place();
-    eprintln!("{:?}", rect);
+
     Ok(rect)
 }
 

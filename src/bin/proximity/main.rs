@@ -73,9 +73,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // After loading the quadtree, iterate through all the incoming test records
+    let start = Instant::now();
     for (i, record) in csv_reader.records().enumerate() {
-        let start = Instant::now();
-
         match (parse_record(i, record, &settings), args.k) {
             (Ok(parsed), None) | (Ok(parsed), Some(1)) => match qt.find(&parsed, r, &args.fields) {
                 Ok(result) => {
@@ -110,9 +109,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (Err(err), _) => eprintln!("{err}"),
         }
 
-        if args.verbose {
+        if args.verbose && i % 10000 == 0 {
             eprintln!(
-                "Processed record {} in {} ms",
+                "Processed {} records in {} ms",
                 i,
                 start.elapsed().as_millis()
             );
