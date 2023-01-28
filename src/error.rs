@@ -5,6 +5,7 @@ use std::{fmt, path::PathBuf};
 /// Includes custom display, debug traits to produce human-readable error messages.
 #[non_exhaustive]
 pub enum Error {
+    FileIOError(std::io::Error),
     CannotReadFile(PathBuf),
     CannotParseFile(PathBuf),
     CannotParseFileExtension(PathBuf),
@@ -17,12 +18,14 @@ pub enum Error {
     CsvParseError(csv::Error),
     CsvWriteError(csv::Error),
     ShapefileParseError(shapefile::Error),
+    ShapeFileWriteError(shapefile::Error),
     MissingLatLngField,
     CannotParseRecord(usize, ParseType),
     UnsupportedGeometry(UnsupportedGeoType),
     InsertFailed(usize, quadtree::Error),
     InsertFailedRequiresPoint(usize),
     FindError(usize, quadtree::Error),
+    FailedToDeserialize(PathBuf, serde_json::Error),
 }
 
 pub enum ParseType {
@@ -60,6 +63,9 @@ impl std::error::Error for Error {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::FileIOError(err) => {
+                write!(f, "File IO error encountered; {}", err)
+            },
             Self::CannotReadFile(path) => {
                 write!(f, "Cannot read file at {}", path.to_string_lossy())
             }
@@ -80,6 +86,7 @@ impl fmt::Display for Error {
             Self::CsvParseError(err) => write!(f, "Error parsing csv input: {}", err),
             Self::CsvWriteError(err) => write!(f, "Error writing csv output: {}", err),
             Self::ShapefileParseError(err) => write!(f, "Error parsing shapefile input: {}", err),
+            Self::ShapeFileWriteError(err) => write!(f, "Error writing to shapefile: {}", err),
             Self::MissingLatLngField => write!(f, "The test points are missing a lng or lat field"),
             Self::CannotParseRecord(i, parse_type) => {
                 let type_str = match parse_type {
@@ -95,7 +102,8 @@ impl fmt::Display for Error {
             Self::UnsupportedGeometry(geo_type) => write!(f, "Unsupported geometry type encountered: {}", geo_type),
             Self::InsertFailed(i, err) => write!(f, "Insert failed for geometry at index {}: {}", i, display_qt_err(err)),
             Self::InsertFailedRequiresPoint(i) => write!(f, "Cannot insert non-point geometry into point quadtree at index {}, to enable bounds mode, create the quadtree without the -p flag", i),
-            Self::FindError(i, err) => write!(f, "Match for input record at index {}, failed: {}", i, display_qt_err(err))
+            Self::FindError(i, err) => write!(f, "Match for input record at index {}, failed: {}", i, display_qt_err(err)),
+            Self::FailedToDeserialize(path, err) => write!(f, "Deserialization failed for file {}, error provided: {}", path.to_string_lossy(), err)
         }
     }
 }

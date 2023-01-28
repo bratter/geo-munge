@@ -1,0 +1,14 @@
+[
+    {
+        "shape": "point",
+        "count": 10,
+        "meta": 0,
+        "cmp": 10
+    },
+    {
+        "shape": "point",
+        "count": 100,
+        "meta": 0,
+        "cmp": 100
+    }
+]
