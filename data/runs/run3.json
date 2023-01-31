@@ -3,6 +3,6 @@
         "shape": "Point",
         "count": 100000,
         "meta": 0,
-        "cmp": 100000
+        "cmp": 20000
     }
 ]

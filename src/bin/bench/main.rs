@@ -1,6 +1,7 @@
 mod args;
 mod commands;
 mod run;
+mod write;
 
 use std::{
     env::{self, VarError},
@@ -9,42 +10,12 @@ use std::{
 };
 
 use args::{Args, Command};
-use commands::{build, clean, list, load, remove};
+use commands::{build, clean, execute, list, load, remove};
 use geo_munge::error::Error;
 
 use clap::Parser;
 
-// TODO: Make a benchmarking rig:
-//       - Separate dataset generation and qt execution so it can be used by perf etc.
-//       - Configurable in some sort of run format, done in a config file, needs to be able to
-//       manage combinations of geo data and cmp point data, although cmp point can probably be
-//       simple-ish
-//       - Should test some level of metadata stuff as this may take time per run
-//       - Data generation only needs to build a single shape type per file, so can encode in
-//       shapefiles as a starting point, but might also be interesting to see how long parsing kml
-//       or geojson takes
-//       - Cmp points can just be a simple lng-lat in
-//       - Use $XDG_STATE_HOME (there is a default if not set: $HOME/.local/state
-//       when done
-//       - Output timing results to a csv file
-//       - A single run needs to be the combination of a data (shp) and cmp (csv) files
-//       - Required settings for data:
-//          - shape (start with point, probably only add linestrings, others aren't necessary)
-//          - count
-//          - meta (don't over invest - just a count of the number of text fields, all short)
-//          - coords (some guide to the number of coords to use in linestrings, polygons)
-//          - complexity (not for now - how to distribute coords in linestrings, etc)
-//          - distribution (not for now - how to distribute shapes in the bbox)
-//      - Required settings for cmp:
-//          - count
-//      - Set up the files in folders with a run id, and just keep track of the inputs for the run
-//      - Run as a whole needs repeats, but should be quite stable
-//      in a tracking file have an option to delete a run, otherwise can't overwrite, so load run
-//      definition from a json file, which checks and stores it, then generate, then execute.
-//      - The executor will need to just run Command to execute proximity
-//      - This will be fine for my experimental purposes, but to run with perf may need to justdo
-//      the generation here then run perf straight on proximity
-//
+// TODO: See notes in execute command file on further improvements
 #[derive(Debug)]
 pub struct Paths {
     pub run: PathBuf,
@@ -66,7 +37,7 @@ fn main() -> Result<(), Error> {
         Command::Remove { name } => remove(&name, &paths),
         Command::Clean => clean(&paths.build),
         Command::Build { name } => build(&name, &paths),
-        Command::Execute { name } => todo!(),
+        Command::Execute { name, n, bin } => execute(&name, n, bin, &paths),
     }
 }
 

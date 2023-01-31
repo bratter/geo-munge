@@ -40,5 +40,14 @@ pub enum Command {
     Execute {
         /// The run to execute.
         name: String,
+
+        /// Number of times to execute each run
+        #[arg(short, default_value = "1")]
+        n: usize,
+
+        /// Location of the proximity binary. If not provided first take the binary in the pwd, it
+        /// it exists, otherwise falls back to one on PATH.
+        #[arg(long)]
+        bin: Option<PathBuf>,
     },
 }

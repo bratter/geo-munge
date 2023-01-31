@@ -26,6 +26,8 @@ pub enum Error {
     InsertFailedRequiresPoint(usize),
     FindError(usize, quadtree::Error),
     FailedToDeserialize(PathBuf, serde_json::Error),
+    ExecPipelineFailed(std::io::Error),
+    CannotFindCommand,
 }
 
 pub enum ParseType {
@@ -103,7 +105,9 @@ impl fmt::Display for Error {
             Self::InsertFailed(i, err) => write!(f, "Insert failed for geometry at index {}: {}", i, display_qt_err(err)),
             Self::InsertFailedRequiresPoint(i) => write!(f, "Cannot insert non-point geometry into point quadtree at index {}, to enable bounds mode, create the quadtree without the -p flag", i),
             Self::FindError(i, err) => write!(f, "Match for input record at index {}, failed: {}", i, display_qt_err(err)),
-            Self::FailedToDeserialize(path, err) => write!(f, "Deserialization failed for file {}, error provided: {}", path.to_string_lossy(), err)
+            Self::FailedToDeserialize(path, err) => write!(f, "Deserialization failed for file {}, error provided: {}", path.to_string_lossy(), err),
+            Self::ExecPipelineFailed(err) => write!(f, "Run execution failure: {}", err) ,
+            Self::CannotFindCommand => write!(f, "Could not locate the proximity command for execution")
         }
     }
 }

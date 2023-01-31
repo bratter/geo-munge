@@ -17,3 +17,7 @@ csv = "1.1"
 rand = "0.8.5"
 # Uses a local git repo version tag so we can work on qt improvements in parallel
 quadtree = { git = "file:///home/bratter/code/quadtree/.git", tag = "v0.0.3" }
+
+[profile.debug-release]
+inherits = "release"
+debug = true

@@ -1,0 +1,71 @@
+[
+    {
+        "desc": "Startup baseline",
+        "shape": "point",
+        "count": 0,
+        "meta": 0,
+        "cmp": 0
+    },
+    {
+        "desc": "Build only",
+        "shape": "point",
+        "count": 10000,
+        "meta": 0,
+        "cmp": 0
+    },
+    {
+        "shape": "point",
+        "count": 30000,
+        "meta": 0,
+        "cmp": 0
+    },
+    {
+        "shape": "point",
+        "count": 100000,
+        "meta": 0,
+        "cmp": 0
+    },
+    {
+        "shape": "point",
+        "count": 300000,
+        "meta": 0,
+        "cmp": 0
+    },
+    {
+        "shape": "point",
+        "count": 1000000,
+        "meta": 0,
+        "cmp": 0
+    },
+    {
+        "desc": "Find",
+        "shape": "point",
+        "count": 10000,
+        "meta": 0,
+        "cmp": 10000
+    },
+    {
+        "shape": "point",
+        "count": 30000,
+        "meta": 0,
+        "cmp": 10000
+    },
+    {
+        "shape": "point",
+        "count": 100000,
+        "meta": 0,
+        "cmp": 10000
+    },
+    {
+        "shape": "point",
+        "count": 300000,
+        "meta": 0,
+        "cmp": 10000
+    },
+    {
+        "shape": "point",
+        "count": 1000000,
+        "meta": 0,
+        "cmp": 10000
+    }
+]
