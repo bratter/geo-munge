@@ -1,12 +1,14 @@
 mod args;
+mod single_thread;
 
 use clap::Parser;
 use quadtree::MEAN_EARTH_RADIUS;
+use single_thread::{exec_single_thread, SingleThreadOptions};
 use std::time::Instant;
 
 use crate::args::Args;
-use geo_munge::csv::reader::{build_input_settings, parse_record};
-use geo_munge::csv::writer::{make_csv_writer, write_line, WriteData};
+use geo_munge::csv::reader::build_input_settings;
+use geo_munge::csv::writer::make_csv_writer;
 use geo_munge::error::Error;
 use geo_munge::qt::{make_bbox, QtData, Quadtree};
 
@@ -30,8 +32,8 @@ use geo_munge::qt::{make_bbox, QtData, Quadtree};
 // TODO: Retrieve on bounds qt needs to be able to retrieve for shapes
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
-    let r = args.r.map(|r| r / MEAN_EARTH_RADIUS);
+    let mut args = Args::parse();
+    args.r = args.r.map(|r| r / MEAN_EARTH_RADIUS);
     let delimiter = args.delimiter.as_bytes();
     if delimiter.len() != 1 {
         return Err(Box::new(Error::InvalidDelimiter));
@@ -40,8 +42,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set up csv parsing before building the quadtree so we can abort early if
     // it crashes on setup
-    let (mut csv_reader, settings) = build_input_settings(None, delimiter)?;
-    let mut csv_writer = make_csv_writer(settings.id_label, delimiter, &args.fields)?;
+    let (csv_reader, settings) = build_input_settings(None, delimiter)?;
+    let csv_writer = make_csv_writer(settings.id_label, delimiter, &args.fields)?;
 
     // Set up the options for constructing the quadtree
     let opts = QtData::new(
@@ -60,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     }
     let start = Instant::now();
-    let qt = Quadtree::from_path(args.path, opts)?;
+    let qt = Quadtree::from_path(args.path.clone(), opts)?;
     if args.verbose || args.print {
         eprintln!(
             "Quadtree with {} children built in {} ms",
@@ -72,51 +74,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("{}", qt);
     }
 
+    // TODO: Turn this into a parallel iterator and process in parallel
+    //       - The csv output cannot be directly turned into a par_iter
+    //       - Likely provide an option to parallelize or not
+    //       - Likely have to buffer that reads into a vector then switch over to processing
+    //       - To help avoid starvation perhaps use two rotating vectors that are locked to write
+    //       - Stick the routine in a loop that rotates one vecotr reading and the other writing
+    //       - But first get it working just buffering and running per: https://github.com/rayon-rs/rayon/issues/46
+    //       - Then have to think about tuning - which depends on IO speed vs processing speed
+    //       - First move the non-current loop to its own file and go from there
+
     // After loading the quadtree, iterate through all the incoming test records
-    let start = Instant::now();
-    for (i, record) in csv_reader.records().enumerate() {
-        match (parse_record(i, record, &settings), args.k) {
-            (Ok(parsed), None) | (Ok(parsed), Some(1)) => match qt.find(&parsed, r, &args.fields) {
-                Ok(result) => {
-                    let data = WriteData {
-                        result,
-                        record: &parsed.record,
-                        fields: &args.fields,
-                        id: &parsed.id,
-                        index: i,
-                    };
-
-                    write_line(&mut csv_writer, &settings, data);
-                }
-                Err(err) => eprintln!("{err}"),
-            },
-            (Ok(parsed), Some(k)) => match qt.knn(&parsed, k, r, &args.fields) {
-                Ok(results) => {
-                    for result in results {
-                        let data = WriteData {
-                            result,
-                            record: &parsed.record,
-                            fields: &args.fields,
-                            id: &parsed.id,
-                            index: i,
-                        };
-
-                        write_line(&mut csv_writer, &settings, data);
-                    }
-                }
-                Err(err) => eprintln!("{err}"),
-            },
-            (Err(err), _) => eprintln!("{err}"),
-        }
-
-        if args.verbose && i % 10000 == 0 {
-            eprintln!(
-                "Processed {} records in {} ms",
-                i,
-                start.elapsed().as_millis()
-            );
-        }
-    }
+    exec_single_thread(SingleThreadOptions {
+        qt,
+        csv_reader,
+        csv_writer,
+        args,
+        settings,
+    });
 
     // Return Ok from main if everything ran correctly
     Ok(())
