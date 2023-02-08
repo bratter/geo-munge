@@ -66,6 +66,10 @@ pub struct Args {
     #[arg(short, long)]
     pub children: Option<usize>,
 
+    /// Run single threaded (proximity runs searches multithreaded by default).
+    #[arg(long = "single-thread")]
+    pub single_thread: bool,
+
     /// Provide an optional list of any metadata fields from the quadtree
     /// {n}data that should be output with the match. The input's index
     /// {n}in load order and the `id` field will automatically be added.

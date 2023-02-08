@@ -1,4 +1,4 @@
-use std::{collections::HashMap, iter::empty, rc::Rc};
+use std::{collections::HashMap, iter::empty, sync::Arc};
 
 use geo::Point;
 use geojson::Feature;
@@ -59,9 +59,9 @@ impl AsPoint for Datum {
 /// Enum to capture underlying data to build metadata fields. Separate variant provided for each
 /// input file type.
 pub enum BaseData {
-    Shp(Rc<Record>),
-    Json(Rc<Feature>),
-    // Kml doesn't need an RC because in this setup there are no mutligeometries with metadata that
+    Shp(Arc<Record>),
+    Json(Arc<Feature>),
+    // Kml doesn't need RC because in this setup there are no mutligeometries with metadata that
     // get broken up with each requiring a reference to the KmlItem
     Kml(KmlItem),
     // Csvs only support points and therefore can never be spilt apart

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use geo::Point;
 use shapefile::{dbase::Record, Reader};
@@ -34,10 +34,10 @@ pub fn build_shp(path: PathBuf, opts: QtData) -> Result<Quadtree, Error> {
             Ok((shp, record)) => {
                 // Use an RC here to simplify: we don't need to keep a master list around and manage
                 // the references, but can still avoid duplicating the records
-                let record = Rc::new(record);
+                let record = Arc::new(record);
                 for geom in convert_shape(shp) {
                     if let Some(err) = geom
-                        .map(|g| Datum::new(g, BaseData::Shp(Rc::clone(&record)), index))
+                        .map(|g| Datum::new(g, BaseData::Shp(Arc::clone(&record)), index))
                         .and_then(|datum| qt.insert(datum))
                         .err()
                     {

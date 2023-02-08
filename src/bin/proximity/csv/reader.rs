@@ -4,28 +4,20 @@ use csv::{Reader, ReaderBuilder, StringRecord};
 use geo::Point;
 use quadtree::ToRadians;
 
-use crate::error::{Error, ParseType};
+use geo_munge::error::{Error, ParseType};
+use geo_munge::qt::ParsedRecord;
 
-/// Index and label settings for the stream of test points.
-pub struct InputSettings {
-    pub lat_index: usize,
-    pub lng_index: usize,
-    pub id_index: Option<usize>,
-    pub id_label: &'static str,
-}
+use crate::args::Args;
+use crate::InputSettings;
 
-/// Test point, id field, and metadata extracted from an input record.
-pub struct ParsedRecord {
-    pub index: usize,
-    pub record: StringRecord,
-    pub point: Point,
-    pub id: Option<String>,
-}
+pub fn build_input_settings(args: &Args) -> Result<(Reader<Stdin>, InputSettings), Error> {
+    // convert the delimiter into something useful for csv
+    let delimiter = args.delimiter.as_bytes();
+    if delimiter.len() != 1 {
+        return Err(Error::InvalidDelimiter);
+    }
+    let delimiter = delimiter[0];
 
-pub fn build_input_settings(
-    id_label: Option<&'static str>,
-    delimiter: u8,
-) -> Result<(Reader<Stdin>, InputSettings), Error> {
     // Set up the reader based on the passed input
     // Note that the reader must have headers that contain a lat and lng field,
     // and can contain an optional, configurable id field for subsequent matching
@@ -35,12 +27,15 @@ pub fn build_input_settings(
         .from_reader(std::io::stdin());
 
     // Get the label to look for the id
+    // TODO: This should come from the args
+    let id_label = None;
     let id_label = id_label.unwrap_or("id");
 
     let mut id_index = None;
     let mut lat_index = None;
     let mut lng_index = None;
 
+    // Then look through the fields to find the id as well as the lng and lat fields
     for (i, label) in reader
         .headers()
         .map_err(|err| Error::CsvParseError(err))?
@@ -50,7 +45,7 @@ pub fn build_input_settings(
         let label = label.to_lowercase();
         let label = label.as_str();
 
-        if label == id_label {
+        if label == "id" {
             id_index = Some(i);
         } else if label == "lat" {
             lat_index = Some(i);
@@ -68,6 +63,12 @@ pub fn build_input_settings(
                 lng_index,
                 id_index,
                 id_label,
+                delimiter,
+                // Drop in extra useful information from the args
+                k: args.k,
+                r: args.r,
+                fields: args.fields.clone(),
+                verbose: args.verbose,
             },
         ))
     } else {

@@ -1,21 +1,27 @@
 mod args;
+mod csv;
+mod multi_thread;
+mod run;
 mod single_thread;
 
 use clap::Parser;
 use quadtree::MEAN_EARTH_RADIUS;
-use single_thread::{exec_single_thread, SingleThreadOptions};
 use std::time::Instant;
 
 use crate::args::Args;
-use geo_munge::csv::reader::build_input_settings;
-use geo_munge::csv::writer::make_csv_writer;
-use geo_munge::error::Error;
+use crate::csv::reader::build_input_settings;
+use crate::csv::writer::make_csv_writer;
 use geo_munge::qt::{make_bbox, QtData, Quadtree};
 
+use multi_thread::exec_multi_thread;
+use single_thread::exec_single_thread;
+
 // TODO: Refine the API and implementation
+//       - Fix id_label in the build_input_settings call - it is set to none!
+//       - We now use Arc instead of Rc in BaseData so the quadtree can be sent through the
+//         parallel iterator, but this adds at least some overhead when reading - should we
+//         reorganize to only send a reference through the par_iter, and keep the data outside?
 //       - Capture and respond to system interupts (e.g. ctrl-c)
-//       - Do some performance testing with perf and flamegraph
-//       - Write concurrent searching, probably with Rayon, this can be done in proximity itself
 //       - Explore concurrent inserts - should be safe as if we can get an &mut at the node where
 //         we are inserting or subdividing - this can block, but the rest of the qt is fine
 //         can use an atomic usize for size, just need to work out how to get &mut from & when inserting
@@ -31,19 +37,35 @@ use geo_munge::qt::{make_bbox, QtData, Quadtree};
 //
 // TODO: Retrieve on bounds qt needs to be able to retrieve for shapes
 
+pub(crate) type CsvReader = ::csv::Reader<std::io::Stdin>;
+pub(crate) type CsvWriter = ::csv::Writer<std::io::Stdout>;
+
+/// Index and label and field settings for the stream of test points.
+#[derive(Clone)]
+pub struct InputSettings {
+    pub lat_index: usize,
+    pub lng_index: usize,
+    pub id_index: Option<usize>,
+    pub id_label: &'static str,
+    pub delimiter: u8,
+    pub k: Option<usize>,
+    pub r: Option<f64>,
+    pub fields: Option<Vec<String>>,
+    pub verbose: bool,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Extract and process everything we need from args
     let mut args = Args::parse();
     args.r = args.r.map(|r| r / MEAN_EARTH_RADIUS);
-    let delimiter = args.delimiter.as_bytes();
-    if delimiter.len() != 1 {
-        return Err(Box::new(Error::InvalidDelimiter));
-    }
-    let delimiter = delimiter[0];
+    let verbose = args.verbose;
+    let single_thread = args.single_thread;
+    let print_qt = args.print;
 
     // Set up csv parsing before building the quadtree so we can abort early if
     // it crashes on setup
-    let (csv_reader, settings) = build_input_settings(None, delimiter)?;
-    let csv_writer = make_csv_writer(settings.id_label, delimiter, &args.fields)?;
+    let (csv_reader, settings) = build_input_settings(&args)?;
+    let csv_writer = make_csv_writer(&settings)?;
 
     // Set up the options for constructing the quadtree
     let opts = QtData::new(
@@ -54,44 +76,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Now build the quadtree
-    if args.verbose {
+    if verbose {
         let qt_type = if opts.is_point_qt { "point" } else { "bounds" };
         eprintln!(
             "Building {} quadtree: depth={}, children={}",
             qt_type, opts.depth, opts.max_children
         )
     }
+
     let start = Instant::now();
-    let qt = Quadtree::from_path(args.path.clone(), opts)?;
-    if args.verbose || args.print {
+    let qt = Quadtree::from_path(args.path, opts)?;
+    if verbose || print_qt {
         eprintln!(
             "Quadtree with {} children built in {} ms",
             qt.size(),
             start.elapsed().as_millis()
         )
     }
-    if args.print {
+    if print_qt {
         eprintln!("{}", qt);
     }
 
-    // TODO: Turn this into a parallel iterator and process in parallel
-    //       - The csv output cannot be directly turned into a par_iter
-    //       - Likely provide an option to parallelize or not
-    //       - Likely have to buffer that reads into a vector then switch over to processing
-    //       - To help avoid starvation perhaps use two rotating vectors that are locked to write
-    //       - Stick the routine in a loop that rotates one vecotr reading and the other writing
-    //       - But first get it working just buffering and running per: https://github.com/rayon-rs/rayon/issues/46
-    //       - Then have to think about tuning - which depends on IO speed vs processing speed
-    //       - First move the non-current loop to its own file and go from there
-
     // After loading the quadtree, iterate through all the incoming test records
-    exec_single_thread(SingleThreadOptions {
-        qt,
-        csv_reader,
-        csv_writer,
-        args,
-        settings,
-    });
+    // Run multi-threaded by default, but use the argument to select single-threaded if required
+    let start = Instant::now();
+    if single_thread {
+        if settings.verbose {
+            eprintln!("Starting single-threaded execution");
+        }
+
+        exec_single_thread(csv_reader, csv_writer, &qt, &settings);
+    } else {
+        if verbose {
+            eprintln!("Starting multi-threaded execution");
+        }
+
+        exec_multi_thread(csv_reader, csv_writer, &qt, &settings);
+    }
+    if settings.verbose {
+        eprintln!("Finished in {} ms", start.elapsed().as_millis());
+    }
 
     // Return Ok from main if everything ran correctly
     Ok(())

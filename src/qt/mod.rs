@@ -13,7 +13,6 @@ use quadtree::{
     ToRadians,
 };
 
-use crate::csv::reader::ParsedRecord;
 use crate::error::Error;
 use datum::*;
 
@@ -21,6 +20,8 @@ use self::csv::build_csv;
 use self::geojson::{build_geojson, geojson_bbox};
 use self::kml::build_kml;
 use self::shapefile::{build_shp, shp_bbox};
+
+pub use self::csv::ParsedRecord;
 
 pub struct QtData {
     pub is_point_qt: bool,
@@ -45,15 +46,11 @@ impl QtData {
     }
 }
 
-/// Result type including the stored geometry, the matched index from the datum, the distance for
-/// the match, and the extracted + harmonized metadata that abstracts from any sort of metadata
-/// generic, original datum, extracted metdata, and the distance.
-pub struct SearchResult<'a> {
-    pub geom: GeometryRef<'a, f64>,
-    pub index: usize,
-    pub distance: f64,
-    pub meta: Box<dyn Iterator<Item = String> + 'a>,
-}
+/// Result type including the `[Datum]` and the distance for the match.
+///
+/// The datum then contains methods for extracting the underlying geometry, the index, and metadata
+/// from the original geometry.
+pub type SearchResult<'a> = (&'a Datum, f64);
 
 /// QuadTree implementation. This is a light wrapper around both the Point and Bounds versions that
 /// implements runtime blocks to not insert invalid data into the Point version. We do not
@@ -135,20 +132,12 @@ impl Quadtree {
         &'a self,
         record: &ParsedRecord,
         r: Option<f64>,
-        fields: &'a Option<Vec<String>>,
     ) -> Result<SearchResult<'a>, Error> {
-        let (datum, distance) = match self {
+        match self {
             Self::Bounds(b) => b.find_r(&record.point, r.unwrap_or(f64::INFINITY)),
             Self::Point(p) => p.find_r(&record.point, r.unwrap_or(f64::INFINITY)),
         }
-        .map_err(|err| Error::FindError(record.index, err))?;
-
-        Ok(SearchResult {
-            geom: datum.as_geom(),
-            index: datum.index(),
-            distance,
-            meta: datum.meta_iter(fields),
-        })
+        .map_err(|err| Error::FindError(record.index, err))
     }
 
     pub fn knn<'a>(
@@ -156,23 +145,12 @@ impl Quadtree {
         record: &ParsedRecord,
         k: usize,
         r: Option<f64>,
-        fields: &'a Option<Vec<String>>,
     ) -> Result<Vec<SearchResult<'a>>, Error> {
-        let found = match self {
+        match self {
             Self::Bounds(b) => b.knn_r(&record.point, k, r.unwrap_or(f64::INFINITY)),
             Self::Point(p) => p.knn_r(&record.point, k, r.unwrap_or(f64::INFINITY)),
         }
-        .map_err(|err| Error::FindError(record.index, err))?;
-
-        Ok(found
-            .into_iter()
-            .map(|(datum, distance)| SearchResult {
-                geom: datum.as_geom(),
-                index: datum.index(),
-                distance,
-                meta: datum.meta_iter(fields),
-            })
-            .collect())
+        .map_err(|err| Error::FindError(record.index, err))
     }
 }
 

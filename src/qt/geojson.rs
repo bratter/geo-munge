@@ -1,6 +1,6 @@
 use std::iter::once;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use geo::Point;
 use geojson::feature::Id;
@@ -94,12 +94,12 @@ pub fn geojson_bbox(path: &PathBuf) -> Result<(Point, Point), Error> {
 /// convenience, output in the form of an `enumerate` on an `Iterator`.
 fn map_feature((i, f): (usize, Feature)) -> Box<dyn Iterator<Item = Result<Datum, Error>>> {
     // The feature needs to be an Rc so it can be duplicated into each datum
-    let f = Rc::new(f);
+    let f = Arc::new(f);
 
     // The geometry member is an option, without which the feature is irrelevant
     if let Some(g) = &f.geometry {
         Box::new(convert_geom(&g).map(move |res| {
-            res.map(|geom| Datum::new(geom, BaseData::Json(Rc::clone(&f)), i))
+            res.map(|geom| Datum::new(geom, BaseData::Json(Arc::clone(&f)), i))
                 .map_err(|_| Error::CannotParseRecord(i, ParseType::GeoJson))
         }))
     } else {

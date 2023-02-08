@@ -11,6 +11,22 @@ use super::{
     QtData, Quadtree,
 };
 
+/// Test point, id field, and metadata extracted from an input comparison point.
+pub struct ParsedRecord {
+    /// The index of the input comparison point from the incoming csv.
+    pub index: usize,
+
+    /// The unparsed csv record.
+    pub record: StringRecord,
+
+    /// Comparison point pulled from the csv record.
+    pub point: Point,
+
+    /// If available, the value if the id field from the incoming csv, separated for easy tracking
+    /// of promary keys through the putput data.
+    pub id: Option<String>,
+}
+
 pub fn csv_field_val(record: &HashMap<String, String>, field: &String) -> String {
     record.get(field).map(|s| s.to_string()).unwrap_or_default()
 }
