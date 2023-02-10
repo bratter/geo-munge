@@ -17,7 +17,14 @@ pub fn make_csv_writer<'a>(settings: &InputSettings) -> Result<Writer<Stdout>, E
         .from_writer(std::io::stdout());
 
     // Base fields to include in the output
-    let base_fields = [settings.id_label, "lng", "lat", "distance", "match_index"];
+    let base_fields = [
+        "input_index",
+        &settings.id_label,
+        "lng",
+        "lat",
+        "distance",
+        "find_index",
+    ];
 
     // Set up the slice of additional fields to pull from the metdata
     let tmp_vec = Vec::new();
@@ -42,7 +49,6 @@ pub struct WriteData<'a> {
     pub settings: &'a InputSettings,
 }
 
-// TODO: Can we avoid allocating some of the strings?
 pub fn write_line(w: &mut Writer<Stdout>, data: WriteData) {
     let WriteData {
         datum,
@@ -51,28 +57,21 @@ pub fn write_line(w: &mut Writer<Stdout>, data: WriteData) {
         settings,
     } = data;
 
-    // If we parsed an id from the input data, then use it here
-    // otherwise use the record's index as a unique id.
-    // This is useful as errors mean you may not be able to just line up the
-    // output with the input
-    let id = if let Some(id) = &parsed.id {
-        id.to_string()
-    } else {
-        parsed.index.to_string()
-    };
-
     // Make the base fields present in all output
     let base_fields = [
-        // See note above
-        id,
+        // The index from the comparison point
+        parsed.index.to_string(),
+        // If we parsed an id from the input data, then use it here
+        parsed.id.clone().unwrap_or_default(),
         // The lng from the csv input point
         parsed.record.get(settings.lng_index).unwrap().to_string(),
         // The lat from the csv input point
         parsed.record.get(settings.lat_index).unwrap().to_string(),
-        // The closest distance to the returned datum, in meters, trucated at mm
+        // The closest distance to the returned datum, in meters, truncated at mm
         format!("{:.3}", distance * MEAN_EARTH_RADIUS),
         // The index of the found datum as recorded when the QuadTree was built
-        format!("{}", datum.index()),
+        // Aligns with the "find_index" column header
+        datum.index().to_string(),
     ];
 
     let meta_iter = datum.meta_iter(&settings.fields);

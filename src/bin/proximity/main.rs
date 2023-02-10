@@ -17,7 +17,7 @@ use multi_thread::exec_multi_thread;
 use single_thread::exec_single_thread;
 
 // TODO: Refine the API and implementation
-//       - Fix id_label in the build_input_settings call - it is set to none!
+//       - On the windows runs with real data, knn is running faster than find, why?
 //       - We now use Arc instead of Rc in BaseData so the quadtree can be sent through the
 //         parallel iterator, but this adds at least some overhead when reading - should we
 //         reorganize to only send a reference through the par_iter, and keep the data outside?
@@ -46,7 +46,7 @@ pub struct InputSettings {
     pub lat_index: usize,
     pub lng_index: usize,
     pub id_index: Option<usize>,
-    pub id_label: &'static str,
+    pub id_label: String,
     pub delimiter: u8,
     pub k: Option<usize>,
     pub r: Option<f64>,

@@ -27,29 +27,27 @@ pub fn build_input_settings(args: &Args) -> Result<(Reader<Stdin>, InputSettings
         .from_reader(std::io::stdin());
 
     // Get the label to look for the id
-    // TODO: This should come from the args
-    let id_label = None;
-    let id_label = id_label.unwrap_or("id");
+    let id_label = args.id_label.clone().unwrap_or("id".to_string());
 
     let mut id_index = None;
     let mut lat_index = None;
     let mut lng_index = None;
 
     // Then look through the fields to find the id as well as the lng and lat fields
-    for (i, label) in reader
+    for (i, cur_header) in reader
         .headers()
         .map_err(|err| Error::CsvParseError(err))?
         .iter()
         .enumerate()
     {
-        let label = label.to_lowercase();
-        let label = label.as_str();
+        let cur_header = cur_header.to_lowercase();
+        let cur_header = cur_header.as_str();
 
-        if label == "id" {
+        if cur_header == "id" {
             id_index = Some(i);
-        } else if label == "lat" {
+        } else if cur_header == "lat" {
             lat_index = Some(i);
-        } else if label == "lng" {
+        } else if cur_header == "lng" {
             lng_index = Some(i);
         }
     }

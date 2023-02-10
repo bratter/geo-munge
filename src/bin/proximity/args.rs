@@ -78,6 +78,12 @@ pub struct Args {
     #[arg(long, value_delimiter = ',')]
     pub fields: Option<Vec<String>>,
 
+    /// The output printer will look for a field in the input csv called "id"
+    /// {n}and print it as a unique identifier of the row in addition to the
+    /// {n}index. To override the default of "id" use this field.
+    #[arg(long = "id-label")]
+    pub id_label: Option<String>,
+
     /// Set the delimiter for both the input test points and the output
     /// {n}results. Defaults to a comma. Will error of a valid single
     /// {n}character is not provided. This program will always use the
