@@ -121,7 +121,7 @@ impl Quadtree {
         }
     }
 
-    pub fn retrieve<'a>(&'a self, datum: &Datum) -> Box<dyn Iterator<Item = &Datum> + 'a> {
+    pub fn retrieve<'a>(&'a self, datum: &Datum) -> Box<dyn Iterator<Item = &'a Datum> + 'a> {
         match self {
             Self::Bounds(b) => Box::new(b.retrieve(datum)),
             Self::Point(p) => Box::new(p.retrieve(datum)),

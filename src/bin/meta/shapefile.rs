@@ -15,7 +15,7 @@ impl ShapefileMeta {
         Self { path }
     }
 
-    pub fn reader(&self) -> Result<Reader<BufReader<File>>, Error> {
+    pub fn reader(&self) -> Result<Reader<BufReader<File>, BufReader<File>>, Error> {
         // Load the shapefile, exiting with an error if the file cannot read
         // Then build the quadtree
         shapefile::Reader::from_path(&self.path)

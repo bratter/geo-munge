@@ -1,5 +1,5 @@
 use rand::{
-    distributions::{Distribution, Uniform},
+    distr::{Distribution, Uniform},
     rngs::ThreadRng,
 };
 use std::path::PathBuf;
@@ -34,9 +34,9 @@ impl Rand {
 impl Default for Rand {
     fn default() -> Self {
         Self {
-            rng: rand::thread_rng(),
-            lng_dist: Uniform::from(-180.0..180.0),
-            lat_dist: Uniform::from(-90.0..90.0),
+            rng: rand::rng(),
+            lng_dist: Uniform::new_inclusive(-180.0, 180.0).expect("Valid hardcoded range"),
+            lat_dist: Uniform::new_inclusive(-90.0, 90.0).expect("Valid hardcoded range"),
         }
     }
 }
