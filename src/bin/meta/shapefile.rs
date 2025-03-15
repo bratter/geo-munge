@@ -22,7 +22,8 @@ impl ShapefileMeta {
             .map_err(|_| Error::CannotReadFile(self.path.clone()))
     }
 
-    fn field_iter(&self, show_types: bool) -> Result<impl Iterator<Item = String>, Error> {
+    // TODO: 2024 edition fix added the `+ use<>` to this return, unsure what it is doing, check if it remains
+    fn field_iter(&self, show_types: bool) -> Result<impl Iterator<Item = String> + use<>, Error> {
         let (_, record) = self
             .reader()?
             .iter_shapes_and_records()
