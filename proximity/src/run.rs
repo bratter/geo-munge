@@ -1,5 +1,5 @@
-use geo_munge::error::Error;
-use geo_munge::qt::{ParsedRecord, Quadtree, SearchResult};
+use geolib::error::Error;
+use geolib::qt::{ParsedRecord, Quadtree, SearchResult};
 
 use crate::csv::reader::parse_record;
 use crate::csv::writer::{write_line, WriteData};

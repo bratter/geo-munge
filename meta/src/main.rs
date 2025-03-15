@@ -6,7 +6,7 @@ mod shapefile;
 use std::path::PathBuf;
 
 use clap::Parser;
-use geo_munge::error::Error;
+use geolib::error::Error;
 
 use crate::args::{Cli, Command};
 use crate::geojson::GeoJsonMeta;

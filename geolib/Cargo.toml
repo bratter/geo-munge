@@ -1,0 +1,15 @@
+[package]
+name = "geolib"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap = { workspace = true }
+geo = { workspace = true }
+csv = { workspace = true }
+shapefile = { workspace = true }
+geojson = { workspace = true }
+kml = { workspace = true }
+serde_json = { workspace = true }
+# Uses a local git repo version tag so we can work on qt improvements in parallel
+quadtree = { git = "file:///home/bratter/code/quadtree/.git", tag = "v0.0.4" }

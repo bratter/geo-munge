@@ -1,10 +1,9 @@
 use std::io::Stdout;
 
 use csv::{Writer, WriterBuilder};
-use quadtree::MEAN_EARTH_RADIUS;
 
-use geo_munge::error::Error;
-use geo_munge::qt::{datum::Datum, ParsedRecord};
+use geolib::error::Error;
+use geolib::qt::{datum::Datum, ParsedRecord, MEAN_EARTH_RADIUS};
 
 use crate::InputSettings;
 

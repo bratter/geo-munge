@@ -1,0 +1,11 @@
+[package]
+name = "proximity"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap = { workspace = true }
+geo = { workspace = true }
+csv = { workspace = true }
+geolib = { workspace = true }
+rayon = "^1.10"

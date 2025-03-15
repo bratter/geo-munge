@@ -5,7 +5,7 @@ use std::{
 };
 
 use csv::WriterBuilder;
-use geo_munge::{
+use geolib::{
     error::Error,
     kml::{read_kml, Kml, KmlItemRef},
 };

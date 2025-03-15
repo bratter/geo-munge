@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use csv::Writer;
 
-use geo_munge::error::Error;
+use geolib::error::Error;
 
 use crate::run::RunSet;
 

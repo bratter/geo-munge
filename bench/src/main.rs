@@ -11,7 +11,7 @@ use std::{
 
 use args::{Args, Command};
 use commands::{build, clean, execute, list, load, remove};
-use geo_munge::error::Error;
+use geolib::error::Error;
 
 use clap::Parser;
 

@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fmt::Display, fs::read_to_string, iter::empty, path::PathBuf};
 
 use csv::WriterBuilder;
-use geo_munge::error::Error;
 use geojson::{feature::Id, FeatureCollection, GeoJson, JsonValue};
+use geolib::error::Error;
 
 use crate::{DataOpts, Meta, MetaResult};
 

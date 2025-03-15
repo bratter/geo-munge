@@ -2,10 +2,9 @@ use std::io::Stdin;
 
 use csv::{Reader, ReaderBuilder, StringRecord};
 use geo::Point;
-use quadtree::ToRadians;
 
-use geo_munge::error::{Error, ParseType};
-use geo_munge::qt::ParsedRecord;
+use geolib::error::{Error, ParseType};
+use geolib::qt::{ParsedRecord, ToRadians};
 
 use crate::args::Args;
 use crate::InputSettings;

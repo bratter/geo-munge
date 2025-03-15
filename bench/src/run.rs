@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use geo_munge::error::Error;
+use geolib::error::Error;
 use serde::Deserialize;
 
 use crate::write::{write_cmp, write_data};

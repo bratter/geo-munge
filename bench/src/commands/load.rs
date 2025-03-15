@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use geo_munge::error::Error;
+use geolib::error::Error;
 
 use crate::run::RunSet;
 

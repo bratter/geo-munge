@@ -89,6 +89,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 
 [[package]]
+name = "bench"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "csv",
+ "geolib",
+ "rand",
+ "serde",
+ "serde_json",
+ "shapefile",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -347,23 +360,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "geo-munge"
-version = "0.2.0"
-dependencies = [
- "clap",
- "csv",
- "geo",
- "geojson",
- "kml",
- "quadtree",
- "rand",
- "rayon",
- "serde",
- "serde_json",
- "shapefile",
-]
-
-[[package]]
 name = "geo-types"
 version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -396,6 +392,20 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.12",
+]
+
+[[package]]
+name = "geolib"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "csv",
+ "geo",
+ "geojson",
+ "kml",
+ "quadtree",
+ "serde_json",
+ "shapefile",
 ]
 
 [[package]]
@@ -574,6 +584,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 
 [[package]]
+name = "meta"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "csv",
+ "geo",
+ "geojson",
+ "geolib",
+ "kml",
+ "shapefile",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -632,6 +655,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31971752e70b8b2686d7e46ec17fb38dad4051d94024c88df49b667caea9c84"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "proximity"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "csv",
+ "geo",
+ "geolib",
+ "rayon",
 ]
 
 [[package]]

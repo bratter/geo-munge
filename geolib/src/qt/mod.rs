@@ -10,8 +10,9 @@ use std::path::PathBuf;
 use geo::{Point, Rect};
 use quadtree::{
     AsGeom, BoundsQuadTree, CalcMethod, GeometryRef, PointQuadTree, QuadTree as QT, QuadTreeSearch,
-    ToRadians,
 };
+
+pub use quadtree::{ToRadians, MEAN_EARTH_RADIUS};
 
 use crate::error::Error;
 use datum::*;

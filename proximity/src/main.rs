@@ -5,13 +5,12 @@ mod run;
 mod single_thread;
 
 use clap::Parser;
-use quadtree::MEAN_EARTH_RADIUS;
 use std::time::Instant;
 
 use crate::args::Args;
 use crate::csv::reader::build_input_settings;
 use crate::csv::writer::make_csv_writer;
-use geo_munge::qt::{make_bbox, QtData, Quadtree};
+use geolib::qt::{make_bbox, QtData, Quadtree, MEAN_EARTH_RADIUS};
 
 use multi_thread::exec_multi_thread;
 use single_thread::exec_single_thread;

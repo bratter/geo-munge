@@ -1,4 +1,4 @@
-use geo_munge::qt::Quadtree;
+use geolib::qt::Quadtree;
 use rayon::prelude::*;
 
 use crate::{

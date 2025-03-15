@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use geo_munge::error::Error;
+use geolib::error::Error;
 
 use crate::{run::RunSet, Paths};
 

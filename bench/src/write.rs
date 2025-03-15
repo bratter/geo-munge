@@ -4,7 +4,7 @@ use rand::{
 };
 use std::path::PathBuf;
 
-use geo_munge::error::Error;
+use geolib::error::Error;
 use shapefile::{
     dbase::{Record, TableWriterBuilder},
     Point,
