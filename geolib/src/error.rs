@@ -3,11 +3,13 @@ use std::{fmt, path::PathBuf};
 /// Custom error enum for emitting on failure.
 ///
 /// Includes custom display, debug traits to produce human-readable error messages.
+/// TODO: Replace with anyhow?
 #[non_exhaustive]
 pub enum Error {
     FileIOError(std::io::Error),
     CannotReadFile(PathBuf),
     CannotParseFile(PathBuf),
+    CannotParseInput,
     CannotParseFileExtension(PathBuf),
     UnsupportedFileType,
     UnexpectedEndOfInput,
@@ -74,6 +76,7 @@ impl fmt::Display for Error {
             Self::CannotParseFile(path) => {
                 write!(f, "Cannot parse file at {}", path.to_string_lossy())
             }
+            Self::CannotParseInput => write!(f, "Cannot parse input stream"),
             Self::CannotParseFileExtension(path) => write!(
                 f,
                 "Cannot parse file extension for file {}",
@@ -131,5 +134,18 @@ fn display_qt_err(err: &quadtree::Error) -> &'static str {
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(value: std::io::Error) -> Self {
+        Error::FileIOError(value)
+    }
+}
+
+// TODO: Better message, probably just with anyhow
+impl From<geojson::Error> for Error {
+    fn from(_: geojson::Error) -> Self {
+        Error::CannotParseInput
     }
 }

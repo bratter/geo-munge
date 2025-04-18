@@ -1,0 +1,43 @@
+# Geo-Munge Roadmap
+
+Capture roadmap items for progressing Geo-Munge
+
+- [ ] Admin fixes
+  - [x] Upgrade dependencies in geo-munge
+  - [x] Convert to 2024 edition
+  - [x] Update dependencies in quadtree
+  - [x] Convert to workspace
+  - [ ] Pull in the quadtree package as a workspace member
+- [ ] Create format conversion binary
+  - [ ] Allow json or ndjson output from meta for better sparse population
+  - [ ] Develop clap interface for conversion, including text wrapping in help text
+  - [ ] Pull existing conversion logic into separate binary
+  - [ ] Investigate geozero and other conversion creates
+  - [ ] Add WKB and WKT processing to proximity
+  - [ ] Take other format conversion out of proximity for simplicity
+  - [ ] Consider if it makes sense to take anything out of meta
+  - [ ] Look into options for reducing copies between at least the output and proximity input
+- [ ] Set up better benchmark testing
+  - [ ] Work out what the current bench package is actually doing and if its needed
+  - [ ] Check out Criterion
+  - [ ] Create routine to load a lot of random data into memory
+  - [ ] Make specific benches for random data and random data that tests depth
+- [ ] Set up client-server mode for proximity
+  - [ ] Write a server that starts up a named pipe or equivalent
+  - [ ] Improve bounding box handling - lock in boxes unless a command is received
+  - [ ] Write a client that can send commands to the server, including load and knn - data can be in WKT or WKB
+  - [ ] Consider fine-grained locking for more efficient multithreaded inserts (low priority)
+- [ ] Add SIMD vectorization
+  - [ ] Try flame graph again
+  - [ ] Drop final square root in intermediate Euclidean calculations
+  - [ ] Support vectorization in Euclidean calculations
+  - [ ] Investigate partial Haversine results for intermediate calculations (dropping constants)
+  - [ ] Support vectorization in Haversine calculations
+  - [ ] Test f32 precision Haversine instead of f64 to double vector capacity
+- [ ] Tweak algorithms
+  - [ ] Check that trig functions are still limiting step in flame graph
+  - [ ] Consider indexing with something like Hexgrid
+  - [ ] Reduce use of trig functions by replacing Haversine with Euclidean where possible
+    - Consider using Euclidean below a certain resolution (test precision, maybe calibrate to requirements)
+    - Consider using Euclidean for first passes in other situations (will need to think through)
+- [ ] Consider GPU offloading (low priority)

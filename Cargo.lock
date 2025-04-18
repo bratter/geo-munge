@@ -65,6 +65,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.97"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dcfed56ad506cb2c684a14971b8861fdc3baaaae314b9e5f9bb532cbe3ba7a4f"
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -200,6 +206,16 @@ name = "colorchoice"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
+
+[[package]]
+name = "convert"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "geo",
+ "geolib",
+]
 
 [[package]]
 name = "crc32fast"
@@ -398,6 +414,7 @@ dependencies = [
 name = "geolib"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "csv",
  "geo",
