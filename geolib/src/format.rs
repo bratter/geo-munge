@@ -1,10 +1,10 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, io::BufRead};
 
 use anyhow::Result;
 use geo::Geometry;
 use serde_json::{Map, Value};
 
-use crate::geojson::{JsonWriter, NdjsonWriter};
+use crate::geojson::{JsonReader, JsonTransformer, NdjsonReader, NdjsonTransformer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -16,22 +16,35 @@ pub enum Mode {
 /// Wrapper object for a geometry and optional properties.
 #[derive(Debug)]
 pub struct GeoItem {
-    pub geom: Geometry,
+    pub geom: Option<Geometry>,
     pub meta: Option<Meta>,
 }
 
 impl GeoItem {
     pub fn new(geom: Geometry, meta: Option<Meta>) -> Self {
-        Self { geom, meta }
+        Self {
+            geom: Some(geom),
+            meta,
+        }
     }
 
     pub fn without_meta(geom: Geometry) -> Self {
-        Self { geom, meta: None }
+        Self {
+            geom: Some(geom),
+            meta: None,
+        }
     }
 
     pub fn with_meta(geom: Geometry, meta: Meta) -> Self {
         Self {
-            geom,
+            geom: Some(geom),
+            meta: Some(meta),
+        }
+    }
+
+    pub fn meta_only(meta: Meta) -> Self {
+        Self {
+            geom: None,
             meta: Some(meta),
         }
     }
@@ -58,13 +71,14 @@ pub trait GeoItemIterator: Iterator<Item = Result<GeoItem>> {}
 
 impl<T> GeoItemIterator for T where T: Iterator<Item = Result<GeoItem>> {}
 
-pub enum Writer<I: GeoItemIterator> {
-    Json(JsonWriter<I>),
-    Ndjson(NdjsonWriter<I>),
+/// Monomorphization of underlying readers to avoid the need for dynamic dispatch.
+pub enum FormatReader<R: BufRead> {
+    Json(JsonReader),
+    Ndjson(NdjsonReader<R>),
 }
 
-impl<I: GeoItemIterator> Iterator for Writer<I> {
-    type Item = anyhow::Result<Cow<'static, [u8]>>;
+impl<R: BufRead> Iterator for FormatReader<R> {
+    type Item = Result<GeoItem>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
@@ -74,19 +88,19 @@ impl<I: GeoItemIterator> Iterator for Writer<I> {
     }
 }
 
-// TODO: Is the meta type better as a generic, associated type, or a concrete? Should it have a trait that lets us read
-// it like a geojson object but with some guarantees?
-pub trait FormatReader {
-    fn iter(self) -> impl GeoItemIterator;
-
-    fn iter_shapes(self) -> impl GeoItemIterator;
-
-    fn iter_meta(self) -> impl Iterator<Item = Result<Meta>>;
+/// Monomorphization of underlying output transformers to avoid the need for dynamic dispatch.
+pub enum FormatTransformer<I: GeoItemIterator> {
+    Json(JsonTransformer<I>),
+    Ndjson(NdjsonTransformer<I>),
 }
 
-pub trait FormatWriter<I: GeoItemIterator>
-where
-    Self: Iterator,
-{
-    fn iter(iter: I, mode: Mode) -> Self;
+impl<I: GeoItemIterator> Iterator for FormatTransformer<I> {
+    type Item = anyhow::Result<Cow<'static, [u8]>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Json(iter) => iter.next(),
+            Self::Ndjson(iter) => iter.next(),
+        }
+    }
 }

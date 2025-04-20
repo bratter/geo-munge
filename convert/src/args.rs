@@ -1,12 +1,10 @@
-use std::{path::PathBuf, str::FromStr};
-
 use clap::{error::ErrorKind, CommandFactory, Parser, ValueEnum};
 
-use crate::Format;
+use crate::{Format, Stream, IO};
 
 /// Main CLI argument parser.
 ///
-/// IS not a clap parser itself, but calls clap and layers additional parsing on top.
+/// Is not a clap parser itself, but calls clap and layers additional parsing on top.
 #[derive(Debug)]
 pub struct Cli {
     pub input: IO,
@@ -55,7 +53,8 @@ impl Cli {
                 }
             }
             (Stream::File(file), Some(format)) => {
-                if Format::try_from(&file) == Ok(format) {
+                // Type erase the Error that doesn't impl PartialEq
+                if Format::try_from(&file).ok() == Some(format) {
                     let stream = Stream::File(file);
                     IO { stream, format }
                 } else {
@@ -67,7 +66,9 @@ impl Cli {
                         ),
                     );
                 }
-            }
+            } // Wildcard covers testing permutations
+            #[cfg(test)]
+            _ => unreachable!(),
         }
     }
 
@@ -100,18 +101,6 @@ struct Args {
     pub meta: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct IO {
-    pub stream: Stream,
-    pub format: Format,
-}
-
-#[derive(Debug, Clone)]
-pub enum Stream {
-    StdIo,
-    File(PathBuf),
-}
-
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Meta {
     Discard,
@@ -124,18 +113,6 @@ impl From<bool> for Meta {
             Meta::Preserve
         } else {
             Meta::Discard
-        }
-    }
-}
-
-impl FromStr for Stream {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s == "-" {
-            Ok(Self::StdIo)
-        } else {
-            Ok(Self::File(PathBuf::from(s)))
         }
     }
 }

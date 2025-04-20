@@ -10,9 +10,9 @@ use std::{
 use anyhow::{anyhow, Result};
 use geojson::{FeatureReader, GeoJson};
 use quadtree::{Geometry, ToRadians};
-use serde_json::{Map, Value};
+use serde_json::Map;
 
-use crate::format::{FormatReader, FormatWriter, GeoItem, GeoItemIterator, Meta, Mode};
+use crate::format::{GeoItem, GeoItemIterator, Meta, Mode};
 
 pub fn read_geojson(path: &PathBuf) -> Result<GeoJson, crate::error::Error> {
     read_to_string(&path)
@@ -76,6 +76,232 @@ pub fn convert_geom(
 
 const GEOM_FEAT_ONLY_MSG: &'static str = "Can only process Feature and Geometry types";
 
+type FeatureResult = geojson::Result<geojson::Feature>;
+
+/// Read and iterate over a GeoJson [`FeatureCollection`].
+///
+/// The reader is a permissive stream-based reader that assumes the incoming stream is a [`FeatureCollection`]. The
+/// underlying GeoJson reader only requires a `'['` as an opener, then starts reading GeoJson features. This reader
+/// therefore will not process single features, geometries or geometry collections. However echoing a single '[' at the
+/// start and a ']' at the end will let it read a single feature.
+pub struct JsonReader {
+    // NOTE: There doesn't seem to be an easy way of removing this dynamic dispatch, given this involves IO and a lot of
+    // parsing, it shouldn't matter too much from a performance perspective.
+    features: Box<dyn Iterator<Item = FeatureResult>>,
+    mode: Mode,
+}
+
+impl JsonReader {
+    // TODO: Is this static requirement too much? I don't think so
+    pub fn new<R: Read + 'static>(reader: R, mode: Mode) -> JsonReader {
+        let features = Box::new(FeatureReader::from_reader(reader).features().take_while(
+            |result| match result {
+                Err(geojson::Error::Io(_)) => false,
+                _ => true,
+            },
+        ));
+
+        JsonReader { features, mode }
+    }
+}
+
+impl Iterator for JsonReader {
+    type Item = Result<GeoItem>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.features.next();
+
+        match self.mode {
+            Mode::Full => next.map(|f| geoitem_from_geojson(GeoJson::Feature(f?), true)),
+            Mode::Shapes => next.map(|f| geoitem_from_geojson(GeoJson::Feature(f?), false)),
+            Mode::Meta => next.map(|f| {
+                Ok(GeoItem::meta_only(Meta::from(
+                    f?.properties.unwrap_or_default(),
+                )))
+            }),
+        }
+    }
+}
+
+pub struct NdjsonReader<R> {
+    reader: Lines<R>,
+    mode: Mode,
+}
+
+impl<R: BufRead> NdjsonReader<R> {
+    pub fn new(reader: R, mode: Mode) -> Self {
+        Self {
+            reader: reader.lines(),
+            mode,
+        }
+    }
+
+    fn get_geojson_line<E>(line: Result<String, E>) -> Result<GeoJson>
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Ok(GeoJson::from_str(&line?)?)
+    }
+}
+
+impl<R: BufRead> Iterator for NdjsonReader<R> {
+    type Item = Result<GeoItem>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.reader.next()?;
+
+        // Ignore empty lines - these are not errors or None
+        // TODO: Is this the best way to skip?
+        if let Ok(ref s) = next {
+            if s.is_empty() {
+                return self.next();
+            }
+        }
+
+        let geojson = Self::get_geojson_line(next);
+        let geoitem = match (self.mode, geojson) {
+            (Mode::Full, Ok(f)) => geoitem_from_geojson(f, true),
+            (Mode::Shapes, Ok(f)) => geoitem_from_geojson(f, false),
+            (Mode::Meta, Ok(f)) => {
+                let meta = match f {
+                    GeoJson::Feature(feat) => feat.properties.unwrap_or_default().into(),
+                    GeoJson::Geometry(_) => Map::default().into(),
+                    _ => return Some(Err(anyhow!(GEOM_FEAT_ONLY_MSG))),
+                };
+                Ok(GeoItem::meta_only(meta))
+            }
+            (_, Err(err)) => Err(err),
+        };
+
+        Some(geoitem)
+    }
+}
+
+enum State {
+    EmitHeader,
+    EmitItem,
+    EmitComma,
+    EmitFooter,
+    Done,
+}
+
+pub struct JsonTransformer<I: GeoItemIterator>
+where
+    I: Iterator,
+{
+    state: State,
+    next_item: Option<I::Item>,
+    iter: I,
+    mode: Mode,
+}
+
+impl<I: GeoItemIterator> JsonTransformer<I> {
+    pub fn new(iter: I, mode: Mode) -> Self {
+        Self {
+            state: State::EmitHeader,
+            next_item: None,
+            iter,
+            mode,
+        }
+    }
+
+    fn header_bytes(&self) -> &'static [u8] {
+        match self.mode {
+            Mode::Full | Mode::Shapes => b"{type:\"FeatureCollection\",features:[\n",
+            Mode::Meta => b"[\n",
+        }
+    }
+
+    fn footer_bytes(&self) -> &'static [u8] {
+        match self.mode {
+            Mode::Full | Mode::Shapes => b"\n]}",
+            Mode::Meta => b"\n]",
+        }
+    }
+}
+
+impl<I: GeoItemIterator> Iterator for JsonTransformer<I> {
+    type Item = Result<Cow<'static, [u8]>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.state {
+            State::EmitHeader => {
+                self.next_item = self.iter.next();
+                self.state = State::EmitItem;
+                Some(Ok(Cow::Borrowed(self.header_bytes())))
+            }
+
+            State::EmitItem => match self.next_item.take() {
+                Some(Ok(item)) => {
+                    // When we emit a valid item, then we test to see if we need to inject a comma to separate the
+                    // emitted features
+                    // NOTE: If make_feature becomes fallible, then will need to handle differently
+                    self.state = State::EmitComma;
+                    Some(Ok(Cow::Owned(make_feature(item, self.mode))))
+                }
+                Some(Err(e)) => {
+                    // When the next item is an error, emit the error and immediately test the next item, without
+                    // inserting a comma
+                    self.next_item = self.iter.next();
+                    Some(Err(e))
+                }
+                None => {
+                    self.state = State::EmitFooter;
+                    self.next()
+                }
+            },
+
+            State::EmitComma => match self.iter.next() {
+                Some(Ok(item)) => {
+                    self.next_item = Some(Ok(item));
+                    self.state = State::EmitItem;
+                    Some(Ok(Cow::Borrowed(b",\n")))
+                }
+                Some(Err(e)) => Some(Err(e)),
+                None => {
+                    self.state = State::EmitFooter;
+                    self.next()
+                }
+            },
+
+            State::EmitFooter => {
+                self.state = State::Done;
+                Some(Ok(Cow::Borrowed(self.footer_bytes())))
+            }
+
+            State::Done => None,
+        }
+    }
+}
+
+pub struct NdjsonTransformer<I: GeoItemIterator> {
+    iter: Fuse<I>,
+    mode: Mode,
+}
+
+impl<I: GeoItemIterator> NdjsonTransformer<I> {
+    pub fn new(iter: I, mode: Mode) -> Self {
+        Self {
+            iter: iter.fuse(),
+            mode,
+        }
+    }
+}
+
+impl<I: GeoItemIterator> Iterator for NdjsonTransformer<I> {
+    type Item = Result<Cow<'static, [u8]>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(v) = self.iter.next() {
+            let mut f = make_feature(v.unwrap(), self.mode);
+            f.push(b'\n');
+            Some(Ok(Cow::Owned(f)))
+        } else {
+            None
+        }
+    }
+}
+
 fn geoitem_from_geojson(geojson: GeoJson, preserve_meta: bool) -> Result<GeoItem> {
     match geojson {
         GeoJson::Feature(f) => {
@@ -91,209 +317,12 @@ fn geoitem_from_geojson(geojson: GeoJson, preserve_meta: bool) -> Result<GeoItem
     }
 }
 
-/// Read and iterate over a GeoJson [`FeatureCollection`].
-///
-/// The reader is a permissive stream-based reader that assumes the incoming stream is a [`FeatureCollection`]. The
-/// underlying GeoJson reader only requires a `'['` as an opener, then starts reading GeoJson features. This reader
-/// therefore will not process single features, geometries or geometry collections. However echoing a single '[' at the
-/// start and a ']' at the end will let it read a single feature.
-pub struct JsonReader<R> {
-    reader: FeatureReader<R>,
-}
-
-impl<R: Read> JsonReader<R> {
-    pub fn try_new(reader: R) -> Result<Self> {
-        Ok(Self {
-            reader: FeatureReader::from_reader(reader),
-        })
-    }
-
-    // TODO: Consider modifying the take while to capture other error types
-    // For instance this currently produces an error on an empty feature collection
-    fn features(self) -> impl Iterator<Item = geojson::Result<geojson::Feature>> {
-        self.reader.features().take_while(|r| match r {
-            Err(geojson::Error::Io(_)) => false,
-            _ => true,
-        })
-    }
-}
-
-impl<R: Read> FormatReader for JsonReader<R> {
-    fn iter(self) -> impl GeoItemIterator {
-        self.features()
-            .map(|result| geoitem_from_geojson(GeoJson::Feature(result?), true))
-    }
-
-    fn iter_shapes(self) -> impl Iterator<Item = Result<GeoItem>> {
-        self.features()
-            .map(|result| geoitem_from_geojson(GeoJson::Feature(result?), false))
-    }
-
-    // TODO: This just needs to be a geo item with a None in geom
-    fn iter_meta(self) -> impl Iterator<Item = Result<Meta>> {
-        self.features()
-            .map(|item| Ok(item?.properties.unwrap_or_default().into()))
-    }
-}
-
-pub struct NdjsonReader<R> {
-    reader: Lines<R>,
-}
-
-impl<R: BufRead> NdjsonReader<R> {
-    pub fn try_new(reader: R) -> Result<Self> {
-        Ok(Self {
-            reader: reader.lines(),
-        })
-    }
-}
-
-impl<R: BufRead> FormatReader for NdjsonReader<R> {
-    fn iter(self) -> impl Iterator<Item = Result<GeoItem>> {
-        self.reader.map(|line| {
-            let geojson = GeoJson::from_str(&line?)?;
-            geoitem_from_geojson(geojson, true)
-        })
-    }
-
-    fn iter_shapes(self) -> impl Iterator<Item = Result<GeoItem>> {
-        self.reader.map(|line| {
-            let geojson = GeoJson::from_str(&line?)?;
-            geoitem_from_geojson(geojson, false)
-        })
-    }
-
-    fn iter_meta(self) -> impl Iterator<Item = Result<Meta>> {
-        self.reader.map(|line| {
-            let geojson = GeoJson::from_str(&line?)?;
-            match geojson {
-                GeoJson::Feature(f) => Ok(f.properties.unwrap_or_default().into()),
-                GeoJson::Geometry(_) => Ok(Map::default().into()),
-                _ => Err(anyhow!(GEOM_FEAT_ONLY_MSG)),
-            }
-        })
-    }
-}
-
-pub struct JsonWriter<I: GeoItemIterator>
-where
-    I: Iterator,
-{
-    started: bool,
-    ended: bool,
-
-    /// Buffer to ensure there is a next item in the iterator.
-    next_item: Option<I::Item>,
-
-    /// [`Fuse`] ensures that we don't mess up intervleaving the separator.
-    iter: Fuse<I>,
-
-    mode: Mode,
-}
-
-// TODO: This should probably take a mode switch that deals with both, shape, meta... this needs to be baked into
-// GeoItem probably just as an Option around the Geometry
-impl<I: GeoItemIterator> JsonWriter<I> {
-    pub fn new(iter: I, mode: Mode) -> Self {
-        Self {
-            started: false,
-            ended: false,
-            next_item: None,
-            iter: iter.fuse(),
-            mode,
-        }
-    }
-}
-
-/*
-impl<I: GeoItemIterator> FormatWriter<I> for JsonWriter<I> {
-    fn iter(iter: I, mode: Mode) -> Self {
-        Self::new(iter, mode)
-    }
-}
-*/
-
-// TODO: Probably make this a specific trait method for JsonWriter, then do a blanket implementation for Iterator (or
-// the other way around)
-// TODO: This needs to be a result, or just make a wrapper that has a result
-impl<I: GeoItemIterator> Iterator for JsonWriter<I> {
-    type Item = Result<Cow<'static, [u8]>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.started {
-            if let Some(v) = self.next_item.take() {
-                Some(Ok(Cow::Owned(make_feature(v.unwrap(), self.mode))))
-            } else {
-                let next_item = self.iter.next();
-                if next_item.is_some() {
-                    self.next_item = next_item;
-                    Some(Ok(Cow::Borrowed(b",\n")))
-                } else if self.ended {
-                    None
-                } else {
-                    self.ended = true;
-                    match self.mode {
-                        Mode::Full | Mode::Shapes => Some(Ok(Cow::Borrowed(b"\n]}"))),
-                        Mode::Meta => Some(Ok(Cow::Borrowed(b"\n]"))),
-                    }
-                }
-            }
-        } else {
-            self.started = true;
-            self.next_item = self.iter.next();
-            match self.mode {
-                Mode::Full | Mode::Shapes => Some(Ok(Cow::Borrowed(
-                    b"{type:\"FeatureCollection\",features:[\n",
-                ))),
-                Mode::Meta => Some(Ok(Cow::Borrowed(b"[\n"))),
-            }
-        }
-    }
-}
-
-pub struct NdjsonWriter<I: GeoItemIterator> {
-    iter: Fuse<I>,
-    mode: Mode,
-}
-
-impl<I: GeoItemIterator> NdjsonWriter<I> {
-    pub fn new(iter: I, mode: Mode) -> Self {
-        Self {
-            iter: iter.fuse(),
-            mode,
-        }
-    }
-}
-
-// TODO: Not quite right... the output has to error also, as does the input
-/*
-impl<I: GeoItemIterator> FormatWriter<I> for NdjsonWriter<I> {
-    fn iter(iter: I, mode: Mode) -> Self {
-        Self::new(iter, mode)
-    }
-}
-*/
-
-impl<I: GeoItemIterator> Iterator for NdjsonWriter<I> {
-    type Item = Result<Cow<'static, [u8]>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(v) = self.iter.next() {
-            let mut f = make_feature(v.unwrap(), self.mode);
-            f.push(b'\n');
-            Some(Ok(Cow::Owned(f)))
-        } else {
-            None
-        }
-    }
-}
-
 /// TODO: This should be done with From on a parent object with the properties most likely
 fn make_feature(item: GeoItem, mode: Mode) -> Vec<u8> {
     let vec = match mode {
         Mode::Full | Mode::Shapes => {
             let mut f = geojson::Feature::default();
-            f.geometry = Some(geojson::Geometry::from(&item.geom));
+            f.geometry = item.geom.as_ref().map(geojson::Geometry::from);
             // TODO: This processing will need to be much better
             if mode == Mode::Full {
                 f.properties = match item.meta {
@@ -344,16 +373,15 @@ mod tests {
             ]
           }
         "#;
-        let feature_reader = JsonReader::try_new(fc.as_bytes()).expect("a valid iterator");
+        let feature_reader = JsonReader::new(fc.as_bytes(), Mode::Full);
         let features: Vec<GeoItem> = feature_reader
-            .iter_shapes()
             .map(|result| result.expect("a valid feature"))
             .collect();
 
         assert_eq!(features.len(), 2);
         assert!(matches!(
             features[0].geom,
-            geo::Geometry::Point(geo::Point(_))
+            Some(geo::Geometry::Point(geo::Point(_)))
         ));
     }
 
@@ -369,10 +397,7 @@ mod tests {
             "properties": { }
           },
         "#;
-        let features: Vec<Result<GeoItem>> = JsonReader::try_new(f.as_bytes())
-            .expect("a valid reader")
-            .iter_shapes()
-            .collect();
+        let features: Vec<Result<GeoItem>> = JsonReader::new(f.as_bytes(), Mode::Full).collect();
         println!("{features:?}");
 
         assert_eq!(features.len(), 1);
