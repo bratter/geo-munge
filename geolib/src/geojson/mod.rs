@@ -12,7 +12,7 @@ use geojson::{FeatureReader, GeoJson};
 use quadtree::{Geometry, ToRadians};
 use serde_json::Map;
 
-use crate::format::{GeoItem, GeoItemIterator, Meta, Mode};
+use crate::format::{GeoItem, GeoItemIterator, Meta, MetaMode};
 
 pub fn read_geojson(path: &PathBuf) -> Result<GeoJson, crate::error::Error> {
     read_to_string(&path)
@@ -88,12 +88,12 @@ pub struct JsonReader {
     // NOTE: There doesn't seem to be an easy way of removing this dynamic dispatch, given this involves IO and a lot of
     // parsing, it shouldn't matter too much from a performance perspective.
     features: Box<dyn Iterator<Item = FeatureResult>>,
-    mode: Mode,
+    mode: MetaMode,
 }
 
 impl JsonReader {
     // TODO: Is this static requirement too much? I don't think so
-    pub fn new<R: Read + 'static>(reader: R, mode: Mode) -> JsonReader {
+    pub fn new<R: Read + 'static>(reader: R, mode: MetaMode) -> JsonReader {
         let features = Box::new(FeatureReader::from_reader(reader).features().take_while(
             |result| match result {
                 Err(geojson::Error::Io(_)) => false,
@@ -112,9 +112,9 @@ impl Iterator for JsonReader {
         let next = self.features.next();
 
         match self.mode {
-            Mode::Full => next.map(|f| geoitem_from_geojson(GeoJson::Feature(f?), true)),
-            Mode::Shapes => next.map(|f| geoitem_from_geojson(GeoJson::Feature(f?), false)),
-            Mode::Meta => next.map(|f| {
+            MetaMode::Full => next.map(|f| geoitem_from_geojson(GeoJson::Feature(f?), true)),
+            MetaMode::Shapes => next.map(|f| geoitem_from_geojson(GeoJson::Feature(f?), false)),
+            MetaMode::Meta => next.map(|f| {
                 Ok(GeoItem::meta_only(Meta::from(
                     f?.properties.unwrap_or_default(),
                 )))
@@ -125,11 +125,11 @@ impl Iterator for JsonReader {
 
 pub struct NdjsonReader<R> {
     reader: Lines<R>,
-    mode: Mode,
+    mode: MetaMode,
 }
 
 impl<R: BufRead> NdjsonReader<R> {
-    pub fn new(reader: R, mode: Mode) -> Self {
+    pub fn new(reader: R, mode: MetaMode) -> Self {
         Self {
             reader: reader.lines(),
             mode,
@@ -160,9 +160,9 @@ impl<R: BufRead> Iterator for NdjsonReader<R> {
 
         let geojson = Self::get_geojson_line(next);
         let geoitem = match (self.mode, geojson) {
-            (Mode::Full, Ok(f)) => geoitem_from_geojson(f, true),
-            (Mode::Shapes, Ok(f)) => geoitem_from_geojson(f, false),
-            (Mode::Meta, Ok(f)) => {
+            (MetaMode::Full, Ok(f)) => geoitem_from_geojson(f, true),
+            (MetaMode::Shapes, Ok(f)) => geoitem_from_geojson(f, false),
+            (MetaMode::Meta, Ok(f)) => {
                 let meta = match f {
                     GeoJson::Feature(feat) => feat.properties.unwrap_or_default().into(),
                     GeoJson::Geometry(_) => Map::default().into(),
@@ -192,11 +192,11 @@ where
     state: State,
     next_item: Option<I::Item>,
     iter: I,
-    mode: Mode,
+    mode: MetaMode,
 }
 
 impl<I: GeoItemIterator> JsonTransformer<I> {
-    pub fn new(iter: I, mode: Mode) -> Self {
+    pub fn new(iter: I, mode: MetaMode) -> Self {
         Self {
             state: State::EmitHeader,
             next_item: None,
@@ -207,15 +207,15 @@ impl<I: GeoItemIterator> JsonTransformer<I> {
 
     fn header_bytes(&self) -> &'static [u8] {
         match self.mode {
-            Mode::Full | Mode::Shapes => b"{type:\"FeatureCollection\",features:[\n",
-            Mode::Meta => b"[\n",
+            MetaMode::Full | MetaMode::Shapes => b"{type:\"FeatureCollection\",features:[\n",
+            MetaMode::Meta => b"[\n",
         }
     }
 
     fn footer_bytes(&self) -> &'static [u8] {
         match self.mode {
-            Mode::Full | Mode::Shapes => b"\n]}",
-            Mode::Meta => b"\n]",
+            MetaMode::Full | MetaMode::Shapes => b"\n]}",
+            MetaMode::Meta => b"\n]",
         }
     }
 }
@@ -276,11 +276,11 @@ impl<I: GeoItemIterator> Iterator for JsonTransformer<I> {
 
 pub struct NdjsonTransformer<I: GeoItemIterator> {
     iter: Fuse<I>,
-    mode: Mode,
+    mode: MetaMode,
 }
 
 impl<I: GeoItemIterator> NdjsonTransformer<I> {
-    pub fn new(iter: I, mode: Mode) -> Self {
+    pub fn new(iter: I, mode: MetaMode) -> Self {
         Self {
             iter: iter.fuse(),
             mode,
@@ -318,13 +318,13 @@ fn geoitem_from_geojson(geojson: GeoJson, preserve_meta: bool) -> Result<GeoItem
 }
 
 /// TODO: This should be done with From on a parent object with the properties most likely
-fn make_feature(item: GeoItem, mode: Mode) -> Vec<u8> {
+fn make_feature(item: GeoItem, mode: MetaMode) -> Vec<u8> {
     let vec = match mode {
-        Mode::Full | Mode::Shapes => {
+        MetaMode::Full | MetaMode::Shapes => {
             let mut f = geojson::Feature::default();
             f.geometry = item.geom.as_ref().map(geojson::Geometry::from);
             // TODO: This processing will need to be much better
-            if mode == Mode::Full {
+            if mode == MetaMode::Full {
                 f.properties = match item.meta {
                     Some(Meta::Json(props)) => Some(props),
                     None => None,
@@ -332,7 +332,7 @@ fn make_feature(item: GeoItem, mode: Mode) -> Vec<u8> {
             }
             serde_json::to_vec(&f)
         }
-        Mode::Meta => {
+        MetaMode::Meta => {
             // TODO: This processing will need to be much better
             match &item.meta {
                 Some(Meta::Json(props)) => serde_json::to_vec(&props),
@@ -373,7 +373,7 @@ mod tests {
             ]
           }
         "#;
-        let feature_reader = JsonReader::new(fc.as_bytes(), Mode::Full);
+        let feature_reader = JsonReader::new(fc.as_bytes(), MetaMode::Full);
         let features: Vec<GeoItem> = feature_reader
             .map(|result| result.expect("a valid feature"))
             .collect();
@@ -397,7 +397,8 @@ mod tests {
             "properties": { }
           },
         "#;
-        let features: Vec<Result<GeoItem>> = JsonReader::new(f.as_bytes(), Mode::Full).collect();
+        let features: Vec<Result<GeoItem>> =
+            JsonReader::new(f.as_bytes(), MetaMode::Full).collect();
         println!("{features:?}");
 
         assert_eq!(features.len(), 1);

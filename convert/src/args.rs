@@ -1,6 +1,7 @@
-use clap::{error::ErrorKind, CommandFactory, Parser, ValueEnum};
+use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser};
+use geolib::format::{Format, MetaMode};
 
-use crate::{Format, Stream, IO};
+use crate::{io::IO, stream::StreamKind};
 
 /// Main CLI argument parser.
 ///
@@ -9,7 +10,8 @@ use crate::{Format, Stream, IO};
 pub struct Cli {
     pub input: IO,
     pub output: IO,
-    pub meta: Meta,
+    pub mode: MetaMode,
+    pub quiet: QuietLevel,
 }
 
 impl Cli {
@@ -18,17 +20,18 @@ impl Cli {
         let args = Args::parse();
 
         Self {
+            mode: args.mode(),
             input: Self::parse_io("input", args.input, args.input_format),
             output: Self::parse_io("output", args.output, args.output_format),
-            meta: args.meta.into(),
+            quiet: args.quiet.into(),
         }
     }
 
     /// Conduct argument validation that can't be done inside the clap instance.
-    fn parse_io(kind: &'static str, stream: Stream, format: Option<Format>) -> IO {
+    fn parse_io(kind: &'static str, stream: StreamKind, format: Option<Format>) -> IO {
         match (stream, format) {
-            (stream @ Stream::StdIo, Some(format)) => IO { stream, format },
-            (Stream::StdIo, None) => {
+            (stream @ StreamKind::StdIo, Some(format)) => IO::new(stream, format),
+            (StreamKind::StdIo, None) => {
                 let io = if kind == "input" { "StdIn" } else { "StdOut" };
                 Self::exit(
                     ErrorKind::ArgumentConflict,
@@ -38,25 +41,23 @@ impl Cli {
                     ),
                 );
             }
-            (Stream::File(file), None) => {
+            (StreamKind::File(file), None) => {
                 if let Ok(format) = Format::try_from(&file) {
-                    let stream = Stream::File(file);
-                    IO { stream, format }
+                    IO::new(StreamKind::File(file), format)
                 } else {
                     Self::exit(
                         ErrorKind::InvalidValue,
                         format!(
-                            "File format for {} has a missing or invalid file exension",
+                            "File format for {} has a missing or invalid file extension",
                             kind
                         ),
                     );
                 }
             }
-            (Stream::File(file), Some(format)) => {
+            (StreamKind::File(file), Some(format)) => {
                 // Type erase the Error that doesn't impl PartialEq
                 if Format::try_from(&file).ok() == Some(format) {
-                    let stream = Stream::File(file);
-                    IO { stream, format }
+                    IO::new(StreamKind::File(file), format)
                 } else {
                     Self::exit(
                         ErrorKind::ArgumentConflict,
@@ -82,37 +83,62 @@ impl Cli {
 struct Args {
     /// Input file path.
     #[arg(value_parser, default_value = "-")]
-    pub input: Stream,
+    input: StreamKind,
 
     /// Output file path.
     #[arg(value_parser, default_value = "-")]
-    pub output: Stream,
+    output: StreamKind,
 
     /// Select the type of the input format.
     #[arg(long = "input", short)]
-    pub input_format: Option<Format>,
+    input_format: Option<Format>,
 
     /// Select the type of the output format.
     #[arg(long = "output", short)]
-    pub output_format: Option<Format>,
+    output_format: Option<Format>,
 
-    /// Preserve the metadata that comes with the input.
-    #[arg(long, short)]
-    pub meta: bool,
+    /// Only output shapes, do not process any metadata.
+    #[arg(long, short, conflicts_with = "meta")]
+    shapes: bool,
+
+    /// Only output metadata, do not process shapes.
+    #[arg(long, short, conflicts_with = "shapes")]
+    meta: bool,
+
+    /// Run in quiet mode. No errors or messages will be emitted to stdout.
+    #[arg(
+        short,
+        action = ArgAction::Count,
+        value_parser = clap::value_parser!(u8).range(0..=2)
+    )]
+    quiet: u8,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum Meta {
-    Discard,
-    Preserve,
+impl Args {
+    fn mode(&self) -> MetaMode {
+        match (self.shapes, self.meta) {
+            (false, false) => MetaMode::Full,
+            (true, false) => MetaMode::Shapes,
+            (false, true) => MetaMode::Meta,
+            (true, true) => unreachable!("Clap enforces mutual exclusivity"),
+        }
+    }
 }
 
-impl From<bool> for Meta {
-    fn from(value: bool) -> Self {
-        if value {
-            Meta::Preserve
-        } else {
-            Meta::Discard
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
+pub enum QuietLevel {
+    Normal,
+    NoErrors,
+    NoMessages,
+}
+
+impl From<u8> for QuietLevel {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => QuietLevel::Normal,
+            1 => QuietLevel::NoErrors,
+            2 => QuietLevel::NoMessages,
+            _ => unreachable!("Clap restricts this to 0–2"),
         }
     }
 }
