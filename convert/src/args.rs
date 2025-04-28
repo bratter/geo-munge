@@ -1,5 +1,8 @@
 use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser};
-use geolib::format::{Format, MetaMode};
+use geolib::{
+    csv::{CsvGeom, CsvSettings},
+    format::{Format, MetaMode},
+};
 
 use crate::{io::IO, stream::StreamKind};
 
@@ -12,6 +15,7 @@ pub struct Cli {
     pub output: IO,
     pub mode: MetaMode,
     pub quiet: QuietLevel,
+    pub csv_settings: CsvSettings,
 }
 
 impl Cli {
@@ -24,6 +28,10 @@ impl Cli {
             input: Self::parse_io("input", args.input, args.input_format),
             output: Self::parse_io("output", args.output, args.output_format),
             quiet: args.quiet.into(),
+            csv_settings: CsvSettings {
+                geom: args.csv_geom,
+                delimiter: args.delimiter,
+            },
         }
     }
 
@@ -105,6 +113,14 @@ struct Args {
     #[arg(long, short, conflicts_with = "shapes")]
     meta: bool,
 
+    /// Override the delimiter for csv output. Must be single ASCII character.
+    #[arg(short, long, default_value = ",", value_parser = Self::parse_delimiter)]
+    delimiter: u8,
+
+    /// Determine the type and name of the geometry input or output columns for CSV.
+    #[arg(long, short = 'g', default_value = "wkt")]
+    csv_geom: CsvGeom,
+
     /// Run in quiet mode. No errors or messages will be emitted to stdout.
     #[arg(
         short,
@@ -115,6 +131,13 @@ struct Args {
 }
 
 impl Args {
+    fn parse_delimiter(s: &str) -> Result<u8, String> {
+        if s.len() != 1 {
+            return Err("Delimiter must be a single character".to_string());
+        }
+        Ok(s.as_bytes()[0])
+    }
+
     fn mode(&self) -> MetaMode {
         match (self.shapes, self.meta) {
             (false, false) => MetaMode::Full,

@@ -1,3 +1,4 @@
+use core::f64;
 use std::{
     borrow::Cow,
     fs::read_to_string,
@@ -10,9 +11,9 @@ use std::{
 use anyhow::{anyhow, Result};
 use geojson::{FeatureReader, GeoJson};
 use quadtree::{Geometry, ToRadians};
-use serde_json::Map;
+use serde_json::{Map, Value as JsonValue};
 
-use crate::format::{GeoItem, GeoItemIterator, Meta, MetaMode};
+use crate::format::{GeoItem, GeoItemIterator, Meta, MetaMode, Value};
 
 pub fn read_geojson(path: &PathBuf) -> Result<GeoJson, crate::error::Error> {
     read_to_string(&path)
@@ -93,7 +94,7 @@ pub struct JsonReader {
 
 impl JsonReader {
     // TODO: Is this static requirement too much? I don't think so
-    pub fn new<R: Read + 'static>(reader: R, mode: MetaMode) -> JsonReader {
+    pub fn new<R: Read + 'static>(reader: R, mode: MetaMode) -> Self {
         let features = Box::new(FeatureReader::from_reader(reader).features().take_while(
             |result| match result {
                 Err(geojson::Error::Io(_)) => false,
@@ -115,9 +116,9 @@ impl Iterator for JsonReader {
             MetaMode::Full => next.map(|f| geoitem_from_geojson(GeoJson::Feature(f?), true)),
             MetaMode::Shapes => next.map(|f| geoitem_from_geojson(GeoJson::Feature(f?), false)),
             MetaMode::Meta => next.map(|f| {
-                Ok(GeoItem::meta_only(Meta::from(
+                Ok(GeoItem::meta_only(Meta::from(PropsWrapper(
                     f?.properties.unwrap_or_default(),
-                )))
+                ))))
             }),
         }
     }
@@ -164,11 +165,11 @@ impl<R: BufRead> Iterator for NdjsonReader<R> {
             (MetaMode::Shapes, Ok(f)) => geoitem_from_geojson(f, false),
             (MetaMode::Meta, Ok(f)) => {
                 let meta = match f {
-                    GeoJson::Feature(feat) => feat.properties.unwrap_or_default().into(),
+                    GeoJson::Feature(feat) => feat.properties.unwrap_or_default(),
                     GeoJson::Geometry(_) => Map::default().into(),
                     _ => return Some(Err(anyhow!(GEOM_FEAT_ONLY_MSG))),
                 };
-                Ok(GeoItem::meta_only(meta))
+                Ok(GeoItem::meta_only(Meta::from(PropsWrapper(meta))))
             }
             (_, Err(err)) => Err(err),
         };
@@ -302,12 +303,66 @@ impl<I: GeoItemIterator> Iterator for NdjsonTransformer<I> {
     }
 }
 
+/// Newtype for enabling operations on json maps.
+struct PropsWrapper(Map<String, JsonValue>);
+
+impl From<PropsWrapper> for Meta {
+    fn from(value: PropsWrapper) -> Self {
+        value
+            .0
+            .into_iter()
+            .map(|(k, v)| {
+                let value = match v {
+                    JsonValue::String(s) => Value::String(s),
+                    // Always convert numbers to f64s rather than trying to parse more deeply
+                    // This failing will error the row
+                    // TODO: Consider Error (and TryFrom) rather than NAN
+                    JsonValue::Number(n) => Value::Float(n.as_f64().unwrap_or(f64::NAN)),
+                    JsonValue::Bool(b) => Value::Boolean(b),
+                    JsonValue::Null => Value::Null,
+                    // Don't support arrays and objects
+                    // TODO: Consider serializing as JSON
+                    JsonValue::Array(_) => Value::Null,
+                    JsonValue::Object(_) => Value::Null,
+                };
+
+                (k, value)
+            })
+            .collect()
+    }
+}
+
+impl From<Meta> for PropsWrapper {
+    fn from(value: Meta) -> Self {
+        let map: Map<String, JsonValue> = value
+            .into_iter()
+            .map(|(k, v)| {
+                let json_value = match v {
+                    Value::String(s) => JsonValue::String(s),
+                    Value::Float(f) => serde_json::Number::from_f64(f)
+                        .map(|n| JsonValue::Number(n))
+                        .unwrap_or(JsonValue::Null),
+                    Value::Integer(i) => JsonValue::Number(i.into()),
+                    Value::Boolean(b) => JsonValue::Bool(b),
+                    Value::Date(d) => JsonValue::String(d.to_string()),
+                    Value::DateTime(d) => JsonValue::String(d.to_string()),
+                    Value::Null => JsonValue::Null,
+                };
+
+                (k, json_value)
+            })
+            .collect();
+
+        PropsWrapper(map)
+    }
+}
+
 fn geoitem_from_geojson(geojson: GeoJson, preserve_meta: bool) -> Result<GeoItem> {
     match geojson {
         GeoJson::Feature(f) => {
             let geom = geo::Geometry::try_from(f.geometry.ok_or(anyhow!("Invalid geometry"))?)?;
             let meta = match f.properties {
-                Some(p) if preserve_meta => Some(Meta::from(p)),
+                Some(p) if preserve_meta => Some(Meta::from(PropsWrapper(p))),
                 _ => None,
             };
             Ok(GeoItem::new(geom, meta))
@@ -317,27 +372,23 @@ fn geoitem_from_geojson(geojson: GeoJson, preserve_meta: bool) -> Result<GeoItem
     }
 }
 
-/// TODO: This should be done with From on a parent object with the properties most likely
+/// TODO: Should this be done with From on a parent object with the properties most likely
 fn make_feature(item: GeoItem, mode: MetaMode) -> Vec<u8> {
     let vec = match mode {
         MetaMode::Full | MetaMode::Shapes => {
             let mut f = geojson::Feature::default();
             f.geometry = item.geom.as_ref().map(geojson::Geometry::from);
-            // TODO: This processing will need to be much better
             if mode == MetaMode::Full {
-                f.properties = match item.meta {
-                    Some(Meta::Json(props)) => Some(props),
-                    None => None,
-                }
+                f.properties = item.meta.map(|m| PropsWrapper::from(m).0)
             }
             serde_json::to_vec(&f)
         }
         MetaMode::Meta => {
-            // TODO: This processing will need to be much better
-            match &item.meta {
-                Some(Meta::Json(props)) => serde_json::to_vec(&props),
-                None => serde_json::to_vec("{}"),
-            }
+            let json = item
+                .meta
+                .map(|m| PropsWrapper::from(m).0)
+                .unwrap_or_default();
+            serde_json::to_vec(&json)
         }
     };
 

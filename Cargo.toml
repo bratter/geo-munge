@@ -16,6 +16,9 @@ shapefile = { version = "^0.6", features = ["geo-types"] }
 geojson = { version = "^0.24", features = ["geo-types"] }
 kml = "^0.8"
 serde_json = "^1.0"
+wkt = "0.13.0"
+wkb = "0.8.0"
+geo-traits = "0.2.0"
 geolib = { path = "geolib" }
 # TODO: Is serde even required? And should rand be dev or bench only?
 

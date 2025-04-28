@@ -1,10 +1,12 @@
 use std::io::{stderr, Write};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use geolib::{
+    csv::{CsvReader, CsvSettings, CsvTransformer},
     format::{Format, FormatReader, FormatTransformer, GeoItemIterator, MetaMode},
     geojson::{JsonReader, JsonTransformer, NdjsonReader, NdjsonTransformer},
+    shp::{ShapefileReader, ShapefileTransformer},
 };
 
 use crate::args::QuietLevel;
@@ -36,12 +38,27 @@ impl IO {
         Self::new(StreamKind::OutputString(str), format)
     }
 
-    pub fn create_reader(&self, mode: MetaMode) -> impl GeoItemIterator {
+    pub fn create_reader(&self, mode: MetaMode) -> Result<impl GeoItemIterator> {
+        // Shapefiles require special management so we process them first
+        // This just means we don't have to embed input stream generation in the match below
+        if self.format == Format::Shp {
+            if let StreamKind::File(f) = &self.stream {
+                return Ok(FormatReader::Shp(ShapefileReader::new(f, mode)?));
+            } else {
+                bail!("Shapefiles can only be read from file input, not stdin");
+            }
+        }
         let reader = InputStream::from(self.stream.clone());
 
         match self.format {
-            Format::Json => FormatReader::Json(JsonReader::new(reader, mode)),
-            Format::Ndjson => FormatReader::Ndjson(NdjsonReader::new(reader, mode)),
+            Format::Json => Ok(FormatReader::Json(JsonReader::new(reader, mode))),
+            Format::Ndjson => Ok(FormatReader::Ndjson(NdjsonReader::new(reader, mode))),
+            Format::Shp => unreachable!(),
+            Format::Csv => Ok(FormatReader::Csv(CsvReader::new(
+                reader,
+                mode,
+                CsvSettings::default(),
+            )?)),
             _ => todo!(),
         }
     }
@@ -50,15 +67,19 @@ impl IO {
         &self,
         iter: I,
         mode: MetaMode,
-    ) -> impl Iterator<Item = Result<impl AsRef<[u8]>>>
+        csv_settings: CsvSettings,
+    ) -> Result<impl Iterator<Item = Result<impl AsRef<[u8]>>>>
     where
         I: GeoItemIterator,
     {
-        match self.format {
+        let ft = match self.format {
             Format::Json => FormatTransformer::Json(JsonTransformer::new(iter, mode)),
             Format::Ndjson => FormatTransformer::Ndjson(NdjsonTransformer::new(iter, mode)),
+            Format::Shp => FormatTransformer::Shp(ShapefileTransformer::new(iter, mode)?),
+            Format::Csv => FormatTransformer::Csv(CsvTransformer::new(iter, mode, csv_settings)),
             _ => todo!(),
-        }
+        };
+        Ok(ft)
     }
 
     pub fn create_writer(

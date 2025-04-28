@@ -69,8 +69,11 @@ fn run(args: Cli) -> Result<(usize, usize)> {
     // TODO: Also want a seek setting to pre-pull fields for unstructured metadata formats like json
 
     // Prepare the reader and writer
-    let reader = args.input.create_reader(args.mode);
-    let transformer = args.output.create_transformer(reader, args.mode);
+    let reader = args.input.create_reader(args.mode)?;
+    // TODO: the create methods should probably live on the Cli struct so other settings don't have to be passed
+    let transformer = args
+        .output
+        .create_transformer(reader, args.mode, args.csv_settings)?;
     let writer = args.output.create_writer(transformer, args.quiet);
 
     // Drive the writer

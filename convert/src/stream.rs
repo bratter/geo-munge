@@ -41,7 +41,6 @@ impl FromStr for StreamKind {
     }
 }
 
-// TODO: Move this somewhere else, import the types
 pub enum InputStream {
     Stdin(BufReader<Stdin>),
     File(BufReader<File>),
@@ -103,7 +102,6 @@ impl BufRead for InputStream {
     }
 }
 
-// TODO: Move this somewhere else, import the types
 pub enum OutputStream {
     Stdout(Stdout),
     File(File),

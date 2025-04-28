@@ -1,11 +1,16 @@
-use std::{borrow::Cow, io::BufRead, path::PathBuf};
+use std::{borrow::Cow, collections::BTreeMap, fmt::Display, io::BufRead, path::PathBuf};
 
 use anyhow::{anyhow, Error, Result};
 use clap::ValueEnum;
 use geo::Geometry;
-use serde_json::{Map, Value};
+use shapefile::dbase::{Date as DbaseDate, DateTime as DbaseDateTime};
 
-use crate::geojson::{JsonReader, JsonTransformer, NdjsonReader, NdjsonTransformer};
+use crate::{
+    csv::{CsvReader, CsvTransformer},
+    geojson::{JsonReader, JsonTransformer, NdjsonReader, NdjsonTransformer},
+    kml::{KmlReader, KmlTransformer},
+    shp::{ShapefileReader, ShapefileTransformer},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaMode {
@@ -15,7 +20,7 @@ pub enum MetaMode {
 }
 
 /// Wrapper object for a geometry and optional properties.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct GeoItem {
     pub geom: Option<Geometry>,
     pub meta: Option<Meta>,
@@ -65,7 +70,7 @@ pub enum Format {
     /// Shapefile.
     ///
     /// Streamable, reading and writing can be done by feature.
-    /// TODO: Check that Stdout can actually stream
+    /// TODO: Need to work on transformation and writing
     Shp,
 
     /// JSON.
@@ -84,12 +89,14 @@ pub enum Format {
     /// KML, uncompressed.
     ///
     /// Not streamable, requires buffering the whole file in memory for input or output.
-    /// TODO: For KML and KMZ, should we de-nest, or just error out if too complex?
+    /// TODO: Need to work on transformation and writing
     Kml,
 
     /// KMZ, compressed KML.
     ///
     /// Not streamable, requires buffering the whole file in memory for input or output.
+    /// TODO: Implement this by hand using the zip crate. Looks like the reader needs read + seek, but there is a
+    /// read_zipfile_from_stream method that might be useful. Zip can also be used on other formats too.
     Kmz,
 
     // TODO: WKB and WKT
@@ -136,14 +143,82 @@ impl std::fmt::Display for Format {
     }
 }
 
+/// Intermediate representation for metadata.
+pub type Meta = BTreeMap<String, Value>;
+
+/// Abstract value for attribute data across GIS formats.
+///
+/// TODO: Upgrade handlilng for all types
 #[derive(Debug)]
-pub enum Meta {
-    Json(Map<String, Value>),
+pub enum Value {
+    String(String),
+    Float(f64),
+    Integer(i64),
+    Boolean(bool),
+    // NOTE: Using naive dbase Date/Time representations as they are just simple transport and shapefile is going to be
+    // one of the few formats with these types - this avoids requiring a new dependency
+    Date(Date),
+    DateTime(DateTime),
+    // TODO: Null should be coercable into a non-null type to account for cases where something is missing in a
+    // permissive format in some records
+    Null,
 }
 
-impl From<Map<String, Value>> for Meta {
-    fn from(value: Map<String, Value>) -> Self {
-        Self::Json(value)
+#[derive(Debug)]
+pub struct Date(DbaseDate);
+
+impl Date {
+    pub fn into_inner(self) -> DbaseDate {
+        self.0
+    }
+}
+
+impl From<DbaseDate> for Date {
+    fn from(value: DbaseDate) -> Self {
+        Self(value)
+    }
+}
+
+impl Display for Date {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let inner = self.0;
+        write!(
+            f,
+            "{:04}-{:02}-{:02}",
+            inner.year(),
+            inner.month(),
+            inner.day()
+        )
+    }
+}
+
+#[derive(Debug)]
+pub struct DateTime(DbaseDateTime);
+
+impl DateTime {
+    pub fn into_inner(self) -> DbaseDateTime {
+        self.0
+    }
+}
+
+impl From<DbaseDateTime> for DateTime {
+    fn from(value: DbaseDateTime) -> Self {
+        Self(value)
+    }
+}
+
+impl Display for DateTime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let d = self.0.date();
+        let t = self.0.time();
+        write!(
+            f,
+            "{}T{:02}:{:02}:{:02}",
+            Date::from(d),
+            t.hours(),
+            t.minutes(),
+            t.seconds()
+        )
     }
 }
 
@@ -155,6 +230,9 @@ impl<T> GeoItemIterator for T where T: Iterator<Item = Result<GeoItem>> {}
 pub enum FormatReader<R: BufRead> {
     Json(JsonReader),
     Ndjson(NdjsonReader<R>),
+    Shp(ShapefileReader),
+    Kml(KmlReader),
+    Csv(CsvReader<R>),
 }
 
 impl<R: BufRead> Iterator for FormatReader<R> {
@@ -164,6 +242,9 @@ impl<R: BufRead> Iterator for FormatReader<R> {
         match self {
             Self::Json(iter) => iter.next(),
             Self::Ndjson(iter) => iter.next(),
+            Self::Shp(iter) => iter.next(),
+            Self::Kml(iter) => iter.next(),
+            Self::Csv(iter) => iter.next(),
         }
     }
 }
@@ -172,6 +253,9 @@ impl<R: BufRead> Iterator for FormatReader<R> {
 pub enum FormatTransformer<I: GeoItemIterator> {
     Json(JsonTransformer<I>),
     Ndjson(NdjsonTransformer<I>),
+    Shp(ShapefileTransformer<I>),
+    Kml(KmlTransformer<I>),
+    Csv(CsvTransformer<I>),
 }
 
 impl<I: GeoItemIterator> Iterator for FormatTransformer<I> {
@@ -181,6 +265,9 @@ impl<I: GeoItemIterator> Iterator for FormatTransformer<I> {
         match self {
             Self::Json(iter) => iter.next(),
             Self::Ndjson(iter) => iter.next(),
+            Self::Shp(iter) => iter.next(),
+            Self::Kml(iter) => iter.next(),
+            Self::Csv(iter) => iter.next(),
         }
     }
 }
