@@ -1,0 +1,12 @@
+[package]
+name = "gm-proximity"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+ctrlc = "3.4.6"
+interprocess = "2.2.3"
+threadpool = "1.8.1"
+
