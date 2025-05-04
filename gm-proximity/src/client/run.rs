@@ -3,10 +3,7 @@ use std::io::{BufReader, BufWriter};
 use anyhow::Result;
 use interprocess::local_socket::{prelude::*, GenericNamespaced};
 
-use crate::{
-    message::{read_message, write_message},
-    SOCKET_NAME,
-};
+use crate::{message::Message, SOCKET_NAME};
 
 // TODO: This currently just sends one message, receives a response, then closes. Is this what we want?
 pub fn run(msg: &str) -> Result<()> {
@@ -18,13 +15,16 @@ pub fn run(msg: &str) -> Result<()> {
 
     // Send message stage
     println!("Attempting to write to socket");
-    write_message(&mut writer, msg.as_bytes())?;
+    let message = Message::Msg(msg.to_string());
+    message.write(&mut writer)?;
     println!("Wrote to socket, awaiting response");
 
     // Receive reply stage
-    if let Some(buf) = read_message(&mut reader)? {
-        let reply = String::from_utf8_lossy(&buf);
-        println!("Client received: {}", reply);
+    if let Some(res) = Message::read(&mut reader)? {
+        match res {
+            Message::Ack(ack) => println!("Client received: {:?}", ack),
+            _ => println!("Shouldn't be here, this is an error"),
+        }
     }
 
     Ok(())

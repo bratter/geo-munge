@@ -15,10 +15,7 @@ use interprocess::local_socket::{
 };
 use threadpool::ThreadPool;
 
-use crate::{
-    message::{read_message, write_message},
-    SOCKET_NAME,
-};
+use crate::{message::Message, SOCKET_NAME};
 
 const POLL_TIME: u64 = 1000;
 const MAX_WORKERS: usize = 4;
@@ -99,13 +96,21 @@ fn handle_stream_blocking(stream: LocalSocketStream, running: Arc<AtomicBool>) -
             return Ok(());
         }
 
-        match read_message(&mut reader)? {
-            Some(buf) => {
-                let msg = String::from_utf8_lossy(&buf);
-                eprintln!("Server received: {}", msg);
+        match Message::read(&mut reader)? {
+            Some(msg) => {
+                let ack = match msg {
+                    Message::Msg(content) => {
+                        eprintln!("Server received: {}", content);
+                        Ok(format!("ACK: {}", content))
+                    }
+                    Message::Ack(_) => {
+                        eprintln!("This shouldn't happen");
+                        Err("You shouldn't be sending me acks".to_string())
+                    }
+                };
 
-                let response = format!("ACK: {}", msg);
-                write_message(&mut writer, response.as_bytes())?;
+                let response = Message::Ack(ack);
+                response.write(&mut writer)?;
             }
             None => {
                 // EOF: client closed the connection
