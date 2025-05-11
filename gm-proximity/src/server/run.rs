@@ -4,18 +4,26 @@ use std::{
     io::{BufReader, BufWriter},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, RwLock,
     },
     time::Duration,
 };
 
 use anyhow::Result;
+use geo::Rect;
 use interprocess::local_socket::{
     prelude::*, GenericNamespaced, ListenerNonblockingMode, ListenerOptions,
 };
 use threadpool::ThreadPool;
 
-use crate::{message::Message, SOCKET_NAME};
+use geolib::qt::{QtData, Quadtree, ToRadians};
+
+use crate::{
+    message::{MessageStream, Request, Reset, Response},
+    SOCKET_NAME,
+};
+
+use super::handle::handle_request;
 
 const POLL_TIME: u64 = 1000;
 const MAX_WORKERS: usize = 4;
@@ -48,12 +56,17 @@ pub fn run() -> Result<()> {
         if term_now.load(Ordering::SeqCst) {
             std::process::exit(1);
         }
-        // If we are not terminating immediately, then try to gracefully exit, but inform the hanlder that another
+        // If we are not terminating immediately, then try to gracefully exit, but inform the handler that another
         // ctrl-c will terminate immediately.
         eprintln!("Attempting graceful shutdown...");
         r.store(false, Ordering::SeqCst);
         term_now.store(true, Ordering::SeqCst);
     })?;
+
+    // Quadtree setup
+    // TODO: See todo notes in the function implementation
+    let quadtree = build_qt(Reset::default());
+    let quadtree = Arc::new(RwLock::new(quadtree));
 
     println!("Geo Munge Proximity server listening...");
 
@@ -63,9 +76,10 @@ pub fn run() -> Result<()> {
     while running.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok(stream) => {
+                let qt = Arc::clone(&quadtree);
                 let r = Arc::clone(&running);
                 pool.execute(|| {
-                    if let Err(e) = handle_stream_blocking(stream, r) {
+                    if let Err(e) = handle_stream_blocking(stream, qt, r) {
                         eprintln!("Error handling client: {}", e);
                     }
                 });
@@ -81,12 +95,30 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// Make a basic quadtree.
+///
+/// TODO: In this simple setup we are passing a single-access qt to each of the io threads that will also manage the
+/// calculation. Once a basic version is working this needs to be upgraded, and the make_bbox function improved.
+/// TODO: The naming of the is_bounds argument is wrong, it should be called is_point_qt
+pub fn build_qt(reset: Reset) -> Quadtree {
+    let mut bounds: Rect = reset.bbox.unwrap_or_default().into();
+    bounds.to_radians_in_place();
+
+    let qt_opts = QtData::new(false, bounds, None, None);
+
+    Quadtree::new(qt_opts)
+}
+
 /// Stream handler with blocking reads.
 ///
 /// Will still check running state each read cycle and gracefully shutdown, but "dormant" clients will block
 /// indefinitely. The tradeoff of a blocking stream in terms of reduced ability for graceful shutdown and enforced
 /// linear request-response are appropriate for a first pass.
-fn handle_stream_blocking(stream: LocalSocketStream, running: Arc<AtomicBool>) -> Result<()> {
+fn handle_stream_blocking(
+    stream: LocalSocketStream,
+    qt: Arc<RwLock<Quadtree>>,
+    running: Arc<AtomicBool>,
+) -> Result<()> {
     let mut reader = BufReader::new(&stream);
     let mut writer = BufWriter::new(&stream);
 
@@ -96,20 +128,15 @@ fn handle_stream_blocking(stream: LocalSocketStream, running: Arc<AtomicBool>) -
             return Ok(());
         }
 
-        match Message::read(&mut reader)? {
+        match Request::read(&mut reader)? {
             Some(msg) => {
-                let ack = match msg {
-                    Message::Msg(content) => {
-                        eprintln!("Server received: {}", content);
-                        Ok(format!("ACK: {}", content))
-                    }
-                    Message::Ack(_) => {
-                        eprintln!("This shouldn't happen");
-                        Err("You shouldn't be sending me acks".to_string())
-                    }
+                let response = match handle_request(msg, Arc::clone(&qt)) {
+                    Ok(res) => res,
+                    // TODO: Convert to an error response, consider logging
+                    // TODO: Do we want to do some form of error logging?
+                    Err(err) => Response::Error(err.to_string()),
                 };
 
-                let response = Message::Ack(ack);
                 response.write(&mut writer)?;
             }
             None => {

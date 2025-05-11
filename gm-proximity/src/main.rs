@@ -10,7 +10,7 @@ mod server;
 use anyhow::Result;
 use clap::Parser;
 
-use crate::args::{Args, Command};
+use crate::args::{Args, ClientCommandWrapper, Command};
 
 const SOCKET_NAME: &str = "@gm_proximity_socket";
 
@@ -19,6 +19,6 @@ fn main() -> Result<()> {
 
     match args.command {
         Command::Server => crate::server::run(),
-        Command::Client { message } => crate::client::run(&message),
+        Command::Client(ClientCommandWrapper { command }) => crate::client::run(command),
     }
 }

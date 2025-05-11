@@ -5,22 +5,17 @@ use std::io::{ErrorKind, Read, Write};
 use anyhow::{bail, Result};
 use bincode::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
-#[non_exhaustive]
-pub enum Message {
-    Msg(String),
-    Ack(Result<String, String>),
-}
-
 // TODO: Document the semantics of read and write
 // TODO: Improve read/write handling (maybe not use read_exact, maybe make use of borrowing
-impl Message {
-    pub fn read<R: Read>(reader: &mut R) -> Result<Option<Self>> {
+pub trait MessageStream
+where
+    Self: Decode<()> + Encode + Sized,
+{
+    fn read<R: Read>(reader: &mut R) -> Result<Option<Self>> {
         let mut len_buf = [0u8; 4];
         match reader.read_exact(&mut len_buf) {
             Ok(()) => { /* good */ }
             Err(e) if e.kind() == ErrorKind::UnexpectedEof => {
-                eprintln!("when do we hit here");
                 return Ok(None); // EOF, no message
             }
             Err(e) => bail!("Failed to read message length: {}", e),
@@ -32,7 +27,7 @@ impl Message {
         match reader.read_exact(&mut buf) {
             Ok(()) => {
                 let config = bincode::config::standard();
-                let (msg, _) = bincode::decode_from_slice::<Message, _>(&buf, config)?;
+                let (msg, _) = bincode::decode_from_slice::<Self, _>(&buf, config)?;
                 Ok(Some(msg))
             }
             Err(e) if e.kind() == ErrorKind::UnexpectedEof => {
@@ -42,7 +37,7 @@ impl Message {
         }
     }
 
-    pub fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
+    fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
         let config = bincode::config::standard();
         let serialized = bincode::encode_to_vec(self, config)?;
         let len = (serialized.len() as u32).to_be_bytes();

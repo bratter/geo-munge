@@ -13,7 +13,7 @@ geojson = { workspace = true }
 kml = { workspace = true }
 serde_json = { workspace = true }
 # Uses a local git repo version tag so we can work on qt improvements in parallel
-quadtree = { git = "file:///home/bratter/code/quadtree/.git", tag = "v0.0.4" }
+quadtree = { git = "file:///home/bratter/code/quadtree/.git", tag = "v0.0.5" }
 wkb = { workspace = true }
 wkt = { workspace = true }
 geo-traits = { workspace = true }

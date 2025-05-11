@@ -10,4 +10,6 @@ clap = { workspace = true }
 ctrlc = "3.4.6"
 interprocess = "2.2.3"
 threadpool = "1.8.1"
-
+geojson = { workspace = true }
+geo = { workspace = true }
+geolib = { workspace = true }

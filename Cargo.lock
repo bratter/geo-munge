@@ -499,6 +499,9 @@ dependencies = [
  "bincode",
  "clap",
  "ctrlc",
+ "geo",
+ "geojson",
+ "geolib",
  "interprocess",
  "threadpool",
 ]
@@ -824,8 +827,8 @@ dependencies = [
 
 [[package]]
 name = "quadtree"
-version = "0.0.4"
-source = "git+file:///home/bratter/code/quadtree/.git?tag=v0.0.4#2b7c562fecda11c32fcac78657e1555dd519c040"
+version = "0.0.5"
+source = "git+file:///home/bratter/code/quadtree/.git?tag=v0.0.5#b45a85273c092167080b62518f53f3206a7b5614"
 dependencies = [
  "geo",
  "num-traits",

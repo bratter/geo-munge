@@ -12,7 +12,7 @@ use quadtree::{
     AsGeom, BoundsQuadTree, CalcMethod, GeometryRef, PointQuadTree, QuadTree as QT, QuadTreeSearch,
 };
 
-pub use quadtree::{ToRadians, MEAN_EARTH_RADIUS};
+pub use quadtree::{Geometry, ToRadians, MEAN_EARTH_RADIUS};
 
 use crate::error::Error;
 use datum::*;

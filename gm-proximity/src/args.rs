@@ -10,5 +10,17 @@ pub struct Args {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Server,
-    Client { message: String },
+    Client(ClientCommandWrapper),
+}
+
+#[derive(Debug, Parser)]
+pub struct ClientCommandWrapper {
+    #[command(subcommand)]
+    pub command: ClientCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ClientCommand {
+    Stats,
+    Msg { message: String },
 }
