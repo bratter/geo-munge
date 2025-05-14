@@ -68,6 +68,9 @@ The quad tree will need improvement.
   - 10 entries, a pointer for overflow, and 4 child pointers gives 15 \* 8 = 120 bytes, so pretty good.
   - A two layer construct would be 5 \* 10 entries, 5 overflow pointers, and 4 \* 4 child pointers = 71 \* 8 = 568 bytes.
 - Consider not using Haversine depending on the required precision, or only using it for distance output or disambiguation, not intermediate.
+  - Can use Cartesian with an adjustment factor at least for rect-rect comparisons.
 - No square root on square test.
 - Using the quad tree should be easier, or maybe the AsGeom trait will have it handled.
+- Consider the new quadtree just taking in geo::Geometry, take out the intermediate one.
+- The quadtree only stores the index of the item (this may be what it does already.
 - Consider mapped binary representation as an alternative data structure.

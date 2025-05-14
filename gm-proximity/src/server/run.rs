@@ -18,10 +18,7 @@ use threadpool::ThreadPool;
 
 use geolib::qt::{QtData, Quadtree, ToRadians};
 
-use crate::{
-    message::{MessageStream, Request, Reset, Response},
-    SOCKET_NAME,
-};
+use crate::{message::prelude::*, SOCKET_NAME};
 
 use super::handle::handle_request;
 
@@ -129,16 +126,7 @@ fn handle_stream_blocking(
         }
 
         match Request::read(&mut reader)? {
-            Some(msg) => {
-                let response = match handle_request(msg, Arc::clone(&qt)) {
-                    Ok(res) => res,
-                    // TODO: Convert to an error response, consider logging
-                    // TODO: Do we want to do some form of error logging?
-                    Err(err) => Response::Error(err.to_string()),
-                };
-
-                response.write(&mut writer)?;
-            }
+            Some(msg) => handle_request(msg, &qt).write(&mut writer)?,
             None => {
                 // EOF: client closed the connection
                 eprintln!("Client disconnected");

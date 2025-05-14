@@ -6,8 +6,9 @@ use anyhow::{bail, Error, Result};
 use bincode::{Decode, Encode};
 use geo::{Point, Rect};
 use geojson::Feature;
+use geolib::qt::{Geometry, ToRadians};
 
-use super::MessageStream;
+use super::stream::MessageStream;
 
 #[derive(Debug, Encode, Decode)]
 #[non_exhaustive]
@@ -45,18 +46,27 @@ pub enum Request {
 
     /// Insert request.
     ///
-    /// Add one item to the quadtree. This is kept to a single item to avoid requiring the length of multiple items.
-    Insert(Insert),
+    /// This request makes no promises that the included data is well-formed JSON (so that clients don't have to validate
+    /// when the server really should anyway). Therefore items extracted from the insert may error on the server during
+    /// parsing. This SHOULD NOT error the whole insert, only the individual features.
+    ///
+    /// If possible, clients SHOULD batch insertion requests to improve efficiency. Batches should be sized small enough to
+    /// avoid over-using memory, but can be larger than 1 to make inserts more efficient. The server MAY choose to
+    /// arbitrarily chunk large batches, but will not batch across requests.
+    Insert(DataStream),
 
     /// Delete request.
     ///
     /// Delete an item using its primary key.
+    ///
+    /// TODO: Implment deletion after metadata work
     Delete,
 
     /// Conduct a KNN search on the Quadtree.
     ///
     /// Can take a max count, radius or bounding box constraints, and metadata filters.
-    Knn,
+    /// TODO: Also do find, also do filters
+    Knn(Knn),
 
     /// Filter for all items inside a bounding box.
     ///
@@ -78,6 +88,12 @@ pub struct Reset {
     pub bbox: Option<Bbox>,
 }
 
+impl Reset {
+    pub fn new(keytype: Option<KeyType>, bbox: Option<Bbox>) -> Self {
+        Self { keytype, bbox }
+    }
+}
+
 /// Key type setting request data.
 ///
 /// Can be used in a [`Request::KeyType`], but more likely to be used in [`Request::Reset`].
@@ -92,7 +108,7 @@ pub enum KeyType {
 /// Bounding box request data.
 ///
 /// Can be used in a [`Request::Bbox`], but more likely to be used in [`Request::Reset`].
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct Bbox {
     x1: f64,
     y1: f64,
@@ -162,43 +178,36 @@ impl FromStr for Bbox {
     }
 }
 
-/// Wrapper type for an insertion request.
-///
-/// This request makes no promises that the included data is well-formed JSON (so that clients don't have to validate
-/// when the server really should anyway). Therefore items extracted from the insert may error on the server during
-/// parsing. This SHOULD NOT error the whole insert, only the individual features.
-///
-/// If possible, clients SHOULD batch insertion requests to improve efficiency. Batches should be sized small enough to
-/// avoid over-using memory, but can be larger than 1 to make inserts more efficient. The server MAY choose to
-/// arbitrarily chunk large batches, but will not batch across requests.
+/// Wrapper type for a stream of shape data.
 #[derive(Debug, Default, Encode, Decode)]
-pub struct Insert {
+pub struct DataStream {
     data: Vec<u8>,
 }
 
 // TODO: This should take a lifetime and be generic over AsRef &[u8], unless this would be worse for Vecs (but think
 // that the froms can just work with either
-impl From<Vec<u8>> for Insert {
+impl From<Vec<u8>> for DataStream {
     fn from(data: Vec<u8>) -> Self {
-        Insert { data }
+        DataStream { data }
     }
 }
 
-impl From<Insert> for Vec<u8> {
-    fn from(value: Insert) -> Self {
+impl From<DataStream> for Vec<u8> {
+    fn from(value: DataStream) -> Self {
         value.data
     }
 }
 
-impl<'a> IntoIterator for &'a Insert {
-    type Item = Result<Feature>;
-
-    type IntoIter = FilterMap<Split<'a, u8, fn(&u8) -> bool>, fn(&[u8]) -> Option<Result<Feature>>>;
+// TODO: The item here needs to also have id and metadata
+impl<'a> IntoIterator for &'a DataStream {
+    type Item = Result<Geometry<f64>>;
+    type IntoIter =
+        FilterMap<Split<'a, u8, fn(&u8) -> bool>, fn(&[u8]) -> Option<Result<Geometry<f64>>>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.data
             .split(is_newline as fn(&u8) -> bool)
-            .filter_map(filter_map as fn(&[u8]) -> Option<Result<Feature>>)
+            .filter_map(filter_map as fn(&[u8]) -> Option<Result<Geometry<f64>>>)
     }
 }
 
@@ -206,7 +215,7 @@ fn is_newline(b: &u8) -> bool {
     *b == b'\n'
 }
 
-fn filter_map(line: &[u8]) -> Option<Result<Feature>> {
+fn filter_map(line: &[u8]) -> Option<Result<Geometry<f64>>> {
     let line = line.trim_ascii();
     if line.is_empty() {
         None
@@ -215,6 +224,29 @@ fn filter_map(line: &[u8]) -> Option<Result<Feature>> {
     }
 }
 
-fn parse_line(line: &[u8]) -> Result<Feature> {
-    Ok(std::str::from_utf8(line)?.parse::<Feature>()?)
+fn parse_line(line: &[u8]) -> Result<Geometry<f64>> {
+    let f = std::str::from_utf8(line)?.parse::<Feature>()?;
+    let mut geom: Geometry<f64> = geo::Geometry::try_from(f)?.try_into()?;
+    geom.to_radians_in_place();
+
+    Ok(geom)
+}
+
+#[derive(Debug, Encode, Decode)]
+pub struct Knn {
+    pub k: usize,
+    pub r: Option<f64>,
+    pub data: FindData,
+    // TODO: Add filters
+}
+
+// TODO: This should work for find too, covers shapes, pk input, any other modes
+#[derive(Debug, Encode, Decode)]
+pub enum FindData {
+    /// Run the find for the stream of passed features.
+    Geom(DataStream),
+
+    /// Run the find for a set of primary keys already in the quadtree.
+    /// TODO: Support other key types?
+    Keys(Vec<usize>),
 }

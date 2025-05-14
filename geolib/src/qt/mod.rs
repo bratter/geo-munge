@@ -153,6 +153,22 @@ impl Quadtree {
         }
         .map_err(|err| Error::FindError(record.index, err))
     }
+
+    // TODO: This is a temporary function that holds a knn implementation that doesn't need a ParsedRecord. This should
+    // be removed when the qt module is refactored
+    // TODO: Future solution must also adjust for the indexing of the points
+    pub fn knn_from_geom<'a>(
+        &'a self,
+        geom: impl AsGeom<f64>,
+        k: usize,
+        r: Option<f64>,
+    ) -> Result<Vec<SearchResult<'a>>, Error> {
+        match self {
+            Quadtree::Point(p) => p.knn_r(&geom, k, r.unwrap_or(f64::INFINITY)),
+            Quadtree::Bounds(b) => b.knn_r(&geom, k, r.unwrap_or(f64::INFINITY)),
+        }
+        .map_err(|err| Error::FindError(0, err))
+    }
 }
 
 impl std::fmt::Display for Quadtree {

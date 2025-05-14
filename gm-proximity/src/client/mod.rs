@@ -1,5 +1,7 @@
 //! Client implementation for GM-Proximity.
 
+mod handle;
+mod input_io;
 mod run;
 
 pub use run::run;

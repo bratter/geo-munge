@@ -3,16 +3,13 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use geolib::qt::Quadtree;
 
-use crate::{
-    message::{Reset, Response},
-    server::run::build_qt,
-};
+use crate::{message::prelude::*, server::run::build_qt};
 
 /// Resets the quadtree.
 ///
 /// Drops all memory associated with the original quadree, replacing it with a fresh one. It will not cancel any other
 /// in-progress operations.
-pub fn reset(qt: Arc<RwLock<Quadtree>>, reset: Reset) -> Result<Response> {
+pub fn reset(qt: &Arc<RwLock<Quadtree>>, reset: Reset) -> Result<Response> {
     // NOTE: Ok to propagate panic with unwrap as the only error is for a poisoned RwLock
     let qt = &mut *qt.write().unwrap();
 

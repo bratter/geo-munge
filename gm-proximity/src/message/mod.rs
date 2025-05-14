@@ -7,6 +7,8 @@ mod request;
 mod response;
 mod stream;
 
-pub use request::*;
-pub use response::Response;
-pub use stream::MessageStream;
+pub mod prelude {
+    pub use super::request::*;
+    pub use super::response::Response;
+    pub use super::stream::MessageStream;
+}
