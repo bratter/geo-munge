@@ -4,6 +4,7 @@ use std::{
     io::{BufReader, BufWriter},
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::RecvTimeoutError,
         Arc, RwLock,
     },
     time::Duration,
@@ -18,7 +19,7 @@ use threadpool::ThreadPool;
 
 use geolib::qt::{QtData, Quadtree, ToRadians};
 
-use crate::{message::prelude::*, SOCKET_NAME};
+use crate::{message::prelude::*, server::event_loop::spawn_event_loop, SOCKET_NAME};
 
 use super::handle::handle_request;
 
@@ -46,7 +47,7 @@ pub fn run() -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
     let r = Arc::clone(&running);
     ctrlc::set_handler(move || {
-        // If we have already entered the handler once and are now back a send time, we want to perform a hard
+        // If we have already entered the handler once and are now back a second time, we want to perform a hard
         // termination. This might happen if one of the streams blocks for an extended period of time.
         // NOTE: `signal_hook` crate uses libc `_exit()` rather than `std::process::exit`, but don't think it is necessary
         // here, see: https://github.com/vorner/signal-hook/blob/master/src/low_level/mod.rs
@@ -59,6 +60,29 @@ pub fn run() -> Result<()> {
         r.store(false, Ordering::SeqCst);
         term_now.store(true, Ordering::SeqCst);
     })?;
+
+    // TODO: Fix temporary injection of mio event loop and creation of channels
+    // For recieving, because it blocks should use a timeout
+    // TODO: Should only create a vec with the right number of elements based on the read size
+    let (request_tx, request_rx) = std::sync::mpsc::channel::<Request>();
+    let r = Arc::clone(&running);
+    let test_handle = std::thread::spawn(move || {
+        while r.load(Ordering::SeqCst) {
+            match request_rx.recv_timeout(Duration::from_millis(1000)) {
+                Ok(req) => {
+                    eprintln!("Printing from channel: {:?}", req);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+
+    let join_handle = spawn_event_loop(Arc::clone(&running), request_tx);
+    println!("prejoin");
+    test_handle.join().expect("Couldn't join");
+    join_handle.join().expect("Couldn't join");
+    println!("postjoin");
 
     // Quadtree setup
     // TODO: See todo notes in the function implementation

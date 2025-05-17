@@ -74,3 +74,4 @@ The quad tree will need improvement.
 - Consider the new quadtree just taking in geo::Geometry, take out the intermediate one.
 - The quadtree only stores the index of the item (this may be what it does already.
 - Consider mapped binary representation as an alternative data structure.
+- Add an average neighbor distance method

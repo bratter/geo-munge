@@ -76,7 +76,26 @@ pub enum Request {
     Window,
 }
 
+impl Request {
+    pub fn decode(buf: &[u8]) -> Result<Self> {
+        let config = bincode::config::standard();
+        let (req, _) = bincode::decode_from_slice::<Self, _>(&buf, config)?;
+
+        Ok(req)
+    }
+
+    // TODO: I don't think this is any better if it consumes the self, but check if there is a better way
+    // TODO: Do we want to send the name of the request with the error if it fails to encode
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        let config = bincode::config::standard();
+        let bytes = bincode::encode_to_vec(self, config)?;
+
+        Ok(bytes)
+    }
+}
+
 // Use default read/write impls.
+// TODO: Likely remove
 impl MessageStream for Request {}
 
 /// Reset request type.

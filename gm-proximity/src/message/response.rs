@@ -1,19 +1,18 @@
 //! Reponses.
 
-use std::borrow::Cow;
-
+use anyhow::Result;
 use bincode::{Decode, Encode};
 
 use super::stream::MessageStream;
 
 #[derive(Debug, Encode, Decode)]
 #[non_exhaustive]
-pub enum Response<'a> {
+pub enum Response {
     /// Success response.
     ///
     /// General response indicating that the previous request was successful, but the request type had no specific data
     /// that it needed to return.
-    Success(Option<Cow<'a, str>>),
+    Success(Option<String>),
 
     /// Response to Stats request.
     ///
@@ -43,13 +42,32 @@ pub enum Response<'a> {
     /// Indicates that the previous request was invalid or could not be processed.
     ///
     /// TODO: This should probably contain more information than just a message.
-    Error(Cow<'a, str>),
+    Error(String),
+}
+
+impl Response {
+    pub fn decode(buf: &[u8]) -> Result<Self> {
+        let config = bincode::config::standard();
+        let (res, _) = bincode::decode_from_slice::<Self, _>(&buf, config)?;
+
+        Ok(res)
+    }
+
+    // TODO: I don't think this is any better if it consumes the self, but check if there is a better way
+    // TODO: Do we want to send the name of the request with the error if it fails to encode
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        let config = bincode::config::standard();
+        let bytes = bincode::encode_to_vec(self, config)?;
+
+        Ok(bytes)
+    }
 }
 
 // Use default read/write impls.
-impl MessageStream for Response<'_> {}
+// TODO: Likely remove
+impl MessageStream for Response {}
 
-impl From<anyhow::Error> for Response<'_> {
+impl From<anyhow::Error> for Response {
     fn from(err: anyhow::Error) -> Self {
         Response::Error(err.to_string().into())
     }
