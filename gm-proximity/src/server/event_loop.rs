@@ -6,7 +6,7 @@ use std::{
     io::ErrorKind,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::Sender,
+        mpsc::{Receiver, Sender},
         Arc,
     },
     thread::JoinHandle,
@@ -26,7 +26,11 @@ const SERVER: Token = Token(MAX_CONNECTIONS + 1);
 
 /// Spawn a thread and start the main event loop.
 // TODO: This has to take both channels as inputs
-pub fn spawn_event_loop(running: Arc<AtomicBool>, request_tx: Sender<Request>) -> JoinHandle<()> {
+pub fn spawn_event_loop(
+    running: Arc<AtomicBool>,
+    request_tx: Sender<(ConnToken, Request)>,
+    response_rx: Receiver<(ConnToken, Response)>,
+) -> JoinHandle<()> {
     // TODO: Might like to have the spawn outside the function so we can use ? instead of unwrap
     std::thread::spawn(move || {
         let mut poll = match Poll::new() {
@@ -35,6 +39,7 @@ pub fn spawn_event_loop(running: Arc<AtomicBool>, request_tx: Sender<Request>) -
         };
         // TODO: Tune this; put in const or make a setting
         let mut events = Events::with_capacity(1024);
+        // TODO: Poll should probably go in the pool
         let mut connection_pool = ConnectionPool::<MAX_CONNECTIONS>::new();
 
         // Set up the socket server and register
@@ -50,6 +55,9 @@ pub fn spawn_event_loop(running: Arc<AtomicBool>, request_tx: Sender<Request>) -
 
         // Start the main event loop, exiting if we are shutting down
         while running.load(Ordering::SeqCst) {
+            // First drain outgoing responses into the connection's queues
+            connection_pool.fill_write_queues(&response_rx, &mut poll);
+
             // TODO: Don't think that the unwrap (or even loop breaking with ?) is right here... investigate
             poll.poll(&mut events, Some(POLL_TIMEOUT)).unwrap();
 
@@ -86,13 +94,13 @@ pub fn spawn_event_loop(running: Arc<AtomicBool>, request_tx: Sender<Request>) -
                     }
 
                     token => {
-                        if let Some(conn) = connection_pool.get_mut(token) {
+                        if let Some(conn) = connection_pool.get_mut_from_mio(token) {
                             if event.is_readable() {
-                                // TODO: Is there some way to just operate on the pool and not expose the connection?
-                                // Maybe a waste to do that
                                 loop {
+                                    eprintln!("about to read");
                                     match conn.read() {
                                         ReadResult::Request(req) => {
+                                            eprintln!("request: {:?}", req);
                                             // If the send fails, we just drop the connection - it shouldn't unless the
                                             // system crashes
                                             // TODO: If the channel fails, the whole system is dead, right? So this
@@ -103,7 +111,7 @@ pub fn spawn_event_loop(running: Arc<AtomicBool>, request_tx: Sender<Request>) -
                                             // Could also split writing into another thread, but this is more complex
                                             // and probably not required as output writing should be fine to drain
                                             // quickly when the reading frees up, but should check this
-                                            if let Err(_) = request_tx.send(req) {
+                                            if let Err(_) = request_tx.send((conn.token(), req)) {
                                                 eprintln!(
                                                     "Request channel error on connection {}",
                                                     token.0
@@ -131,10 +139,45 @@ pub fn spawn_event_loop(running: Arc<AtomicBool>, request_tx: Sender<Request>) -
                                         }
                                     };
                                 }
-
-                            // TODO: Write events
                             } else if event.is_writable() {
-                                eprintln!("write event");
+                                loop {
+                                    match conn.write() {
+                                        WriteResult::Continue => {}
+                                        WriteResult::Drained => {
+                                            // No longer interested in writes until write buffer is refilled
+                                            // If this fails, stream is unusable, so cleanup
+                                            // TODO: What about re-registering read interest here too? Probably not in
+                                            // drained, but somewhere in the write loop
+                                            match conn.disable_write_interest(&mut poll) {
+                                                Ok(_) => {}
+                                                Err(err) => {
+                                                    // TODO: Very similar error text appears multiple times - make a
+                                                    // function, for example "log err and cleanup"
+                                                    eprintln!(
+                                                        "Write error on connection {}: {}",
+                                                        token.0, err
+                                                    );
+                                                    connection_pool.cleanup(&mut poll, token);
+                                                }
+                                            }
+                                            eprintln!("About to break from drained");
+                                            break;
+                                        }
+                                        WriteResult::WouldBlock => break,
+                                        WriteResult::Eof => {
+                                            connection_pool.cleanup(&mut poll, token);
+                                            break;
+                                        }
+                                        WriteResult::Error(err) => {
+                                            eprintln!(
+                                                "Write error on connection {}: {}",
+                                                token.0, err
+                                            );
+                                            connection_pool.cleanup(&mut poll, token);
+                                            break;
+                                        }
+                                    }
+                                }
                             } else {
                                 // Given we have only registered interest in the two events, this should be true
                                 unreachable!("No other event types");

@@ -20,20 +20,20 @@ pub fn run(cmd: ClientCommand) -> Result<()> {
     let (request_tx, request_rx) = std::sync::mpsc::channel::<Request>();
     let (response_tx, response_rx) = std::sync::mpsc::channel::<Response>();
     // TODO: What is behavior if this returns an error? Should we at least log/print?
-    let io_handle = std::thread::spawn(|| run_io_loop(request_rx, response_tx));
+    let io_handle = std::thread::spawn(|| run_io_loop(request_rx, response_tx).unwrap());
 
     // TODO: Actually get the right request type (or loop if using CLI)
     for i in 0..10 {
         eprintln!("sending req {}", i);
         request_tx.send(Request::Stats)?;
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(1000));
         // This should just recieve responses 1 by 1... not sophisticated
         let res = response_rx.recv()?;
         eprintln!("got response: {:?}", res);
     }
 
     // TODO: Better join handling
-    io_handle.join().unwrap().unwrap();
+    io_handle.join().unwrap();
 
     /*
         let socket_name = UNIX_SOCKET_NAME.to_ns_name::<GenericNamespaced>()?;
@@ -61,37 +61,24 @@ pub fn run_io_loop(request_rx: Receiver<Request>, response_tx: Sender<Response>)
     let mut events = Events::with_capacity(16);
     let mut conn = Connection::new_client(&mut poll, CLIENT, stream)?;
 
-    // TODO: This will be removed
-    let mut pending_write: Option<Vec<u8>> = None;
-    let mut write_cursor = 0;
-
     // TODO: Consider graceful exit of clients also? Probably worth it for some types of long-lived clients
-    // TODO: Consider making the pending writes a VecDeq and piling more up to write
     loop {
-        // First encode and queue up message to send
-        // Only need to queue a single message at a time
-        if pending_write.is_none() {
+        // In the client we don't need to transfer from the channel to the write queue, but it is easier to just do so
+        // TODO: This likely means we have two backpressure mechanisms if we cap the queue size - check what works so we
+        // are not slowing things down - likely should not modify read interest ever as the server will only send back
+        // what we give them, but if we are slow processing the reads, eventually the server will just backpressure our
+        // writes - client therefore just needs to manage the size of its write queue, so probably set a max length here
+        // and in the channel
+        loop {
             match request_rx.try_recv() {
-                // TODO: There is some way of doing the pending write with write_vectored and IoSlice::advance_slices to
-                // appropriately manage prepending the length in a more efficienct way than re-allocating a Vec, but
-                // will be difficult to get right
-                Ok(req) => match req.encode() {
-                    Ok(bytes) => {
-                        // We are now interested in listening for writes
-                        // If this fails the stream is unusable (could retry, but too complex given liklihood)
-                        conn.enable_write_interest(&mut poll)?;
-
-                        let mut bytes_with_len: Vec<_> = (bytes.len() as u32).to_le_bytes().into();
-                        bytes_with_len.extend_from_slice(&bytes);
-                        pending_write = Some(bytes_with_len);
-                        write_cursor = 0;
-                    }
-                    Err(err) => eprintln!("Failed to encode request: {}", err),
-                },
-                Err(TryRecvError::Disconnected) => {
-                    bail!("Request channel disconnected");
+                Ok(req) => {
+                    conn.push_write_queue(req);
+                    // We are now interested in listening for writes
+                    // If this fails the stream is unusable (could retry, but too complex given liklihood)
+                    conn.enable_write_interest(&mut poll);
                 }
-                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => bail!("Request channel disconnected"),
             }
         }
 
@@ -110,40 +97,30 @@ pub fn run_io_loop(request_rx: Receiver<Request>, response_tx: Sender<Response>)
                         ReadResult::Response(res) => response_tx.send(res)?,
                         ReadResult::Continue => {}
                         ReadResult::WouldBlock => break,
-                        // TODO: See note in is_writeable about this indeed being unexpected
+                        // TODO: Is this really a connection closed? Is it really unexpected (I think so as the client
+                        // should be the one hanging up? Just delete this when comfortable
                         ReadResult::Eof => bail!("Connection closed unexpectedly"),
                         ReadResult::Error(err) => bail!(err),
                     }
                 }
-            }
 
             // When we are writable, we only write if there is a pending message
-            // TODO: Given the need to re-register, should probably outsource to a writer struct, that also should
-            // manage the write_vectored (if possible) and a larger buffer that pulls more items out of the channel at
-            // once; could also be a state machine if we can't get the write vectored working
-            if event.is_writable() {
-                while let Some(buf) = &pending_write {
-                    match conn.write(&buf[write_cursor..]) {
-                        // TODO: Is this really a connection closed? Is it really unexpected (I think so as the client
-                        // should be the one hanging up?
-                        Ok(0) => bail!("Connection closed unexpectedly"),
-                        Ok(n) => {
-                            write_cursor += n;
-                            if write_cursor >= buf.len() {
-                                // Reset the write buffer
-                                pending_write = None;
-                                write_cursor = 0;
-
-                                // No longer interested in writes until write buffer is refilled
-                                // If this fails, stream is unusable, so exist
-                                conn.disable_write_interest(&mut poll)?;
-                                break;
-                            }
+            } else if event.is_writable() {
+                loop {
+                    match conn.write() {
+                        WriteResult::Continue => {}
+                        // TODO: Somewhere in here we should think about re-enabling reads, if we are using this as
+                        // throttling on the client
+                        WriteResult::Drained => {
+                            // No longer interested in writes until write buffer is refilled
+                            // If this fails, stream is unusable, so exit
+                            conn.disable_write_interest(&mut poll)?;
+                            break;
                         }
-                        Err(err) if err.kind() == ErrorKind::WouldBlock => break,
-                        Err(err) => {
-                            bail!("Stream write error: {}", err);
-                        }
+                        WriteResult::WouldBlock => break,
+                        // TODO: See note in is_readable about this indeed being unexpected
+                        WriteResult::Eof => bail!("Connection closed unexpectedly"),
+                        WriteResult::Error(err) => bail!(err),
                     }
                 }
             }

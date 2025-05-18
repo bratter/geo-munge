@@ -19,7 +19,9 @@ use threadpool::ThreadPool;
 
 use geolib::qt::{QtData, Quadtree, ToRadians};
 
-use crate::{message::prelude::*, server::event_loop::spawn_event_loop, SOCKET_NAME};
+use crate::{
+    connection::ConnToken, message::prelude::*, server::event_loop::spawn_event_loop, SOCKET_NAME,
+};
 
 use super::handle::handle_request;
 
@@ -63,14 +65,18 @@ pub fn run() -> Result<()> {
 
     // TODO: Fix temporary injection of mio event loop and creation of channels
     // For recieving, because it blocks should use a timeout
-    // TODO: Should only create a vec with the right number of elements based on the read size
-    let (request_tx, request_rx) = std::sync::mpsc::channel::<Request>();
+    let (request_tx, request_rx) = std::sync::mpsc::channel::<(ConnToken, Request)>();
+    let (response_tx, response_rx) = std::sync::mpsc::channel::<(ConnToken, Response)>();
     let r = Arc::clone(&running);
     let test_handle = std::thread::spawn(move || {
         while r.load(Ordering::SeqCst) {
             match request_rx.recv_timeout(Duration::from_millis(1000)) {
                 Ok(req) => {
-                    eprintln!("Printing from channel: {:?}", req);
+                    eprintln!("Printing from channel: {:?}", req.1);
+
+                    response_tx
+                        .send((req.0, Response::Error("A response!".to_string())))
+                        .unwrap();
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -78,7 +84,7 @@ pub fn run() -> Result<()> {
         }
     });
 
-    let join_handle = spawn_event_loop(Arc::clone(&running), request_tx);
+    let join_handle = spawn_event_loop(Arc::clone(&running), request_tx, response_rx);
     println!("prejoin");
     test_handle.join().expect("Couldn't join");
     join_handle.join().expect("Couldn't join");

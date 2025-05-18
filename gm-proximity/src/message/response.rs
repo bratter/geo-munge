@@ -45,6 +45,7 @@ pub enum Response {
     Error(String),
 }
 
+/*
 impl Response {
     pub fn decode(buf: &[u8]) -> Result<Self> {
         let config = bincode::config::standard();
@@ -61,10 +62,9 @@ impl Response {
 
         Ok(bytes)
     }
-}
+}*/
 
-// Use default read/write impls.
-// TODO: Likely remove
+// Use default encode and decode impls
 impl MessageStream for Response {}
 
 impl From<anyhow::Error> for Response {

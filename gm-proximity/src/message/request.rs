@@ -76,6 +76,7 @@ pub enum Request {
     Window,
 }
 
+/*
 impl Request {
     pub fn decode(buf: &[u8]) -> Result<Self> {
         let config = bincode::config::standard();
@@ -93,9 +94,9 @@ impl Request {
         Ok(bytes)
     }
 }
+*/
 
-// Use default read/write impls.
-// TODO: Likely remove
+// Use default encode and decode impls
 impl MessageStream for Request {}
 
 /// Reset request type.

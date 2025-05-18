@@ -5,12 +5,27 @@ use std::io::{ErrorKind, Read, Write};
 use anyhow::{bail, Result};
 use bincode::{Decode, Encode};
 
-// TODO: Document the semantics of read and write
+// TODO: Document the semantics of read and write (delete read and write)
 // TODO: Improve read/write handling (maybe not use read_exact, maybe make use of borrowing
+// TODO: Change the name of the trait and the file, maybe just put in message mod
 pub trait MessageStream
 where
     Self: Decode<()> + Encode + Sized,
 {
+    fn decode_from_slice(buf: &[u8]) -> Result<Self> {
+        let config = bincode::config::standard();
+        let (res, _) = bincode::decode_from_slice::<Self, _>(&buf, config)?;
+
+        Ok(res)
+    }
+
+    fn encode_to_vec(&self) -> Result<Vec<u8>> {
+        let config = bincode::config::standard();
+        let bytes = bincode::encode_to_vec(self, config)?;
+
+        Ok(bytes)
+    }
+
     fn read<R: Read>(reader: &mut R) -> Result<Option<Self>> {
         let mut len_buf = [0u8; 4];
         match reader.read_exact(&mut len_buf) {
