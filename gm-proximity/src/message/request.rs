@@ -8,7 +8,7 @@ use geo::{Point, Rect};
 use geojson::Feature;
 use geolib::qt::{Geometry, ToRadians};
 
-use super::stream::MessageStream;
+use super::encode::IoEncode;
 
 #[derive(Debug, Encode, Decode)]
 #[non_exhaustive]
@@ -76,28 +76,29 @@ pub enum Request {
     Window,
 }
 
-/*
 impl Request {
-    pub fn decode(buf: &[u8]) -> Result<Self> {
-        let config = bincode::config::standard();
-        let (req, _) = bincode::decode_from_slice::<Self, _>(&buf, config)?;
-
-        Ok(req)
-    }
-
-    // TODO: I don't think this is any better if it consumes the self, but check if there is a better way
-    // TODO: Do we want to send the name of the request with the error if it fails to encode
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        let config = bincode::config::standard();
-        let bytes = bincode::encode_to_vec(self, config)?;
-
-        Ok(bytes)
+    /// Indicates whether the server produces a single response message for the current request type.
+    ///
+    /// When true, the server will only ever produce a single result for the request, so clients can retire any request
+    /// tracking after a single response. When false, the server will send at least two responses, the last of which
+    /// will be done that will contain the number of messages excluding the done.
+    /// TODO: Could signal done with the Done or Success response types instead
+    pub fn is_oneshot(&self) -> bool {
+        match self {
+            Request::Stats => true,
+            Request::Reset(_) => true,
+            Request::KeyType(_) => true,
+            Request::Bbox(_) => true,
+            Request::Insert(_) => true,
+            Request::Delete => true,
+            Request::Knn(_) => false,
+            Request::Window => false,
+        }
     }
 }
-*/
 
 // Use default encode and decode impls
-impl MessageStream for Request {}
+impl IoEncode for Request {}
 
 /// Reset request type.
 ///

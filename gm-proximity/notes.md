@@ -75,3 +75,17 @@ The quad tree will need improvement.
 - The quadtree only stores the index of the item (this may be what it does already.
 - Consider mapped binary representation as an alternative data structure.
 - Add an average neighbor distance method
+- Is there some way for the outer level to subdivide into almost squares,
+  then the locks can at lest be shareded at this level, would need logic for
+  managing checks with adjacents, but inserts would always be in a single pillar
+
+## Bench
+
+Need some sort of benchmarking to test iterations
+
+- Test harness in general spins up an unnamed pipe and passes it to each run fn
+- Needs to baseline on no-op, just generate the data on the test client and
+  pump through the io loop and measure the return trip
+- Ideally need seeded values, but also needs to be super fast
+- One has to be spread, but another needs to be concentrated
+- Mostly write then read, but options with mixed read/write

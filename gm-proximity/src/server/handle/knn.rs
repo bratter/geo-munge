@@ -1,19 +1,22 @@
-use std::sync::{Arc, RwLock, RwLockReadGuard};
-
 use anyhow::Result;
 use geolib::qt::{Geometry, Quadtree};
 
 use crate::message::prelude::*;
 
-pub fn knn(qt: &Arc<RwLock<Quadtree>>, knn: Knn) -> Result<Response> {
+use super::Context;
+
+// TODO: Just fix this to see what the problem is
+pub fn knn(handler: Context, knn: Knn) {
     // TODO: Handle other types of incoming find data formats
     let response = match &knn.data {
-        FindData::Geom(shapes) => process_geom_stream(qt, knn.k, knn.r, shapes.into_iter()),
+        FindData::Geom(shapes) => process_geom_stream(&handler, knn.k, knn.r, shapes.into_iter()),
         // TODO: Here we need to pull the shape from the Map storage and pass it to the quadtree
         FindData::Keys(_keys) => todo!(),
     };
 
-    Ok(Response::KnnData(response))
+    handler.send(Response::KnnData(response));
+    // TODO: Here we are not chunking, but because knn might return multiple responses, just testing done
+    handler.send(Response::Done(1));
 }
 
 // TODO: If there are more settings, bundle them into a QtSettings struct
@@ -27,12 +30,12 @@ pub fn knn(qt: &Arc<RwLock<Quadtree>>, knn: Knn) -> Result<Response> {
 // TODO: Push the results directly into the output message and send (probably one result per knn input row)
 // TODO: Do we want to return some form of error code rather than a string to keep the size down?
 fn process_geom_stream(
-    qt: &Arc<RwLock<Quadtree>>,
+    handler: &Context,
     k: usize,
     r: Option<f64>,
     geoms: impl Iterator<Item = Result<Geometry<f64>>>,
 ) -> Vec<Result<(usize, f64), String>> {
-    let qt = qt.read().unwrap();
+    let qt = &*handler.read_qt();
 
     geoms
         .flat_map(|geom| match geom {
@@ -43,7 +46,7 @@ fn process_geom_stream(
 }
 
 fn exec_knn<'a>(
-    qt: &'a RwLockReadGuard<'_, Quadtree>,
+    qt: &'a Quadtree,
     k: usize,
     r: Option<f64>,
     item: Geometry<f64>,

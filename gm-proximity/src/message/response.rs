@@ -1,9 +1,9 @@
-//! Reponses.
+//! Responses.
 
 use anyhow::Result;
 use bincode::{Decode, Encode};
 
-use super::stream::MessageStream;
+use super::encode::IoEncode;
 
 #[derive(Debug, Encode, Decode)]
 #[non_exhaustive]
@@ -13,6 +13,13 @@ pub enum Response {
     /// General response indicating that the previous request was successful, but the request type had no specific data
     /// that it needed to return.
     Success(Option<String>),
+
+    /// Done response.
+    ///
+    /// Indicate that this is the last response for the operation when the request returned multiple individual
+    /// responses. This will usually be attached to a request id in the message and contains the number of individual
+    /// responses EXCLUDING this one that were returned.
+    Done(usize),
 
     /// Response to Stats request.
     ///
@@ -45,27 +52,8 @@ pub enum Response {
     Error(String),
 }
 
-/*
-impl Response {
-    pub fn decode(buf: &[u8]) -> Result<Self> {
-        let config = bincode::config::standard();
-        let (res, _) = bincode::decode_from_slice::<Self, _>(&buf, config)?;
-
-        Ok(res)
-    }
-
-    // TODO: I don't think this is any better if it consumes the self, but check if there is a better way
-    // TODO: Do we want to send the name of the request with the error if it fails to encode
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        let config = bincode::config::standard();
-        let bytes = bincode::encode_to_vec(self, config)?;
-
-        Ok(bytes)
-    }
-}*/
-
 // Use default encode and decode impls
-impl MessageStream for Response {}
+impl IoEncode for Response {}
 
 impl From<anyhow::Error> for Response {
     fn from(err: anyhow::Error) -> Self {

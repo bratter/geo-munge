@@ -1,5 +1,3 @@
-use std::io::{Read, Write};
-
 use anyhow::{bail, Result};
 use dialoguer::Confirm;
 
@@ -9,7 +7,7 @@ use super::CommandHandler;
 
 /// Reset command handler
 /// TODO: Add keytype settings
-pub fn reset(handler: &mut CommandHandler<impl Read, impl Write>, reset: ResetArgs) -> Result<()> {
+pub fn reset(handler: &mut CommandHandler, reset: ResetArgs) -> Result<()> {
     // Short circuit will avoid confirm if force is true
     if reset.force
         || Confirm::new()
@@ -18,7 +16,7 @@ pub fn reset(handler: &mut CommandHandler<impl Read, impl Write>, reset: ResetAr
             .unwrap_or(false)
     {
         handler.send(Request::Reset(Reset::new(None, reset.bbox)))?;
-        handler.block_on_response()
+        Ok(())
     } else {
         bail!("Reset aborted")
     }

@@ -1,20 +1,15 @@
-use std::io::{Read, Write};
-
 use anyhow::Result;
 
 use crate::{args, message::prelude::*};
 
 use super::{CommandHandler, Input};
 
-/// Load command handler
+/// Knn command handler
 /// TODO: Fix this - it is a bare minimum test version - which at least is reporting results, even if the results don't
 /// numbers don't look right
 /// TODO: See notes in the load handler - improvements here will be similiar
 /// TODO: After those are done, then try to simplify - e.g. abstract the 4 iterators behind an impl
-pub fn knn(
-    handler: &mut CommandHandler<impl Read, impl Write>,
-    knn_args: args::KnnArgs,
-) -> Result<()> {
+pub fn knn(handler: &mut CommandHandler, knn_args: args::KnnArgs) -> Result<()> {
     if let Some(data) = knn_args.data {
         // Here we have CLI data - do this separately as we are just dispathcing this as a batch
         let find_data = if knn_args.test_keys {
@@ -41,7 +36,6 @@ pub fn knn(
         };
 
         handler.send(Request::Knn(knn))?;
-        handler.block_on_response()?;
     } else {
         // Here we have IO
         let input = Input::try_new(knn_args.file)?;
@@ -57,7 +51,6 @@ pub fn knn(
                         };
 
                         handler.send(Request::Knn(knn))?;
-                        handler.block_on_response()?;
                     }
                     Err(err) => eprintln!("Could not read line {}: {}", n, err),
                 }
@@ -73,7 +66,6 @@ pub fn knn(
                         };
 
                         handler.send(Request::Knn(knn))?;
-                        handler.block_on_response()?;
                     }
                     Err(err) => eprintln!("Could not read line {}: {}", n, err),
                 }

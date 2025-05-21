@@ -11,4 +11,4 @@ use knn::knn;
 use reset::reset;
 use stats::stats;
 
-pub use handle::handle_request;
+pub use handle::{Context, Handler};

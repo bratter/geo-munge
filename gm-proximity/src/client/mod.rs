@@ -5,3 +5,4 @@ mod input_io;
 mod run;
 
 pub use run::run;
+pub use run::Config;

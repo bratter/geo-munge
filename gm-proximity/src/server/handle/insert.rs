@@ -1,19 +1,14 @@
-use std::sync::{Arc, RwLock};
-
-use anyhow::Result;
-use geolib::qt::{
-    datum::{BaseData, Datum},
-    Quadtree,
-};
+use geolib::qt::datum::{BaseData, Datum};
 
 use crate::message::prelude::*;
+
+use super::Context;
 
 // TODO: The quadtree has to keep track of last insert id, which is not the count if we allow deletes.
 // TODO: Potentially handle batching, especially if the actual insertion work gets handed off to a worker pool.
 // At the moment this will lock the RWLock for all the inserts
-pub fn insert(qt: &Arc<RwLock<Quadtree>>, insert: DataStream) -> Result<Response> {
-    // NOTE: Ok to propagate the panic with unwrap as the only error is for a poisoned RwLock
-    let mut qt = qt.write().unwrap();
+pub fn insert(handler: Context, insert: DataStream) {
+    let mut qt = handler.write_qt();
     let mut insert_count: usize = 0;
     let mut error_count: usize = 0;
 
@@ -27,7 +22,7 @@ pub fn insert(qt: &Arc<RwLock<Quadtree>>, insert: DataStream) -> Result<Response
     }
 
     // TODO: Consider adding failure reasons
-    Ok(Response::InsertResult {
+    handler.send(Response::InsertResult {
         success: insert_count,
         fail: error_count,
     })
@@ -35,26 +30,28 @@ pub fn insert(qt: &Arc<RwLock<Quadtree>>, insert: DataStream) -> Result<Response
 
 #[cfg(test)]
 mod test {
-    use crate::server::run::build_qt;
+    use std::{path::PathBuf, time::Duration};
 
     use super::*;
 
-    use std::path::PathBuf;
+    use crate::connection::MsgToken;
 
     #[test]
     fn inserts_ndjson_requests() {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push("../data/sample_geojson/sample.ndjson");
         let insert_val = DataStream::from(std::fs::read(path).unwrap().to_vec());
-        let qt = Arc::new(RwLock::new(build_qt(Reset::default())));
+        let (rx, handler) = Context::test_new(MsgToken::new(0, 0));
 
-        let res = insert(&qt, insert_val).unwrap();
+        insert(handler, insert_val);
 
-        if let Response::InsertResult { success, fail } = res {
-            assert_eq!(success, 3);
-            assert_eq!(fail, 0);
-        } else {
-            panic!("Not a Success(Some(_))");
+        match rx.recv_timeout(Duration::from_millis(0)) {
+            Ok((_, Response::InsertResult { success, fail })) => {
+                assert_eq!(success, 3);
+                assert_eq!(fail, 0);
+            }
+            Ok(res) => panic!("Wrong response type: {:?}", res),
+            Err(err) => panic!("Response failed: {}", err),
         }
     }
 }

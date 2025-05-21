@@ -9,7 +9,7 @@ use std::{
 use anyhow::{anyhow, bail, Result};
 use mio::{net::UnixStream, Interest, Poll, Token};
 
-use crate::message::prelude::*;
+use crate::{message::prelude::*, MAX_CONNECTIONS};
 
 // TODO: Is it worth having some mechanism to prevent dropping a connection on a different pool? Probably not as this is
 // the only user
@@ -19,26 +19,45 @@ use crate::message::prelude::*;
 // TODO: Should not reuse ConnTokens as connections could easily be replaced, this does mean we can't just index into
 // the ID, but we can make the ConnId the index and get the incrementing token from that. Probably better to keep the
 // Tokens the same but increment the ConnToken, because there are no issues with keepin the Tokens static
-pub struct ConnectionPool<const N: usize> {
-    pool: [Option<Connection<Response>>; N],
+pub struct ConnectionPool {
+    pool: Vec<Option<Connection<Response>>>,
+    next_conn_id: u32,
 }
 
-impl<const N: usize> ConnectionPool<N> {
-    pub const fn new() -> Self {
-        const NONE: Option<Connection<Response>> = None;
+impl ConnectionPool {
+    pub fn new(size: usize) -> Result<Self> {
+        if size > MAX_CONNECTIONS {
+            bail!(
+                "Attempted to create a {} connection pool, but max size is {}",
+                size,
+                MAX_CONNECTIONS
+            );
+        }
 
-        Self { pool: [NONE; N] }
+        let mut pool = Vec::with_capacity(size);
+        pool.resize_with(size, Default::default);
+
+        Ok(Self {
+            pool,
+            next_conn_id: 0,
+        })
     }
 
-    pub fn get_mut<'a>(&'a mut self, token: ConnToken) -> Option<&'a mut Connection<Response>> {
-        self.pool.get_mut(token.0)?.as_mut()
+    pub fn get_mut_by_msg<'a>(
+        &'a mut self,
+        token: MsgToken,
+    ) -> Option<&'a mut Connection<Response>> {
+        self.pool
+            .iter_mut()
+            .find(|conn| match conn {
+                Some(conn) => conn.id == token.conn_id,
+                None => false,
+            })?
+            .as_mut()
     }
 
     // TODO: If we rotate mio tokens then this will need to change to finding in the pool
-    pub fn get_mut_from_mio<'a>(
-        &'a mut self,
-        token: Token,
-    ) -> Option<&'a mut Connection<Response>> {
+    pub fn get_mut_by_conn<'a>(&'a mut self, token: Token) -> Option<&'a mut Connection<Response>> {
         self.pool.get_mut(token.0)?.as_mut()
     }
 
@@ -56,7 +75,13 @@ impl<const N: usize> ConnectionPool<N> {
                     Interest::READABLE | Interest::WRITABLE,
                 ) {
                     Ok(_) => {
-                        self.pool[idx] = Some(Connection::new_server(Token(idx), stream));
+                        self.pool[idx] = Some(Connection::new_server(
+                            self.next_conn_id,
+                            Token(idx),
+                            stream,
+                        ));
+                        // Must increment the connection identifier
+                        self.next_conn_id += 1;
                         AddResult::Success
                     }
                     Err(_) => AddResult::RegistrationFailure(stream),
@@ -87,17 +112,17 @@ impl<const N: usize> ConnectionPool<N> {
     /// This runs until empty.
     pub fn fill_write_queues(
         &mut self,
-        response_rx: &Receiver<(ConnToken, Response)>,
+        response_rx: &Receiver<(MsgToken, Response)>,
         poll: &mut Poll,
     ) -> Result<()> {
         loop {
             match response_rx.try_recv() {
-                Ok((token, res)) => match self.get_mut(token) {
+                Ok((msg_token, res)) => match self.get_mut_by_msg(msg_token) {
                     Some(conn) => {
-                        conn.push_write_queue(res);
+                        conn.push_write_queue((msg_token.msg_id, res));
                         conn.enable_write_interest(poll)?;
                     }
-                    None => eprintln!("Connection {} no longer exists", token.0),
+                    None => eprintln!("Connection {} no longer exists", msg_token.conn_id),
                 },
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => bail!("Response channel disconnected"),
@@ -117,26 +142,31 @@ impl<const N: usize> ConnectionPool<N> {
 
 pub enum AddResult {
     Success,
+    #[allow(dead_code)]
     NoSpace(UnixStream),
+    #[allow(dead_code)]
     RegistrationFailure(UnixStream),
 }
 
-pub struct Connection<T: MessageStream> {
+pub struct Connection<T: IoEncode> {
+    id: u32,
+    // TODO: Do we need this?
     token: Token,
     stream: UnixStream,
     kind: ConnectionKind,
     read_state: ReadState,
     write_state: WriteState,
-    write_queue: VecDeque<T>,
+    write_queue: VecDeque<(u32, T)>,
 }
 
-impl<T: MessageStream> Connection<T> {
+impl<T: IoEncode> Connection<T> {
     /// Make a new Connection.
     ///
     /// This is private as making a client and a server are slightly different.
     /// When inside a [`ConnectionPool`] new shouldn't be used.
-    fn new(token: Token, stream: UnixStream, kind: ConnectionKind) -> Self {
+    fn new(id: u32, token: Token, stream: UnixStream, kind: ConnectionKind) -> Self {
         Self {
+            id,
             token,
             stream,
             kind,
@@ -147,8 +177,8 @@ impl<T: MessageStream> Connection<T> {
     }
 
     /// Make a new server connection. This should only be called inside a conenction pool.
-    fn new_server(token: Token, stream: UnixStream) -> Self {
-        Self::new(token, stream, ConnectionKind::Server)
+    fn new_server(id: u32, token: Token, stream: UnixStream) -> Self {
+        Self::new(id, token, stream, ConnectionKind::Server)
     }
 
     /// Create a new connection from the provided stream, and register with the poll.
@@ -156,19 +186,14 @@ impl<T: MessageStream> Connection<T> {
         poll.registry()
             .register(&mut stream, token, Interest::READABLE | Interest::WRITABLE)?;
 
-        Ok(Self::new(token, stream, ConnectionKind::Client))
+        Ok(Self::new(0, token, stream, ConnectionKind::Client))
     }
 
-    pub fn poll_token(&self) -> Token {
-        self.token
-    }
-
-    pub fn token(&self) -> ConnToken {
-        self.token.into()
+    pub fn msg_token(&self, msg_id: u32) -> MsgToken {
+        MsgToken::new(self.id, msg_id)
     }
 
     pub fn enable_write_interest(&mut self, poll: &mut Poll) -> Result<()> {
-        eprintln!("enabling write interest");
         poll.registry().reregister(
             &mut self.stream,
             self.token,
@@ -178,14 +203,13 @@ impl<T: MessageStream> Connection<T> {
     }
 
     pub fn disable_write_interest(&mut self, poll: &mut Poll) -> Result<()> {
-        eprintln!("disabling write interest");
         poll.registry()
             .reregister(&mut self.stream, self.token, Interest::READABLE)?;
         Ok(())
     }
 
-    pub fn push_write_queue(&mut self, msg: T) {
-        self.write_queue.push_back(msg);
+    pub fn push_write_queue(&mut self, msg_with_id: (u32, T)) {
+        self.write_queue.push_back(msg_with_id);
     }
 
     /// Read off the incoming stream and buffer into [`Request`]s or [`Response`]s.
@@ -193,27 +217,34 @@ impl<T: MessageStream> Connection<T> {
     /// The connection decodes the incoming stream into objects, but doesn't dispatch them anywhere or handle
     /// errors/EOFs - this is up for the calling code to do - although we do extract and report WouldBlock to
     /// make the API simpler.
+    /// TODO: Is there some easy way of pulling out all domain specific reading and writing into a trait, not just the
+    /// decode and encode? This way the whole io loop is reuseable
     pub fn read(&mut self) -> ReadResult {
         match &mut self.read_state {
-            ReadState::Length {
-                len_buf,
+            ReadState::Header {
+                header_buf,
                 bytes_read,
-            } => match self.stream.read(&mut len_buf[*bytes_read..]) {
+            } => match self.stream.read(&mut header_buf[*bytes_read..]) {
                 Ok(0) if *bytes_read == 0 => ReadResult::Eof,
                 Ok(0) => ReadResult::Error(anyhow!("Unexpected EOF")),
                 Ok(n) => {
-                    eprintln!("reading length {}", n);
                     *bytes_read += n;
-                    if *bytes_read == 4 {
+                    if *bytes_read == 8 {
                         // When we are transitioning states, we pre-prepare a correctly sized vector that has been set
                         // with resize to ensure that reading into it works correctly and requires no further
                         // allocations for this message; afterwards the len is encoded in the Vec so doesn't need to be
                         // retained
                         // TODO: What to do if this is zero?
-                        let len = u32::from_le_bytes(*len_buf) as usize;
+                        let len = u32_from_le_slice(&header_buf[..4]) as usize;
+                        let msg_id = u32_from_le_slice(&header_buf[4..]);
                         let mut buf = Vec::with_capacity(len);
                         buf.resize(len, 0);
-                        self.read_state = ReadState::Body { buf, bytes_read: 0 };
+
+                        self.read_state = ReadState::Body {
+                            buf,
+                            msg_id,
+                            bytes_read: 0,
+                        };
                     }
                     ReadResult::Continue
                 }
@@ -221,7 +252,9 @@ impl<T: MessageStream> Connection<T> {
                 Err(err) => ReadResult::Error(anyhow![err]),
             },
 
-            ReadState::Body { buf, bytes_read } => {
+            ReadState::Body {
+                buf, bytes_read, ..
+            } => {
                 match self.stream.read(&mut buf[*bytes_read..]) {
                     Ok(0) => ReadResult::Error(anyhow!("Unexpected EOF")),
                     Ok(n) => {
@@ -231,10 +264,10 @@ impl<T: MessageStream> Connection<T> {
                             // also reset the state machine in preparation for the next message by setting back to its
                             // default, which will also drop the buf vector - take() does this cleanly with ownership
                             // The type of decode we attempt depends on whether this is a server or a client connection.
-                            if let ReadState::Body { buf, .. } =
+                            if let ReadState::Body { buf, msg_id, .. } =
                                 std::mem::take(&mut self.read_state)
                             {
-                                self.decode(&buf)
+                                self.decode(msg_id, &buf)
                             } else {
                                 unreachable!()
                             }
@@ -280,16 +313,18 @@ impl<T: MessageStream> Connection<T> {
             }
 
             // Write the length, then when finished pass the buffer over to body writing
-            WriteState::Length { len, buf, bytes } => match self.stream.write(&len[*bytes..]) {
+            WriteState::Header {
+                header_buf: len,
+                buf,
+                bytes,
+            } => match self.stream.write(&len[*bytes..]) {
                 Ok(0) if *bytes == 0 => WriteResult::Eof,
                 Ok(0) => WriteResult::Error(anyhow!("Unexpected EOF")),
                 Ok(n) => {
-                    eprintln!("should be in here {}", n);
                     *bytes += n;
-                    if *bytes == 4 {
+                    if *bytes == 8 {
                         let buf = std::mem::take(buf);
                         self.write_state = WriteState::Body { buf, bytes: 0 };
-                        eprintln!("written len");
                     }
                     WriteResult::Continue
                 }
@@ -303,7 +338,6 @@ impl<T: MessageStream> Connection<T> {
                     *bytes += n;
                     if *bytes == buf.len() {
                         self.write_state = WriteState::Awaiting;
-                        eprintln!("written body");
                     }
                     WriteResult::Continue
                 }
@@ -313,46 +347,52 @@ impl<T: MessageStream> Connection<T> {
         }
     }
 
-    fn decode(&self, buf: &[u8]) -> ReadResult {
+    fn decode(&self, msg_id: u32, buf: &[u8]) -> ReadResult {
         match self.kind {
             ConnectionKind::Server => match Request::decode_from_slice(buf) {
-                Ok(req) => ReadResult::Request(req),
+                Ok(req) => ReadResult::Request((msg_id, req)),
                 Err(err) => ReadResult::Error(err),
             },
             ConnectionKind::Client => match Response::decode_from_slice(buf) {
-                Ok(res) => ReadResult::Response(res),
+                Ok(res) => ReadResult::Response((msg_id, res)),
                 Err(err) => ReadResult::Error(err),
             },
         }
     }
 
-    fn encode(&self, msg: T) -> Result<WriteState> {
+    fn encode(&self, (msg_id, msg): (u32, T)) -> Result<WriteState> {
         let buf = msg.encode_to_vec()?;
         let len = u32::to_le_bytes(buf.len() as u32);
+        let msg_id = u32::to_le_bytes(msg_id);
+        let mut header_buf = [0u8; 8];
 
-        Ok(WriteState::Length { len, buf, bytes: 0 })
+        header_buf[0..4].copy_from_slice(&len);
+        header_buf[4..8].copy_from_slice(&msg_id);
+
+        Ok(WriteState::Header {
+            header_buf,
+            buf,
+            bytes: 0,
+        })
     }
 }
 
 /// An opaque token to track the connection of a request/response pair to enable sending back on the right connection.
-#[derive(Clone, Copy)]
-pub struct ConnToken(usize);
-
-impl From<Token> for ConnToken {
-    fn from(value: Token) -> Self {
-        Self(value.0)
-    }
+#[derive(Debug, Clone, Copy)]
+pub struct MsgToken {
+    conn_id: u32,
+    msg_id: u32,
 }
 
-impl From<ConnToken> for Token {
-    fn from(value: ConnToken) -> Self {
-        Self(value.0)
+impl MsgToken {
+    pub fn new(conn_id: u32, msg_id: u32) -> Self {
+        Self { conn_id, msg_id }
     }
 }
 
 pub enum ReadResult {
-    Request(Request),
-    Response(Response),
+    Request((u32, Request)),
+    Response((u32, Response)),
     Continue,
     WouldBlock,
     /// Expected EOF, unexpected will be returned as errors
@@ -370,14 +410,21 @@ pub enum WriteResult {
 }
 
 enum ReadState {
-    Length { len_buf: [u8; 4], bytes_read: usize },
-    Body { buf: Vec<u8>, bytes_read: usize },
+    Header {
+        header_buf: [u8; 8],
+        bytes_read: usize,
+    },
+    Body {
+        buf: Vec<u8>,
+        msg_id: u32,
+        bytes_read: usize,
+    },
 }
 
 impl Default for ReadState {
     fn default() -> Self {
-        ReadState::Length {
-            len_buf: [0u8; 4],
+        ReadState::Header {
+            header_buf: [0u8; 8],
             bytes_read: 0,
         }
     }
@@ -387,8 +434,8 @@ impl Default for ReadState {
 enum WriteState {
     #[default]
     Awaiting,
-    Length {
-        len: [u8; 4],
+    Header {
+        header_buf: [u8; 8],
         // Generated on encode so stored here to pass to Body
         buf: Vec<u8>,
         bytes: usize,
@@ -405,4 +452,10 @@ enum WriteState {
 enum ConnectionKind {
     Server,
     Client,
+}
+
+/// Convert a byte slice to a u32. The bytes must be the correct length or will panic.
+fn u32_from_le_slice(slice: &[u8]) -> u32 {
+    let arr = slice.try_into().expect("Exact size provided");
+    u32::from_le_bytes(arr)
 }

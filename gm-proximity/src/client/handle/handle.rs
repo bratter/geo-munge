@@ -1,63 +1,83 @@
-use std::io::{Read, Write};
+use std::{
+    collections::BTreeMap,
+    sync::mpsc::{Receiver, Sender},
+};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, Result};
 
 use crate::{args::ClientCommand, message::prelude::*};
 
 use super::{knn, load, reset};
 
 /// Client command handler.
-pub struct CommandHandler<'a, R: Read, W: Write> {
-    reader: &'a mut R,
-    writer: &'a mut W,
+pub struct CommandHandler {
+    request_tx: Sender<(u32, Request)>,
+    response_rx: Receiver<(u32, Response)>,
+    next_req_id: u32,
+    /// Used to monitor requests and whether they have been retired or not.
+    /// TODO: Could consider a sparse ring buffer for this
+    tracker: BTreeMap<u32, bool>,
 }
 
-impl<'a, R: Read, W: Write> CommandHandler<'a, R, W> {
-    pub fn new(reader: &'a mut R, writer: &'a mut W) -> Self {
-        Self { reader, writer }
+impl CommandHandler {
+    pub fn new(request_tx: Sender<(u32, Request)>, response_rx: Receiver<(u32, Response)>) -> Self {
+        Self {
+            request_tx,
+            response_rx,
+            next_req_id: 0,
+            tracker: BTreeMap::new(),
+        }
     }
 
-    // TODO: The handle function currently just sends a single request then blocks while awaiting a response.
-    // Likely will want non-blocking on some calls so maybe this should just return then can await both client calls and
-    // responses in a loop. May want to add a message id for fingerprinting / associating requests and responses.
     pub fn handle(&mut self, req: ClientCommand) -> Result<()> {
         match req {
             ClientCommand::Stats => {
                 self.send(Request::Stats)?;
-                self.block_on_response()?;
                 Ok(())
             }
             ClientCommand::Reset(r) => reset(self, r),
             ClientCommand::Load { file } => load(self, file),
             ClientCommand::Knn(knn_args) => knn(self, knn_args),
-        }?;
-
-        Ok(())
-    }
-
-    /// Block awaiting a response, printing the result.
-    pub fn block_on_response(&mut self) -> Result<()> {
-        if let Some(res) = Response::read(self.reader)? {
-            self.print_response(res);
-            Ok(())
-        } else {
-            bail!("Server closed the connection when something was expected");
         }
     }
 
     pub fn send(&mut self, req: Request) -> Result<()> {
-        req.write(self.writer)
+        // Track the request before sending so we know when we have received responses
+        let _ = self.tracker.insert(self.next_req_id, req.is_oneshot());
+        self.request_tx.send((self.next_req_id, req))?;
+
+        // Increment the req_id after sending a request so we can keep track of which responses correspond to which
+        // requesets
+        self.next_req_id += 1;
+        Ok(())
     }
 
-    // TODO: Upgrade response handling - ideally if the whole architecture was more message passing, this could be more
-    // powerful than just echoing
-    // TODO: As a minimum, add a context parameter
-    // TODO: Have to call this inside the block_on_response due to liftimes (response lifetime is bound by self), maybe
-    // consider cloning or other solutions if want to separate (which probably should)
-    fn print_response(&mut self, res: Response) {
+    pub fn recv(&mut self) -> Result<(u32, Response)> {
+        let res = self.response_rx.recv()?;
+        let is_oneshot = *self
+            .tracker
+            .get(&res.0)
+            .ok_or(anyhow!("Cannot find request record"))?;
+
+        if is_oneshot || matches!(res.1, Response::Done(_)) {
+            self.tracker.remove(&res.0).expect("Already fetched");
+        }
+
+        Ok(res)
+    }
+
+    pub fn outstanding_reqs(&self) -> usize {
+        self.tracker.len()
+    }
+
+    // TODO: Upgrade response handling to actually route responses appropriately depending on the CLI options
+    // Might need to keep the request around if we need to know the context
+    pub fn print_response(&self, (req_id, res): &(u32, Response)) {
+        print!("[req {}] ", req_id);
         match res {
             Response::Success(Some(msg)) => println!("{}", msg),
             Response::Success(None) => println!("success"),
+            Response::Done(n) => println!("done with {} responses", n),
             Response::Stats(n) => println!("The qt has {} items", n),
             Response::InsertResult { success, fail } => {
                 println!("Inserted {}, failed {}", success, fail)

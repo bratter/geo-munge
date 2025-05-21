@@ -1,10 +1,9 @@
 //! Server handler for GM-Proximity.
 
 use std::{
-    io::{BufReader, BufWriter},
+    io::ErrorKind,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::RecvTimeoutError,
+        mpsc::{Receiver, RecvTimeoutError, Sender},
         Arc, RwLock,
     },
     time::Duration,
@@ -12,112 +11,101 @@ use std::{
 
 use anyhow::Result;
 use geo::Rect;
-use interprocess::local_socket::{
-    prelude::*, GenericNamespaced, ListenerNonblockingMode, ListenerOptions,
-};
+use mio::{net::UnixListener, Events, Interest, Poll, Token};
 use threadpool::ThreadPool;
 
 use geolib::qt::{QtData, Quadtree, ToRadians};
 
-use crate::{
-    connection::ConnToken, message::prelude::*, server::event_loop::spawn_event_loop, SOCKET_NAME,
-};
+use crate::{connection::*, ctrlc::*, message::prelude::*, MAX_CONNECTIONS, UNIX_SOCKET_NAME};
 
-use super::handle::handle_request;
+use super::handle::Handler;
 
-const POLL_TIME: u64 = 1000;
-const MAX_WORKERS: usize = 4;
+/// Set the listener to be the next index above the max connections to avoid collisions
+/// With a fixed connection pool this is easier than making the first connection 1
+const ACCEPT: Token = Token(MAX_CONNECTIONS + 1);
 
-// TODO: Consider different ways to manage polling.
-// - Currently using non-blocking listeners inside a polling loop so that ctrl-c signals go through for the accept loop.
-// - Using blocking reads on the streams for simplicity, but this will not allow graceful shutdown of long-lasting
-//   client sockets.
-// - Think the simplicity and message responsiveness will far outweigh need to terminate while a client is running.
-// - A more robust solution might be to use epoll_rs (nix) and wepoll_binding (win) to avoid delays in polling
-// - Still need to set a timeout, but it can afford to be much longer, as it is only waiting for ctrl-c
-pub fn run() -> Result<()> {
-    let socket_name = SOCKET_NAME.to_ns_name::<GenericNamespaced>()?;
-    let listener = ListenerOptions::new()
-        .name(socket_name)
-        .nonblocking(ListenerNonblockingMode::Accept)
-        .create_sync()?;
-    let pool = ThreadPool::new(MAX_WORKERS);
+pub struct Config {
+    /// The max number of simultaneous client connections.
+    pub pool_size: usize,
 
-    // Ctrl-c handling
-    // TODO: In Ctrl-c handler can do the graceful exit path but a double ctrl-c can exit using std::process::exit
-    let term_now = Arc::new(AtomicBool::new(false));
-    let running = Arc::new(AtomicBool::new(true));
-    let r = Arc::clone(&running);
-    ctrlc::set_handler(move || {
-        // If we have already entered the handler once and are now back a second time, we want to perform a hard
-        // termination. This might happen if one of the streams blocks for an extended period of time.
-        // NOTE: `signal_hook` crate uses libc `_exit()` rather than `std::process::exit`, but don't think it is necessary
-        // here, see: https://github.com/vorner/signal-hook/blob/master/src/low_level/mod.rs
-        if term_now.load(Ordering::SeqCst) {
-            std::process::exit(1);
+    /// The length of time poll will block before falling through. Higher values mean longer before the system will
+    /// check for outgoing responses. Recommended range 10-50ms.
+    pub io_poll_timeout: Duration,
+
+    /// Timeout for when to check whether a shutdown has been triggered. Only use this when the work prevented by
+    /// blocking is a shutdown check. The value can be high as manual shutdown is not performance critical.
+    pub shutdown_timeout: Duration,
+
+    /// The size of the Mio event queue.
+    pub event_capacity: usize,
+
+    /// Name of the socket to listen on.
+    /// TODO: In test and bench can have a separate config item for an unnamed socket half that can be used in testing
+    pub unix_socket_name: &'static str,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            pool_size: 8,
+            io_poll_timeout: Duration::from_millis(10),
+            shutdown_timeout: Duration::from_millis(500),
+            event_capacity: 1024,
+            unix_socket_name: UNIX_SOCKET_NAME,
         }
-        // If we are not terminating immediately, then try to gracefully exit, but inform the handler that another
-        // ctrl-c will terminate immediately.
-        eprintln!("Attempting graceful shutdown...");
-        r.store(false, Ordering::SeqCst);
-        term_now.store(true, Ordering::SeqCst);
-    })?;
+    }
+}
 
-    // TODO: Fix temporary injection of mio event loop and creation of channels
-    // For recieving, because it blocks should use a timeout
-    let (request_tx, request_rx) = std::sync::mpsc::channel::<(ConnToken, Request)>();
-    let (response_tx, response_rx) = std::sync::mpsc::channel::<(ConnToken, Response)>();
-    let r = Arc::clone(&running);
-    let test_handle = std::thread::spawn(move || {
-        while r.load(Ordering::SeqCst) {
-            match request_rx.recv_timeout(Duration::from_millis(1000)) {
-                Ok(req) => {
-                    eprintln!("Printing from channel: {:?}", req.1);
+pub fn run(config: Config) -> Result<()> {
+    // Leak the config for a static lifetime
+    let config = Box::leak(Box::new(config));
 
-                    response_tx
-                        .send((req.0, Response::Error("A response!".to_string())))
-                        .unwrap();
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-        }
-    });
+    // Set up graceful ctrl-c handling
+    let running = set_ctrlc_handler()?;
 
-    let join_handle = spawn_event_loop(Arc::clone(&running), request_tx, response_rx);
-    println!("prejoin");
-    test_handle.join().expect("Couldn't join");
-    join_handle.join().expect("Couldn't join");
-    println!("postjoin");
+    // TODO: Redo threadpool with Rayon or something else
+    let pool = ThreadPool::new(4);
+    let (request_tx, request_rx) = std::sync::mpsc::channel::<(MsgToken, Request)>();
+    let (response_tx, response_rx) = std::sync::mpsc::channel::<(MsgToken, Response)>();
 
-    // Quadtree setup
+    // Start the IO loop
+    let r = running.clone();
+    let io_handle =
+        std::thread::spawn(|| run_server_io_loop(config, r, request_tx, response_rx).unwrap());
+    println!("Geo Munge Proximity server listening...");
+
+    // Initialize the quadtree and start the main processing loop
+    // On the main thread we block on listening for messages on the request channel with a timeout to capture the
+    // graceful shutdown - this timeout can be relatively long as the shutdown is not time-critical
+    // Note that the handle function takes the channel rather than just returning the response as the server may choose
+    // to chunk responses
     // TODO: See todo notes in the function implementation
     let quadtree = build_qt(Reset::default());
     let quadtree = Arc::new(RwLock::new(quadtree));
+    let handler = Handler::new(quadtree, response_tx);
 
-    println!("Geo Munge Proximity server listening...");
-
-    // Main listener loop
-    // Stream listener is non-blocking on accepts with a long poll time - clients may take a little while to start up,
-    // but allows graceful shutdown as this loop always has to be active
-    while running.load(Ordering::SeqCst) {
-        match listener.accept() {
-            Ok(stream) => {
-                let qt = Arc::clone(&quadtree);
-                let r = Arc::clone(&running);
-                pool.execute(|| {
-                    if let Err(e) = handle_stream_blocking(stream, qt, r) {
-                        eprintln!("Error handling client: {}", e);
-                    }
+    while running.is_running() {
+        match request_rx.recv_timeout(config.shutdown_timeout) {
+            Ok(req) => {
+                // TODO: Currently cloning the handler, but could/should this just be leaked instead?
+                let h = handler.clone();
+                // Push each request as a job onto the threadpool
+                pool.execute(move || {
+                    // TODO: Currently we ignore if the channel is shut down, when this changes should see if we
+                    // propagate the error
+                    let _ = h.handle(req);
                 });
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(POLL_TIME));
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                eprintln!("Request channel disconnected, shutting down");
+                break;
             }
-            Err(e) => eprintln!("Accept error {}", e),
         }
     }
 
+    pool.join();
+    io_handle.join().expect("Couldn't join io handle");
     println!("Geo Munge Proximity server shut down successfully");
     Ok(())
 }
@@ -136,31 +124,151 @@ pub fn build_qt(reset: Reset) -> Quadtree {
     Quadtree::new(qt_opts)
 }
 
-/// Stream handler with blocking reads.
-///
-/// Will still check running state each read cycle and gracefully shutdown, but "dormant" clients will block
-/// indefinitely. The tradeoff of a blocking stream in terms of reduced ability for graceful shutdown and enforced
-/// linear request-response are appropriate for a first pass.
-fn handle_stream_blocking(
-    stream: LocalSocketStream,
-    qt: Arc<RwLock<Quadtree>>,
-    running: Arc<AtomicBool>,
+/// Spawn a thread and start the main event loop.
+pub fn run_server_io_loop(
+    config: &Config,
+    running: RunToken,
+    request_tx: Sender<(MsgToken, Request)>,
+    response_rx: Receiver<(MsgToken, Response)>,
 ) -> Result<()> {
-    let mut reader = BufReader::new(&stream);
-    let mut writer = BufWriter::new(&stream);
+    let mut poll = Poll::new()?;
+    let mut events = Events::with_capacity(config.event_capacity);
+    let mut connection_pool = ConnectionPool::new(config.pool_size)?;
 
-    loop {
-        if !running.load(Ordering::SeqCst) {
-            eprintln!("Gracefully closing client");
-            return Ok(());
-        }
+    // Set up the socket server and register
+    // TODO: o/s flags
+    // TODO: Custom fd on linux as a setting, ability to do anonymous for testing
+    // Remove the socket file before binding, ignoring errors (its fine if it doesn't exist)
+    let _ = std::fs::remove_file(config.unix_socket_name);
+    let mut listener = UnixListener::bind(config.unix_socket_name)?;
 
-        match Request::read(&mut reader)? {
-            Some(msg) => handle_request(msg, &qt).write(&mut writer)?,
-            None => {
-                // EOF: client closed the connection
-                eprintln!("Client disconnected");
-                break;
+    poll.registry()
+        .register(&mut listener, ACCEPT, Interest::READABLE)?;
+
+    // Start the main event loop, exiting if we are shutting down
+    while running == true {
+        // First drain outgoing responses into the connection's queues
+        connection_pool.fill_write_queues(&response_rx, &mut poll)?;
+
+        poll.poll(&mut events, Some(config.io_poll_timeout))?;
+
+        for event in &events {
+            match event.token() {
+                ACCEPT => {
+                    loop {
+                        // TODO: o/s flag
+                        match listener.accept() {
+                            Ok((stream, _)) => {
+                                // When we have an incoming stream, test if there is room in the connection pool to
+                                // accept it, otherwise reject; If there is no room or the registration fails no
+                                // slots are taken up and the returned stream is dropped which rejects the
+                                // connection
+                                // TODO: Better logging - tracing?
+                                match connection_pool.register(&mut poll, stream) {
+                                    AddResult::Success => {
+                                        eprintln!("Connection successful")
+                                    }
+                                    AddResult::NoSpace(_) => {
+                                        eprintln!("Connection rejected: Out of capacity")
+                                    }
+                                    AddResult::RegistrationFailure(_) => {
+                                        eprintln!("Connection rejected: Registration failure")
+                                    }
+                                }
+                            }
+                            // On WouldBlock we are done processing this event
+                            Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+                            // Other errors we just log and ignore the connection attempt
+                            Err(err) => eprintln!("Accept error: {:?}", err),
+                        }
+                    }
+                }
+
+                token => {
+                    if let Some(conn) = connection_pool.get_mut_by_conn(token) {
+                        if event.is_readable() {
+                            loop {
+                                match conn.read() {
+                                    ReadResult::Request((msg_id, req)) => {
+                                        // If the send fails, we just drop the connection - it shouldn't unless the
+                                        // system crashes
+                                        // TODO: If the channel fails, the whole system is dead, right? So this
+                                        // should be a complete exit?
+                                        // TODO: Consider implementing backpressure here - simply converting to a
+                                        // sync_channel or using crossbeam and blocking on capacity would work as
+                                        // the easiest option, but also blocks messaging
+                                        // Could also split writing into another thread, but this is more complex
+                                        // and probably not required as output writing should be fine to drain
+                                        // quickly when the reading frees up, but should check this
+                                        let msg_token = conn.msg_token(msg_id);
+                                        if let Err(_) = request_tx.send((msg_token, req)) {
+                                            eprintln!(
+                                                "Request channel error on connection {}",
+                                                token.0
+                                            );
+                                            connection_pool.cleanup(&mut poll, token);
+                                            break;
+                                        }
+                                    }
+                                    ReadResult::Response(_) => unreachable!(),
+                                    ReadResult::Continue => {}
+                                    ReadResult::WouldBlock => break,
+                                    ReadResult::Eof => {
+                                        connection_pool.cleanup(&mut poll, token);
+                                        break;
+                                    }
+                                    // On any form of read error we just drop the connection rather than trying to
+                                    // recover
+                                    ReadResult::Error(err) => {
+                                        eprintln!("Read error on connection {}: {}", token.0, err);
+                                        connection_pool.cleanup(&mut poll, token);
+                                        break;
+                                    }
+                                };
+                            }
+                        } else if event.is_writable() {
+                            loop {
+                                match conn.write() {
+                                    WriteResult::Continue => {}
+                                    WriteResult::Drained => {
+                                        // No longer interested in writes until write buffer is refilled
+                                        // If this fails, stream is unusable, so cleanup
+                                        // TODO: What about re-registering read interest here too? Probably not in
+                                        // drained, but somewhere in the write loop
+                                        match conn.disable_write_interest(&mut poll) {
+                                            Ok(_) => {}
+                                            Err(err) => {
+                                                // TODO: Very similar error text appears multiple times - make a
+                                                // function, for example "log err and cleanup"
+                                                eprintln!(
+                                                    "Write error on connection {}: {}",
+                                                    token.0, err
+                                                );
+                                                connection_pool.cleanup(&mut poll, token);
+                                            }
+                                        }
+                                        break;
+                                    }
+                                    WriteResult::WouldBlock => break,
+                                    WriteResult::Eof => {
+                                        connection_pool.cleanup(&mut poll, token);
+                                        break;
+                                    }
+                                    WriteResult::Error(err) => {
+                                        eprintln!("Write error on connection {}: {}", token.0, err);
+                                        connection_pool.cleanup(&mut poll, token);
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            // Given we have only registered interest in the two events, this should be true
+                            unreachable!("No other event types");
+                        }
+                    } else {
+                        eprintln!("No connection in pool with token: {}", token.0);
+                    }
+                }
             }
         }
     }
