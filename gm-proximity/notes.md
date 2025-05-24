@@ -89,3 +89,32 @@ Need some sort of benchmarking to test iterations
 - Ideally need seeded values, but also needs to be super fast
 - One has to be spread, but another needs to be concentrated
 - Mostly write then read, but options with mixed read/write
+
+## Back Pressure
+
+Server:
+
+- ReadResult::Request
+  - Think we have to throttle send on the channel here, use try_send with a sync channel
+  - Disable read interest on the connection, store the rejected message in the connection
+  - Simpler alternative is to just use send and block the io loop
+  - This may gum up outbound io, but will probably work fine as a starting point
+    - Would probably have to work on a per-connection basis for simplicity
+- If we do disable read interest, then will have to re-enable
+  - Can use a mio::Waker that gets passed around with the channel receiver that calls wake when messages are processed
+  - Then the interest in mio re-enables the read interest for the connections
+  - Or use crossbeam's len() and capacity() to re-enable at the top of the loop
+  - Crossbeam solution is probably the best balance
+- Start with just blocking at first
+- Also should manage outbound, although probably not necessary, it is always possible that a client is slow at reading
+- Each connection's outbound buffer is uncapped, so should block READ interest when WRITE buffer is filled - this will at least stop unbounded growth
+- This can be done by reporting Full out of push_write_queue then actioning the restult in the Pool
+- Read interest can be checked for re-enabling in the write method then returned in the WriteResult
+
+Client:
+
+- On receiving responses, just block in processing - should only require adding a bound
+- On sending things in if there are multiple, the outbound buffer is unbounded, so just stop recv manually when it is full
+- Because we want a soft full, we also have to check on the outside and the inside of the try_recv loop
+- If we use crossbeam, then in the client we can just check if there are any items at the top of the loop and not stage in a second buffer
+

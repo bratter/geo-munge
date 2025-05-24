@@ -1,9 +1,7 @@
-use std::{
-    collections::BTreeMap,
-    sync::mpsc::{Receiver, Sender},
-};
+use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Result};
+use crossbeam::channel::{Receiver, Sender};
 
 use crate::{args::ClientCommand, message::prelude::*};
 
@@ -41,6 +39,9 @@ impl CommandHandler {
         }
     }
 
+    /// Send a request for dispatch.
+    ///
+    /// Will block until the request channel has capacity.
     pub fn send(&mut self, req: Request) -> Result<()> {
         // Track the request before sending so we know when we have received responses
         let _ = self.tracker.insert(self.next_req_id, req.is_oneshot());

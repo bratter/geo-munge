@@ -1,5 +1,6 @@
-use std::sync::{mpsc::Sender, Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use crossbeam::channel::Sender;
 use geolib::qt::Quadtree;
 
 use crate::connection::MsgToken;
@@ -86,7 +87,7 @@ impl Context {
 
 #[cfg(test)]
 mod test {
-    use std::sync::mpsc::Receiver;
+    use crossbeam::channel::{self, Receiver};
 
     use crate::server::run::build_qt;
 
@@ -96,7 +97,7 @@ mod test {
         /// Implementation to make a dummy context for testing purposes only using a fresh quadtree and a also returning
         /// the rx end of the response channel.
         pub fn test_new(token: MsgToken) -> (Receiver<(MsgToken, Response)>, Self) {
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = channel::unbounded();
             let qt = Arc::new(RwLock::new(build_qt(Reset::default())));
             let handler = Self::new(qt, tx, token);
 
