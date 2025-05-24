@@ -7,14 +7,10 @@ use std::{
 
 use anyhow::{anyhow, bail, Result};
 use crossbeam::channel::{Receiver, TryRecvError};
-#[cfg(windows)]
-use mio::windows::NamedPipe;
 use mio::{event::Source, Interest, Poll, Token};
 
 use crate::{message::prelude::*, MAX_CONNECTIONS};
 
-// TODO:
-// the only user
 // TODO: Put some buffer instrumentation in to keep track of buffer sizes
 pub struct ConnectionPool<S> {
     pool: Vec<Option<Connection<S, Response>>>,
@@ -121,7 +117,6 @@ impl<S: Source + Read + Write> ConnectionPool<S> {
             match response_rx.try_recv() {
                 Ok((msg_token, res)) => match self.get_mut_by_msg(msg_token) {
                     Some(conn) => {
-                        eprintln!("shouldn't be here {}", conn.is_writeable());
                         if !conn.is_writeable() {
                             conn.enable_interest(poll, Interest::WRITABLE)?;
                         }
@@ -151,42 +146,6 @@ impl<S: Source + Read + Write> ConnectionPool<S> {
     }
 }
 
-#[cfg(windows)]
-pub mod windows {
-    use std::ops::{Deref, DerefMut};
-
-    use super::*;
-
-    pub struct ConnectionPool(super::ConnectionPool<NamedPipe>);
-
-    impl ConnectionPool {
-        pub fn new(size: usize, write_queue_soft_cap: usize) -> Result<Self> {
-            let inner = super::ConnectionPool::new(size, write_queue_soft_cap)?;
-            Ok(Self(inner))
-        }
-    }
-
-    impl Deref for ConnectionPool {
-        type Target = super::ConnectionPool<NamedPipe>;
-
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
-
-    impl DerefMut for ConnectionPool {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            &mut self.0
-        }
-    }
-
-    //impl<T: IoEncode> Connection<NamedPipe, T> {
-    //    pub fn cleanup(&self) {
-    //        todo!()
-    //    }
-    //}
-}
-
 pub enum AddResult<S> {
     Success,
     #[allow(dead_code)]
@@ -197,9 +156,8 @@ pub enum AddResult<S> {
 
 pub struct Connection<S, T: IoEncode> {
     id: u32,
-    // TODO: Do we need this?
     token: Token,
-    pub stream: S,
+    stream: S,
     kind: ConnectionKind,
     interests: Option<Interest>,
     read_state: ReadState,
@@ -259,6 +217,10 @@ impl<S: Source + Read + Write, T: IoEncode> Connection<S, T> {
         ))
     }
 
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
     pub fn msg_token(&self, msg_id: u32) -> MsgToken {
         MsgToken::new(self.id, msg_id)
     }
@@ -280,7 +242,7 @@ impl<S: Source + Read + Write, T: IoEncode> Connection<S, T> {
     // TODO: This logic is quite complex. Check to see that we don't miss events in testing due to epoll behavior
     // TODO: Consider doing the logic checks here as to whether we call register or not - register is not cheap
     pub fn enable_interest(&mut self, poll: &mut Poll, interest: Interest) -> Result<()> {
-        eprintln!("[{}] Enabling interest {:?}", self.id, interest);
+        tracing::trace!("[{}] Enabling interest {:?}", self.id, interest);
         if let Some(interests) = self.interests {
             let interests = interests.add(interest);
             self.interests = Some(interests);
@@ -295,7 +257,7 @@ impl<S: Source + Read + Write, T: IoEncode> Connection<S, T> {
     }
 
     pub fn disable_interest(&mut self, poll: &mut Poll, interest: Interest) -> Result<()> {
-        eprintln!("[{}] Disabling interest {:?}", self.id, interest);
+        tracing::trace!("[{}] Disabling interest {:?}", self.id, interest);
         // The connection interest tracking must be up to date or this won't work
         if let Some(interests) = self.interests {
             match interests.remove(interest) {
@@ -414,8 +376,6 @@ impl<S: Source + Read + Write, T: IoEncode> Connection<S, T> {
     /// call again until the data can no longer be sent.
     /// TODO: How do we handle write queue no longer full to re-enable reads if we are doing that? Maybe it will be
     /// better to just manage interests in this method itself?
-    /// TODO: Any time through here we should be able to stop reading based on the write_queue size, acutally maybe
-    /// either in here or when it hits a threshold in push_write_queue
     pub fn write(&mut self) -> WriteResult {
         match &mut self.write_state {
             // When there is currently nothing being actively written, we check the queue and process a new message if

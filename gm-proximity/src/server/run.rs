@@ -6,22 +6,19 @@ use std::{
     time::Duration,
 };
 
-#[cfg(windows)]
-use anyhow::bail;
 use anyhow::Result;
 use crossbeam::channel::{self, Receiver, RecvTimeoutError, Sender};
 use geo::Rect;
+#[cfg(windows)]
+use mio::net::TcpListener;
 #[cfg(unix)]
 use mio::net::UnixListener;
-#[cfg(windows)]
-use mio::windows::NamedPipe;
 use mio::{Events, Interest, Poll, Token};
 use threadpool::ThreadPool;
 
 use geolib::qt::{QtData, Quadtree, ToRadians};
+use tracing::Level;
 
-#[cfg(windows)]
-use crate::connection::windows::ConnectionPool;
 use crate::{connection::*, ctrlc::*, message::prelude::*, MAX_CONNECTIONS};
 
 use super::handle::Handler;
@@ -78,8 +75,8 @@ pub struct Config {
     pub unix_socket_name: &'static str,
 
     #[cfg(windows)]
-    /// Name of the windows named pipe to listen on.
-    pub windows_pipe_name: &'static str,
+    /// Address of the socket to listen on.
+    pub tcp_socket_addr: &'static str,
 }
 
 impl Default for Config {
@@ -91,16 +88,22 @@ impl Default for Config {
             request_capacity: 1024,
             response_capacity: 1024,
             write_queue_soft_cap: 256,
-            event_capacity: 1024,
+            event_capacity: 128,
             #[cfg(unix)]
             unix_socket_name: crate::UNIX_SOCKET_NAME,
             #[cfg(windows)]
-            windows_pipe_name: crate::WINDOWS_PIPE_NAME,
+            tcp_socket_addr: crate::TCP_SOCKET_ADDR,
         }
     }
 }
 
 pub fn run(config: Config) -> Result<()> {
+    // Enable tracing
+    // TODO: Configure better
+    tracing_subscriber::fmt()
+        .with_max_level(Level::TRACE)
+        .init();
+
     // Leak the config for a static lifetime
     let config = Box::leak(Box::new(config));
 
@@ -185,7 +188,6 @@ pub fn run_server_io_loop(
     let mut connection_pool = ConnectionPool::new(config.pool_size, config.write_queue_soft_cap)?;
 
     // Set up the socket server and register
-    // TODO: o/s flags
     // TODO: Custom fd on linux as a setting, ability to do anonymous for testing
     // Remove the socket file before binding, ignoring errors (its fine if it doesn't exist)
     #[cfg(unix)]
@@ -197,27 +199,18 @@ pub fn run_server_io_loop(
         listener
     };
 
-    // TODO: Can we just pre-emptively register in the connection pool?
     #[cfg(windows)]
-    {
-        let pipe = NamedPipe::new(config.windows_pipe_name)?;
-
-        // TODO: This could be in the register method?
-        match pipe.connect() {
-            // We've connected immediately, proceed
-            Ok(_) => {
-                eprintln!("win connect initial immediate");
-            }
-            // Would block now wait for a connection, proceed
-            Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                eprintln!("win conenct initial wouldblock");
-            }
-            Err(err) => bail!("Connect error: {}", err),
-        }
-
-        connection_pool.register(&mut poll, pipe);
+    let listener = {
+        let mut listener = TcpListener::bind(config.tcp_socket_addr.parse()?)?;
+        poll.registry()
+            .register(&mut listener, ACCEPT, Interest::READABLE)?;
+        listener
     };
 
+    let io_read_span = tracing::trace_span!("io_read");
+    let io_write_span = tracing::trace_span!("io_write");
+
+    tracing::trace!("starting io loop");
     // Start the main event loop, exiting if we are shutting down
     while running == true {
         // First drain outgoing responses into the connection's queues
@@ -226,11 +219,11 @@ pub fn run_server_io_loop(
         poll.poll(&mut events, Some(config.io_poll_timeout))?;
 
         for event in &events {
+            tracing::trace!("an event {:?}", event);
             match event.token() {
                 ACCEPT => {
-                    #[cfg(unix)]
+                    tracing::trace!("ACCEPT token received");
                     loop {
-                        // TODO: o/s flag
                         match listener.accept() {
                             Ok((stream, _)) => {
                                 // When we have an incoming stream, test if there is room in the connection pool to
@@ -256,63 +249,13 @@ pub fn run_server_io_loop(
                             Err(err) => eprintln!("Accept error: {:?}", err),
                         }
                     }
-                    // TODO: Remove this when connection pool has a type
-                    /*
-                    #[cfg(windows)]
-                    {
-                        eprintln!("Creating named pipe");
-                        let pipe = NamedPipe::new(config.windows_pipe_name)?;
-                        match connection_pool.register(&mut poll, pipe) {
-                            AddResult::Success => {
-                                eprintln!("Connection successful")
-                            }
-                            AddResult::NoSpace(_) => {
-                                eprintln!("Connection rejected: Out of capacity")
-                            }
-                            AddResult::RegistrationFailure(_) => {
-                                eprintln!("Connection rejected: Registration failure")
-                            }
-                        }
-                    }*/
                 }
 
-                // TODO: Cotinue to work on this
-                /*
-                #[cfg(windows)]
-                Token(42) => {
-                    if event.is_writable() {
-                        match pipe.take_error() {
-                            Ok(None) => eprintln!("success"),
-                            Ok(Some(err)) if err.kind() == ErrorKind::WouldBlock => {
-                                eprintln!("still waiting")
-                            }
-                            Ok(Some(err)) => eprintln!("io error {}", err),
-                            Err(err) => eprintln!("outer error {}", err),
-                        }
-                    }
-                    if event.is_readable() {
-                        let mut buf = [0u8; 1024];
-                        loop {
-                            use std::io::Read;
-                            match pipe.read(&mut buf) {
-                                Ok(0) => {
-                                    eprintln!("eof");
-                                    bail!("EOF bail");
-                                    break;
-                                }
-                                Ok(n) => eprintln!("read {}", n),
-                                Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                                    eprintln!("would block in read");
-                                    break;
-                                }
-                                Err(err) => eprintln!("Another error {}", err),
-                            }
-                        }
-                    }
-                }*/
                 token => {
                     if event.is_readable() {
+                        let _read_guard = io_read_span.enter();
                         if let Some(conn) = connection_pool.get_mut_by_conn(token) {
+                            tracing::trace!("Readable: token={}, conn={}", token.0, conn.id());
                             loop {
                                 match conn.read() {
                                     ReadResult::Request((msg_id, req)) => {
@@ -332,15 +275,19 @@ pub fn run_server_io_loop(
                                     }
                                     ReadResult::Response(_) => unreachable!(),
                                     ReadResult::Continue => {}
-                                    ReadResult::WouldBlock => break,
+                                    ReadResult::WouldBlock => {
+                                        tracing::trace!("wouldblock");
+                                        break;
+                                    }
                                     ReadResult::Eof => {
+                                        tracing::trace!("EOF");
                                         connection_pool.cleanup(&mut poll, token);
                                         break;
                                     }
                                     // On any form of read error we just drop the connection rather than trying to
                                     // recover
                                     ReadResult::Error(err) => {
-                                        eprintln!("Read error on connection {}: {}", token.0, err);
+                                        tracing::trace!("Error: {}", err);
                                         connection_pool.cleanup(&mut poll, token);
                                         break;
                                     }
@@ -350,31 +297,13 @@ pub fn run_server_io_loop(
                     }
 
                     if event.is_writable() {
+                        let _write_guard = io_write_span.enter();
                         if let Some(conn) = connection_pool.get_mut_by_conn(token) {
-                            // TODO: Can/should this be in the main loop? Just make a method?
-                            #[cfg(windows)]
-                            // On windows, process the connection in the main loop
-                            match conn.stream.take_error() {
-                                Ok(None) => {}
-                                Ok(Some(err)) if err.kind() == ErrorKind::WouldBlock => {
-                                    eprintln!("still waiting");
-                                    break;
-                                }
-                                Ok(Some(err)) => bail!(err),
-                                Err(err) => bail!(err),
-                            }
-                            #[cfg(windows)]
-                            // The named pipe does not appear to be properly re-registering without write interest in the below. So
-                            // we control it manually instead using our internal tracking
-                            // BUG: Mio seems to be not re-registering properly
-                            if !conn.is_writeable() {
-                                break;
-                            }
-
+                            tracing::trace!("Writable: token={}, conn={}", token.0, conn.id());
                             loop {
                                 match conn.write() {
                                     WriteResult::Continue => {
-                                        // When we continue, check if we should reenable reading
+                                        // When we continue, check if we should re-enable reading
                                         if !conn.is_readable()
                                             && conn.write_queue_state() == WriteQueueState::Clear
                                         {
@@ -386,6 +315,7 @@ pub fn run_server_io_loop(
                                     WriteResult::Drained => {
                                         // No longer interested in writes until write buffer is refilled
                                         // If this fails, stream is unusable, so cleanup
+                                        tracing::trace!("Drained");
                                         match conn.disable_interest(&mut poll, Interest::WRITABLE) {
                                             Ok(_) => {}
                                             Err(err) => {
@@ -413,8 +343,6 @@ pub fn run_server_io_loop(
                                 }
                             }
                         }
-                    } else {
-                        eprintln!("No connection in pool with token: {}", token.0);
                     }
                 }
             }

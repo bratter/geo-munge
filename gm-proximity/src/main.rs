@@ -17,7 +17,7 @@ use crate::args::{Args, ClientCommandWrapper, Command};
 #[cfg(unix)]
 const UNIX_SOCKET_NAME: &str = "/tmp/gm-proximity";
 #[cfg(windows)]
-const WINDOWS_PIPE_NAME: &str = r"\\.\pipe\gm_proximity";
+const TCP_SOCKET_ADDR: &str = "127.0.0.1:6378";
 
 /// The maximum connection pool size for client connections - required to ensure that the SERVER token stays separated
 pub const MAX_CONNECTIONS: usize = 8;
