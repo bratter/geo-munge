@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crossbeam::channel::Sender;
 use geolib::qt::Quadtree;
 
-use crate::connection::MsgToken;
+use crate::connection::{MsgToken, Traffic};
 use crate::message::prelude::*;
 
 use super::{insert, knn, reset, stats};
@@ -25,13 +25,14 @@ impl Handler {
     }
 
     /// Handle an incoming request.
-    pub fn handle(&self, (msg_token, req): (MsgToken, Request)) {
+    /// TODO: Add timing to wrap the requests?
+    pub fn handle(&self, (msg_token, req): (MsgToken, Request), traffic: &Traffic) {
         let context = self.context(msg_token);
 
         // TODO: These handlers currently don't return a result. This does mean they miss failures in the channel, and that
         // all other errors are appropriate just to send to the client. Can revist this decision.
         match req {
-            Request::Stats => stats(context),
+            Request::Stats => stats(context, traffic),
             Request::Reset(r) => reset(context, r),
             Request::KeyType(_) => {
                 context.send(Response::Error("KeyType resetting not implemented".into()))

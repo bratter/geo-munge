@@ -10,5 +10,5 @@ mod response;
 pub mod prelude {
     pub use super::encode::IoEncode;
     pub use super::request::*;
-    pub use super::response::Response;
+    pub use super::response::*;
 }

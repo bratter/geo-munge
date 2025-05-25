@@ -9,10 +9,8 @@ use mio::net::UnixStream;
 use mio::{Events, Interest, Poll, Token};
 use tracing::Level;
 
-use crate::{
-    args::ClientCommand, client::handle::CommandHandler, connection::*, ctrlc::*,
-    message::prelude::*,
-};
+use super::CommandHandler;
+use crate::{args::ClientCommand, connection::*, ctrlc::*, message::prelude::*};
 
 const SERVER: Token = Token(0);
 
@@ -65,21 +63,27 @@ pub fn run(cmd: ClientCommand, config: Config) -> Result<()> {
     // Enable tracing
     // TODO: Configure better
     tracing_subscriber::fmt()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::INFO)
+        .with_writer(std::io::stderr)
         .init();
 
     // Set up ctrlc handling
     let running = set_ctrlc_handler()?;
 
-    // Set up message channels
+    // Set up message channels and instrumentation
     let (request_tx, request_rx) = channel::bounded::<(u32, Request)>(config.request_capacity);
     let (response_tx, response_rx) = channel::bounded::<(u32, Response)>(config.response_capacity);
+    let traffic: &_ = Box::leak(Box::new(Traffic::default()));
     let mut cmd_handler = CommandHandler::new(request_tx, response_rx);
 
-    // TODO: What is behavior if this returns an error? Should we do something other than unwrap?
     let r = running.clone();
-    let io_handle =
-        std::thread::spawn(|| run_client_io_loop(r, config, request_rx, response_tx).unwrap());
+    let io_handle = std::thread::spawn(move || {
+        match run_client_io_loop(r.clone(), &config, traffic, request_rx, response_tx) {
+            Ok(_) => tracing::trace!("Client IO loop exit success"),
+            Err(err) => tracing::error!("Client IO loop exit error: {}", err),
+        }
+        r.shutdown();
+    });
 
     // TODO: Make the handler structured more like the server one, but here we should have a loop that can deal with
     // responses at the same time the handler is sending requests - this might require another thread, but for now just
@@ -101,6 +105,12 @@ pub fn run(cmd: ClientCommand, config: Config) -> Result<()> {
         .join()
         .map_err(|_| anyhow!("IO thread join failure"))?;
 
+    // TODO: Better instrumentation/reporting. Tracing here?
+    println!(
+        "Client done; bytes sent={}; bytes recv={}",
+        traffic.sent(),
+        traffic.recv()
+    );
     Ok(())
 }
 
@@ -112,7 +122,8 @@ pub fn run(cmd: ClientCommand, config: Config) -> Result<()> {
 ///    blocked reading will also block writing requests.
 pub fn run_client_io_loop(
     running: RunToken,
-    config: Config,
+    config: &Config,
+    traffic: &Traffic,
     request_rx: Receiver<(u32, Request)>,
     response_tx: Sender<(u32, Response)>,
 ) -> Result<()> {
@@ -125,21 +136,26 @@ pub fn run_client_io_loop(
 
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(config.event_capacity);
-    let mut conn = Connection::new_client(&mut poll, SERVER, stream)?;
+    let mut conn = Connection::new_client(&mut poll, SERVER, stream, Some(traffic))?;
 
+    let io_span = tracing::trace_span!("io");
+    let _io_span_guard = io_span.enter();
     tracing::trace!("Starting client IO loop");
+
     while running == true {
         // Re-enable write interest if there are items in the request channel
         // In the client we don't pre-buffer sends, we just process as-ready
         if !request_rx.is_empty() && !conn.is_writeable() {
-            tracing::trace!("Empty and not writable");
+            tracing::trace!(
+                "Request channel populated {}, enabling WRITABLE",
+                request_rx.len()
+            );
             conn.enable_interest(&mut poll, Interest::WRITABLE)?;
         }
 
         poll.poll(&mut events, Some(config.io_poll_timeout))?;
 
         for event in &events {
-            tracing::trace!("event {:?}", event);
             if event.token() != SERVER {
                 continue;
             }
@@ -153,10 +169,14 @@ pub fn run_client_io_loop(
                         ReadResult::Request(_) => unreachable!(),
                         // If the channel send fails, we can't proceed, so shut down
                         // This send call will block if the channel is full, providing backpressure
-                        ReadResult::Response(res) => response_tx.send(res)?,
+                        ReadResult::Response(res) => {
+                            let res_id = res.0;
+                            response_tx.send(res)?;
+                            tracing::trace!("Response received:: {}", res_id);
+                        }
                         ReadResult::Continue => {}
                         ReadResult::WouldBlock => {
-                            tracing::trace!("WouldBlock");
+                            tracing::trace!("Read WouldBlock, breaking");
                             break;
                         }
                         ReadResult::Eof => bail!("Connection closed unexpectedly"),
@@ -172,14 +192,14 @@ pub fn run_client_io_loop(
                     match conn.write_from_channel(&request_rx) {
                         WriteResult::Continue => {}
                         WriteResult::Drained => {
-                            tracing::trace!("Drained");
+                            tracing::trace!("Write drained, breaking");
                             // No longer interested in writes until write buffer is refilled
                             // If this fails, stream is unusable, so exit
                             conn.disable_interest(&mut poll, Interest::WRITABLE)?;
                             break;
                         }
                         WriteResult::WouldBlock => {
-                            tracing::trace!("WouldBlock");
+                            tracing::trace!("Write WouldBlock, breaking");
                             break;
                         }
                         WriteResult::Eof => bail!("Connection closed unexpectedly"),

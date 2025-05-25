@@ -26,7 +26,7 @@ pub fn set_ctrlc_handler() -> Result<RunToken> {
         }
         // If we are not terminating immediately, then try to gracefully exit, but inform the handler that another
         // ctrl-c will terminate immediately.
-        eprintln!("Ctrl-c detected, attempting graceful shutdown...");
+        tracing::warn!("Ctrl-c detected, attempting graceful shutdown...");
         r.store(false, Ordering::SeqCst);
         term_now.store(true, Ordering::SeqCst);
     })?;

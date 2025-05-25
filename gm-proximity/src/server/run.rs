@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use crossbeam::channel::{self, Receiver, RecvTimeoutError, Sender};
 use geo::Rect;
 #[cfg(windows)]
@@ -101,11 +101,12 @@ pub fn run(config: Config) -> Result<()> {
     // Enable tracing
     // TODO: Configure better
     tracing_subscriber::fmt()
-        .with_max_level(Level::TRACE)
+        .with_max_level(Level::INFO)
+        .with_writer(std::io::stderr)
         .init();
 
-    // Leak the config for a static lifetime
-    let config = Box::leak(Box::new(config));
+    let config: &_ = Box::leak(Box::new(config));
+    let traffic: &_ = Box::leak(Box::new(Traffic::default()));
 
     // Set up graceful ctrl-c handling
     let running = set_ctrlc_handler()?;
@@ -118,9 +119,19 @@ pub fn run(config: Config) -> Result<()> {
 
     // Start the IO loop
     let r = running.clone();
-    let io_handle =
-        std::thread::spawn(|| run_server_io_loop(config, r, request_tx, response_rx).unwrap());
-    println!("Geo Munge Proximity server listening...");
+    let io_handle = std::thread::spawn(move || {
+        match run_server_io_loop(r.clone(), &config, traffic, request_tx, response_rx) {
+            Ok(_) => tracing::trace!("Server IO loop exited success"),
+            Err(err) => tracing::error!("Server IO loop exit error: {}", err),
+        };
+        r.shutdown();
+    });
+
+    #[cfg(unix)]
+    let listen_on = config.unix_socket_name;
+    #[cfg(windows)]
+    let listen_on = config.tcp_socket_addr;
+    tracing::info!("Geo Munge Proximity server listening on: {}", listen_on);
 
     // Initialize the quadtree and start the main processing loop
     // On the main thread we block on listening for messages on the request channel with a timeout to capture the
@@ -132,29 +143,30 @@ pub fn run(config: Config) -> Result<()> {
     let quadtree = Arc::new(RwLock::new(quadtree));
     let handler = Handler::new(quadtree, response_tx);
 
+    // TODO: Improve and instrument this loop - should the handler be cloned? Should we ignore channel shutdown?
     while running.is_running() {
         match request_rx.recv_timeout(config.shutdown_timeout) {
             Ok(req) => {
-                // TODO: Currently cloning the handler, but could/should this just be leaked instead?
                 let h = handler.clone();
                 // Push each request as a job onto the threadpool
                 pool.execute(move || {
-                    // TODO: Currently we ignore if the channel is shut down, when this changes should see if we
-                    // propagate the error
-                    let _ = h.handle(req);
+                    let _ = h.handle(req, traffic);
                 });
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                eprintln!("Request channel disconnected, shutting down");
-                break;
+                if running.is_running() {
+                    tracing::error!("Request channel disconnected, shutting down");
+                    running.shutdown();
+                    break;
+                }
             }
         }
     }
 
     pool.join();
     io_handle.join().expect("Couldn't join io handle");
-    println!("Geo Munge Proximity server shut down successfully");
+    tracing::info!("Geo Munge Proximity server shut down successfully");
     Ok(())
 }
 
@@ -175,21 +187,23 @@ pub fn build_qt(reset: Reset) -> Quadtree {
 /// Spawn a thread and start the main event loop.
 ///
 /// Back presssure on input is managed by blocking the send channel when reading. This prevents unbounded request channel
-/// growth, but does block writes. Write backpressure is not yet implemented.
-/// TODO: Upgrade backpressure handling, see notes for more information
+/// growth, but does block writes. Write back pressure is managed with a capacity on the write queue, but this doesn't
+/// stop full drains into the individual unbounded queues. This is managed by switching off reads on full connections.
 pub fn run_server_io_loop(
-    config: &Config,
     running: RunToken,
+    config: &Config,
+    traffic: &Traffic,
     request_tx: Sender<(MsgToken, Request)>,
     response_rx: Receiver<(MsgToken, Response)>,
 ) -> Result<()> {
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(config.event_capacity);
-    let mut connection_pool = ConnectionPool::new(config.pool_size, config.write_queue_soft_cap)?;
+    let mut connection_pool =
+        ConnectionPool::new(config.pool_size, traffic, config.write_queue_soft_cap)?;
 
     // Set up the socket server and register
-    // TODO: Custom fd on linux as a setting, ability to do anonymous for testing
     // Remove the socket file before binding, ignoring errors (its fine if it doesn't exist)
+    // TODO: Custom fd on linux as a setting, ability to do anonymous for testing
     #[cfg(unix)]
     let listener = {
         let _ = std::fs::remove_file(config.unix_socket_name);
@@ -207,10 +221,10 @@ pub fn run_server_io_loop(
         listener
     };
 
-    let io_read_span = tracing::trace_span!("io_read");
-    let io_write_span = tracing::trace_span!("io_write");
-
+    let io_span = tracing::trace_span!("io_read");
+    let _io_guard = io_span.enter();
     tracing::trace!("starting io loop");
+
     // Start the main event loop, exiting if we are shutting down
     while running == true {
         // First drain outgoing responses into the connection's queues
@@ -219,7 +233,6 @@ pub fn run_server_io_loop(
         poll.poll(&mut events, Some(config.io_poll_timeout))?;
 
         for event in &events {
-            tracing::trace!("an event {:?}", event);
             match event.token() {
                 ACCEPT => {
                     tracing::trace!("ACCEPT token received");
@@ -230,64 +243,58 @@ pub fn run_server_io_loop(
                                 // accept it, otherwise reject; If there is no room or the registration fails no
                                 // slots are taken up and the returned stream is dropped which rejects the
                                 // connection
-                                // TODO: Better logging - tracing?
                                 match connection_pool.register(&mut poll, stream) {
-                                    AddResult::Success => {
-                                        eprintln!("Connection successful")
+                                    AddResult::Success(id) => {
+                                        tracing::info!("Connection successful: id={}", id)
                                     }
                                     AddResult::NoSpace(_) => {
-                                        eprintln!("Connection rejected: Out of capacity")
+                                        tracing::warn!("Connection rejected: Out of capacity")
                                     }
                                     AddResult::RegistrationFailure(_) => {
-                                        eprintln!("Connection rejected: Registration failure")
+                                        tracing::error!("Connection rejected: Registration failure")
                                     }
                                 }
                             }
                             // On WouldBlock we are done processing this event
                             Err(err) if err.kind() == ErrorKind::WouldBlock => break,
                             // Other errors we just log and ignore the connection attempt
-                            Err(err) => eprintln!("Accept error: {:?}", err),
+                            Err(err) => tracing::error!("Accept error: {:?}", err),
                         }
                     }
                 }
 
                 token => {
                     if event.is_readable() {
-                        let _read_guard = io_read_span.enter();
                         if let Some(conn) = connection_pool.get_mut_by_conn(token) {
-                            tracing::trace!("Readable: token={}, conn={}", token.0, conn.id());
+                            let id = conn.id();
+                            let read_span = tracing::error_span!("conn_read", id);
+                            let _read_guard = read_span.enter();
+                            tracing::trace!("Readable: token={}", token.0);
+
                             loop {
                                 match conn.read() {
                                     ReadResult::Request((msg_id, req)) => {
-                                        // If the send fails, we just drop the connection - it shouldn't unless the
-                                        // system crashes
-                                        // TODO: If the channel fails, the whole system is dead, right? So this
-                                        // should be a complete exit?
+                                        // If the send fails we terminate the loop as this means the system is dead
+                                        // TODO: Non-blocking back pressure would shut off read interest here
                                         let msg_token = conn.msg_token(msg_id);
-                                        if let Err(_) = request_tx.send((msg_token, req)) {
-                                            eprintln!(
-                                                "Request channel error on connection {}",
-                                                token.0
-                                            );
-                                            connection_pool.cleanup(&mut poll, token);
-                                            break;
-                                        }
+                                        request_tx.send((msg_token, req))?;
+                                        tracing::trace!("Read message");
                                     }
                                     ReadResult::Response(_) => unreachable!(),
                                     ReadResult::Continue => {}
                                     ReadResult::WouldBlock => {
-                                        tracing::trace!("wouldblock");
+                                        tracing::trace!("Read WouldBlock, breaking");
                                         break;
                                     }
                                     ReadResult::Eof => {
-                                        tracing::trace!("EOF");
+                                        tracing::info!("EOF, cleaning up");
                                         connection_pool.cleanup(&mut poll, token);
                                         break;
                                     }
                                     // On any form of read error we just drop the connection rather than trying to
                                     // recover
                                     ReadResult::Error(err) => {
-                                        tracing::trace!("Error: {}", err);
+                                        tracing::error!("Error, cleaning up: {}", err);
                                         connection_pool.cleanup(&mut poll, token);
                                         break;
                                     }
@@ -297,9 +304,12 @@ pub fn run_server_io_loop(
                     }
 
                     if event.is_writable() {
-                        let _write_guard = io_write_span.enter();
                         if let Some(conn) = connection_pool.get_mut_by_conn(token) {
-                            tracing::trace!("Writable: token={}, conn={}", token.0, conn.id());
+                            let id = conn.id();
+                            let write_span = tracing::error_span!("conn_write", id);
+                            let _write_guard = write_span.enter();
+                            tracing::trace!("Writable: token={}", token.0);
+
                             loop {
                                 match conn.write() {
                                     WriteResult::Continue => {
@@ -307,36 +317,39 @@ pub fn run_server_io_loop(
                                         if !conn.is_readable()
                                             && conn.write_queue_state() == WriteQueueState::Clear
                                         {
-                                            // TODO: This shouldn't be a questionmark, it should just drop the
-                                            // connection
-                                            conn.enable_interest(&mut poll, Interest::READABLE)?;
+                                            // TODO: This shouldn't bail, it should just drop the
+                                            // connection, but can't re-borrow the pool
+                                            if let Err(err) =
+                                                conn.enable_interest(&mut poll, Interest::READABLE)
+                                            {
+                                                tracing::error!("Error enabling interest: {}", err);
+                                                bail!(err);
+                                            }
                                         }
                                     }
                                     WriteResult::Drained => {
                                         // No longer interested in writes until write buffer is refilled
                                         // If this fails, stream is unusable, so cleanup
                                         tracing::trace!("Drained");
-                                        match conn.disable_interest(&mut poll, Interest::WRITABLE) {
-                                            Ok(_) => {}
-                                            Err(err) => {
-                                                // TODO: Very similar error text appears multiple times - make a
-                                                // function, for example "log err and cleanup"
-                                                eprintln!(
-                                                    "Write error on connection {}: {}",
-                                                    token.0, err
-                                                );
-                                                connection_pool.cleanup(&mut poll, token);
-                                            }
+                                        if let Err(err) =
+                                            conn.disable_interest(&mut poll, Interest::WRITABLE)
+                                        {
+                                            tracing::error!(
+                                                "Error disabling interest, cleaning up: {}",
+                                                err
+                                            );
+                                            connection_pool.cleanup(&mut poll, token);
                                         }
                                         break;
                                     }
                                     WriteResult::WouldBlock => break,
                                     WriteResult::Eof => {
+                                        tracing::info!("EOF, cleaning up");
                                         connection_pool.cleanup(&mut poll, token);
                                         break;
                                     }
                                     WriteResult::Error(err) => {
-                                        eprintln!("Write error on connection {}: {}", token.0, err);
+                                        tracing::error!("Error, cleaning up: {}", err);
                                         connection_pool.cleanup(&mut poll, token);
                                         break;
                                     }

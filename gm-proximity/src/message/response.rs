@@ -25,7 +25,7 @@ pub enum Response {
     ///
     /// Includes both config settings such as bounding box and primary key, and quadtree statistics such as size and
     /// number of layers.
-    Stats(usize),
+    Stats(Stats),
 
     /// Insertion result response.
     ///
@@ -59,4 +59,11 @@ impl From<anyhow::Error> for Response {
     fn from(err: anyhow::Error) -> Self {
         Response::Error(err.to_string().into())
     }
+}
+
+#[derive(Debug, Encode, Decode)]
+pub struct Stats {
+    pub qt_size: usize,
+    pub bytes_sent: usize,
+    pub bytes_recv: usize,
 }
