@@ -1,16 +1,15 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
-use crossbeam::channel::{self, Receiver, Sender};
+use crossbeam::channel::{self, Receiver, RecvTimeoutError, Sender};
 #[cfg(windows)]
 use mio::net::TcpStream;
 #[cfg(unix)]
 use mio::net::UnixStream;
 use mio::{Events, Interest, Poll, Token};
-use tracing::Level;
 
-use super::CommandHandler;
-use crate::{args::ClientCommand, connection::*, ctrlc::*, message::prelude::*};
+use super::{CommandHandler, Tracker};
+use crate::{args::ClientCommand, connection::*, ctrlc::*, message::prelude::*, Context};
 
 const SERVER: Token = Token(0);
 
@@ -19,6 +18,10 @@ pub struct Config {
     /// check for outgoing responses. Recommended range 10-50ms, but client can be more relaxed (at least toward the
     /// upper end) as checking for outgoing messages is not as time critical.
     pub io_poll_timeout: Duration,
+
+    /// Timeout for when to check whether a shutdown has been triggered. Only use this when the work prevented by
+    /// blocking is a shutdown check. The value can be high as manual shutdown is not performance critical.
+    pub shutdown_timeout: Duration,
 
     /// Size of the request channel.
     ///
@@ -48,6 +51,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             io_poll_timeout: Duration::from_millis(50),
+            shutdown_timeout: Duration::from_millis(500),
             request_capacity: 1024,
             response_capacity: 1024,
             event_capacity: 16,
@@ -59,51 +63,66 @@ impl Default for Config {
     }
 }
 
-pub fn run(cmd: ClientCommand, config: Config) -> Result<()> {
-    // Enable tracing
-    // TODO: Configure better
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .with_writer(std::io::stderr)
-        .init();
-
-    // Set up ctrlc handling
-    let running = set_ctrlc_handler()?;
-
+#[tracing::instrument(skip_all, name = "client")]
+pub fn run(cmd: ClientCommand, context: Context<Config>) -> Result<()> {
     // Set up message channels and instrumentation
+    let config: &_ = Box::leak(Box::new(context.config));
     let (request_tx, request_rx) = channel::bounded::<(u32, Request)>(config.request_capacity);
     let (response_tx, response_rx) = channel::bounded::<(u32, Response)>(config.response_capacity);
     let traffic: &_ = Box::leak(Box::new(Traffic::default()));
-    let mut cmd_handler = CommandHandler::new(request_tx, response_rx);
+    let mut tracker = Tracker::default();
+    let (mut cmd_handler, done) = CommandHandler::new(request_tx, tracker.clone());
 
-    let r = running.clone();
+    let r = context.running.clone();
     let io_handle = std::thread::spawn(move || {
-        match run_client_io_loop(r.clone(), &config, traffic, request_rx, response_tx) {
+        match run_client_io_loop(r.clone(), config, traffic, request_rx, response_tx) {
             Ok(_) => tracing::trace!("Client IO loop exit success"),
             Err(err) => tracing::error!("Client IO loop exit error: {}", err),
         }
         r.shutdown();
     });
 
-    // TODO: Make the handler structured more like the server one, but here we should have a loop that can deal with
-    // responses at the same time the handler is sending requests - this might require another thread, but for now just
-    // block here. Also note that the method of checking requests for done state probably needs to be better - either
-    // report on the Request itself so doesn't need to be passed, or report some more tracker info, or just require for
-    // everything.
-    cmd_handler.handle(cmd)?;
-    loop {
-        let res = cmd_handler.recv()?;
-        cmd_handler.print_response(&res);
-        if cmd_handler.outstanding_reqs() == 0 {
+    // Shift request handling onto its own thread. If this completes fast or is highly blocking (like an interactive
+    // terminal) this thread will use minimal resources. If lots of disk/std io is required, it will run in the
+    // background while still allowing response handling.
+    let cmd_handle = std::thread::spawn(move || match cmd_handler.handle(cmd) {
+        Ok(_) => tracing::trace!("Client command handler exit success"),
+        Err(err) => tracing::error!("Client command handler exit error: {}", err),
+    });
+
+    // Run the response handling in the main thread using an additional flag to track whether the request thread has
+    // finished - needs to be its own flag as the channel will report done only once. When done requesting, we know that
+    // all reuqest ids have been entered in the tracker, so can wait until these are all cleared before exiting the
+    // response loop. Without waiting for done requesting, there may just be no outstanding responses so this would exit
+    // spuriously.
+    let mut done_requesting = false;
+    while context.running.is_running() {
+        match response_rx.recv_timeout(config.shutdown_timeout) {
+            Ok((id, res)) => tracker.handle(id, res)?,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+
+        // Toggle the done flag the first time a message comes through on the channel
+        if !done_requesting && done.try_recv().is_ok() {
+            tracing::trace!("Setting done flag in response loop");
+            done_requesting = true;
+        }
+        if done_requesting && tracker.outstanding() == 0 {
             break;
         }
     }
 
+    // If we break out the the response loop, we must shut down
+    context.running.shutdown();
+
     // TODO: Better join handling
-    running.shutdown();
+    cmd_handle
+        .join()
+        .map_err(|_| anyhow!("Cmd handler thread join failed"))?;
     io_handle
         .join()
-        .map_err(|_| anyhow!("IO thread join failure"))?;
+        .map_err(|_| anyhow!("IO thread join failed"))?;
 
     // TODO: Better instrumentation/reporting. Tracing here?
     println!(
@@ -179,7 +198,8 @@ pub fn run_client_io_loop(
                             tracing::trace!("Read WouldBlock, breaking");
                             break;
                         }
-                        ReadResult::Eof => bail!("Connection closed unexpectedly"),
+                        // TODO: Not sure why, but in bench, this is triggering. Not sure it should be an error anyway
+                        ReadResult::Eof => bail!("Connection closed unexpectedly during read"),
                         ReadResult::Error(err) => bail!(err),
                     }
                 }
@@ -202,7 +222,18 @@ pub fn run_client_io_loop(
                             tracing::trace!("Write WouldBlock, breaking");
                             break;
                         }
-                        WriteResult::Eof => bail!("Connection closed unexpectedly"),
+                        // In the client we assume that a disconnected write channel simply means writes are finished.
+                        // We therefore disable writes, and because the channel will now always be empty, nothing will
+                        // re-enable write interest. Note that it may disconnect because of an error which will not be
+                        // handled.
+                        // TODO: If disconnected, should we check the done flag to decide if error or ok? Don't think
+                        // it will add much
+                        WriteResult::Disconnected => {
+                            tracing::trace!("Write channel disconnected, no more need for writes");
+                            conn.disable_interest(&mut poll, Interest::WRITABLE)?;
+                            break;
+                        }
+                        WriteResult::Eof => bail!("Connection closed unexpectedly during write"),
                         WriteResult::Error(err) => bail!(err),
                     }
                 }

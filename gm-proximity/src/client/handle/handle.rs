@@ -1,106 +1,129 @@
-use std::{
-    collections::BTreeMap,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
 
-use anyhow::{anyhow, Result};
-use crossbeam::channel::{Receiver, Sender};
+use anyhow::Result;
+use crossbeam::channel::{self, Receiver, Sender};
 
 use crate::{args::ClientCommand, message::prelude::*};
 
-use super::{knn, load, reset};
+use super::{bench, knn, load, reset, Tracker};
 
-/// Client command handler.
+/// Client command handler. Translates client commands into requests.
 pub struct CommandHandler {
     request_tx: Sender<(u32, Request)>,
-    response_rx: Receiver<(u32, Response)>,
+    tracker: Tracker,
+    done_send: Sender<()>,
     next_req_id: u32,
-    /// Used to monitor requests and whether they have been retired or not.
-    /// TODO: Could consider a sparse ring buffer for this
-    tracker: BTreeMap<u32, (bool, Instant)>,
 }
 
 impl CommandHandler {
-    pub fn new(request_tx: Sender<(u32, Request)>, response_rx: Receiver<(u32, Response)>) -> Self {
-        Self {
+    pub fn new(request_tx: Sender<(u32, Request)>, tracker: Tracker) -> (Self, Receiver<()>) {
+        let (done_send, done_recv) = channel::bounded::<()>(1);
+        let handler = Self {
             request_tx,
-            response_rx,
+            tracker,
+            done_send,
             next_req_id: 0,
-            tracker: BTreeMap::new(),
-        }
+        };
+
+        (handler, done_recv)
     }
 
     pub fn handle(&mut self, req: ClientCommand) -> Result<()> {
-        match req {
+        let res = match req {
             ClientCommand::Stats => {
-                self.send(Request::Stats)?;
+                self.send(Request::Stats, ResponseHandler::None)?;
                 Ok(())
             }
             ClientCommand::Reset(r) => reset(self, r),
             ClientCommand::Load { file } => load(self, file),
             ClientCommand::Knn(knn_args) => knn(self, knn_args),
-        }
+            ClientCommand::Bench(bench_args) => bench(self, bench_args),
+        };
+
+        // As this is a oneshot and shouldn't be called anywhere else, we don't care about the result
+        tracing::info!("Request done, sending done notification");
+        _ = self.done_send.try_send(());
+
+        res
     }
 
     /// Send a request for dispatch.
     ///
     /// Will block until the request channel has capacity.
-    pub fn send(&mut self, req: Request) -> Result<()> {
-        // Track the request before sending so we know when we have received responses
-        let _ = self
-            .tracker
-            .insert(self.next_req_id, (req.is_oneshot(), Instant::now()));
-        self.request_tx.send((self.next_req_id, req))?;
-
-        // Increment the req_id after sending a request so we can keep track of which responses correspond to which
-        // requesets
+    pub fn send(&mut self, req: Request, handler: ResponseHandler) -> Result<()> {
+        // Get an id and bump to the next one
+        let id = self.next_req_id;
         self.next_req_id += 1;
+
+        // Track the request before sending so we know when we have received responses
+        let _ = self.tracker.track(id, &req, handler);
+        self.request_tx.send((id, req))?;
+
         Ok(())
     }
+}
 
-    pub fn recv(&mut self) -> Result<(u32, Option<Duration>, Response)> {
-        let res = self.response_rx.recv()?;
-        let (is_oneshot, start) = *self
-            .tracker
-            .get(&res.0)
-            .ok_or(anyhow!("Cannot find request record"))?;
+// TODO: These can be things like print or file output that handle multiple request types, or ones that are specific
+// to the request
+// TODO: Currently just cloning these to avoid holding the lock for too long. If they get big, consider not bothering
+// (responses are single threaded anyway, and blocking requests is unlikely to be an issue) use RWLock (unlikely to
+// help), wrapping the TrackerData in an Arc and using that to clone, or something else.
+// TODO: We can't clone if we want to mutate anyway
+#[derive(Clone)]
+pub enum ResponseHandler {
+    None,
+    Bench(Option<Duration>),
+}
 
-        let mut duration = None;
-        if is_oneshot || matches!(res.1, Response::Done(_)) {
-            duration = Some(start.elapsed());
-            self.tracker.remove(&res.0).expect("Already fetched");
+impl ResponseHandler {
+    // TODO: Better flow with duration
+    pub fn handle(&self, id: u32, duration: Option<Duration>, res: &Response) {
+        // TODO: Remove when stable or a non-clone solution found
+        // Checking that the response handler doesn't get too big to clone
+        debug_assert!(std::mem::size_of::<ResponseHandler>() <= 32);
+
+        match self {
+            // TODO: As a placeholder, print responses until we have better handling
+            ResponseHandler::None => Self::print(id, duration, res),
+            ResponseHandler::Bench(receive_delay) => {
+                match res {
+                    // The response just contains empty data that we ignore, but we delay to simulate io lag
+                    Response::Bench(_) => {
+                        if let Some(t) = *receive_delay {
+                            std::thread::sleep(t);
+                        }
+                    }
+                    Response::Done(_) => {}
+                    _ => unreachable!(),
+                }
+            }
         }
-
-        Ok((res.0, duration, res.1))
     }
 
-    pub fn outstanding_reqs(&self) -> usize {
-        self.tracker.len()
-    }
-
-    // TODO: Upgrade response handling to actually route responses appropriately depending on the CLI options
-    // Might need to keep the request around if we need to know the context
-    pub fn print_response(&self, (req_id, duration, res): &(u32, Option<Duration>, Response)) {
-        print!("[req {}", req_id);
+    // TODO: Temporary print function - remove or refactor when handling improves
+    fn print(id: u32, duration: Option<Duration>, res: &Response) {
+        // TODO: This is very inefficient, assume it will be removed... if not fix
+        let mut prefix = format!("[req {}", id);
         if let Some(duration) = duration {
-            print!("; {}ms", duration.as_millis());
+            prefix.push_str(&format!("; {}ms", duration.as_millis()));
         }
-        print!("] ");
+        prefix.push_str("]");
 
         match res {
-            Response::Success(Some(msg)) => println!("{}", msg),
-            Response::Success(None) => println!("success"),
-            Response::Done(n) => println!("done with {} responses", n),
+            Response::Success(Some(msg)) => println!("{} {}", prefix, msg),
+            Response::Success(None) => println!("{} success", prefix),
+            Response::Done(n) => println!("{} done with {} responses", prefix, n),
             Response::Stats(n) => println!(
-                "QT size={}; bytes sent={}; bytes recv={}",
-                n.qt_size, n.bytes_sent, n.bytes_recv
+                "{} QT size={}; bytes sent={}; bytes recv={}",
+                prefix, n.qt_size, n.bytes_sent, n.bytes_recv
             ),
             Response::InsertResult { success, fail } => {
-                println!("Inserted {}, failed {}", success, fail)
+                println!("{} inserted {}, failed {}", prefix, success, fail)
             }
-            Response::KnnData(results) => println!("Knn: {:?}", results),
-            Response::Data => println!("data"),
-            Response::Error(msg) => println!("There was an error: {}", msg),
+            Response::KnnData(results) => println!("{} knn: {:?}", prefix, results),
+            Response::Data => println!("{} data", prefix),
+            Response::Error(msg) => println!("{} error: {}", prefix, msg),
+            Response::Bench(_) => unreachable!(),
         }
     }
 }

@@ -17,9 +17,8 @@ use mio::{Events, Interest, Poll, Token};
 use threadpool::ThreadPool;
 
 use geolib::qt::{QtData, Quadtree, ToRadians};
-use tracing::Level;
 
-use crate::{connection::*, ctrlc::*, message::prelude::*, MAX_CONNECTIONS};
+use crate::{connection::*, ctrlc::*, message::prelude::*, Context, MAX_CONNECTIONS};
 
 use super::handle::Handler;
 
@@ -97,19 +96,11 @@ impl Default for Config {
     }
 }
 
-pub fn run(config: Config) -> Result<()> {
-    // Enable tracing
-    // TODO: Configure better
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .with_writer(std::io::stderr)
-        .init();
-
-    let config: &_ = Box::leak(Box::new(config));
+#[tracing::instrument(skip_all, name = "server")]
+pub fn run(context: Context<Config>) -> Result<()> {
+    let running = context.running;
+    let config: &_ = Box::leak(Box::new(context.config));
     let traffic: &_ = Box::leak(Box::new(Traffic::default()));
-
-    // Set up graceful ctrl-c handling
-    let running = set_ctrlc_handler()?;
 
     // TODO: Redo threadpool with Rayon or something else
     let pool = ThreadPool::new(4);
@@ -120,7 +111,14 @@ pub fn run(config: Config) -> Result<()> {
     // Start the IO loop
     let r = running.clone();
     let io_handle = std::thread::spawn(move || {
-        match run_server_io_loop(r.clone(), &config, traffic, request_tx, response_rx) {
+        match run_server_io_loop(
+            r.clone(),
+            &context.ready,
+            &config,
+            traffic,
+            request_tx,
+            response_rx,
+        ) {
             Ok(_) => tracing::trace!("Server IO loop exited success"),
             Err(err) => tracing::error!("Server IO loop exit error: {}", err),
         };
@@ -191,6 +189,7 @@ pub fn build_qt(reset: Reset) -> Quadtree {
 /// stop full drains into the individual unbounded queues. This is managed by switching off reads on full connections.
 pub fn run_server_io_loop(
     running: RunToken,
+    ready: &Option<Sender<()>>,
     config: &Config,
     traffic: &Traffic,
     request_tx: Sender<(MsgToken, Request)>,
@@ -224,6 +223,7 @@ pub fn run_server_io_loop(
     let io_span = tracing::trace_span!("io_read");
     let _io_guard = io_span.enter();
     tracing::trace!("starting io loop");
+    ready.as_ref().map(|s| s.send(()));
 
     // Start the main event loop, exiting if we are shutting down
     while running == true {
@@ -353,6 +353,7 @@ pub fn run_server_io_loop(
                                         connection_pool.cleanup(&mut poll, token);
                                         break;
                                     }
+                                    WriteResult::Disconnected => unreachable!(),
                                 }
                             }
                         }

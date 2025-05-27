@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::message::prelude::*;
 
-use super::{CommandHandler, Input};
+use super::{CommandHandler, Input, ResponseHandler};
 
 /// Load command handler
 pub fn load(handler: &mut CommandHandler, file: Option<PathBuf>) -> Result<()> {
@@ -16,7 +16,7 @@ pub fn load(handler: &mut CommandHandler, file: Option<PathBuf>) -> Result<()> {
             Ok(data) => {
                 // TODO: Do we want to break out of the loop on an error, or just report on these - think they are
                 // mostly stream faliures, if this is the case then aborting is correct
-                handler.send(Request::Insert(data))?;
+                handler.send(Request::Insert(data), ResponseHandler::None)?;
             }
             Err(err) => eprintln!("Could not read line {}: {}", n, err),
         }

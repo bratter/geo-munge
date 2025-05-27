@@ -6,7 +6,7 @@ use geolib::qt::Quadtree;
 use crate::connection::{MsgToken, Traffic};
 use crate::message::prelude::*;
 
-use super::{insert, knn, reset, stats};
+use super::{bench, insert, knn, reset, stats};
 
 #[derive(Clone)]
 pub struct Handler {
@@ -26,6 +26,7 @@ impl Handler {
 
     /// Handle an incoming request.
     /// TODO: Add timing to wrap the requests?
+    #[tracing::instrument(skip_all, name = "handle_req")]
     pub fn handle(&self, (msg_token, req): (MsgToken, Request), traffic: &Traffic) {
         let context = self.context(msg_token);
 
@@ -46,6 +47,7 @@ impl Handler {
             Request::Window => {
                 context.send(Response::Error("Window queries not implemented".into()))
             }
+            Request::Bench(bench_data) => bench(context, bench_data),
         }
     }
 }

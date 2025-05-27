@@ -1,6 +1,6 @@
 //! Requests.
 
-use std::{iter::FilterMap, slice::Split, str::FromStr};
+use std::{fmt::Debug, iter::FilterMap, slice::Split, str::FromStr};
 
 use anyhow::{bail, Error, Result};
 use bincode::{Decode, Encode};
@@ -74,6 +74,9 @@ pub enum Request {
     ///
     /// TODO: Support grouping for close together items
     Window,
+
+    /// A benchmarking request to the server.
+    Bench(BenchReq),
 }
 
 impl Request {
@@ -93,6 +96,7 @@ impl Request {
             Request::Delete => true,
             Request::Knn(_) => false,
             Request::Window => false,
+            Request::Bench(_) => false,
         }
     }
 }
@@ -270,4 +274,29 @@ pub enum FindData {
     /// Run the find for a set of primary keys already in the quadtree.
     /// TODO: Support other key types?
     Keys(Vec<usize>),
+}
+
+#[derive(Encode, Decode)]
+pub struct BenchReq {
+    /// Millisecond processing delay to simulate computation time.
+    pub delay: Option<u64>,
+
+    /// Bytes to send the response to simulate response size.
+    pub size: u32,
+
+    /// Ratio of responses to requests.
+    pub ratio: u32,
+
+    /// Dummy data to reflect data sent with a request.
+    pub data: Vec<u8>,
+}
+
+impl Debug for BenchReq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BenchReq")
+            .field("delay", &self.delay)
+            .field("size", &self.size)
+            .field("ratio", &self.ratio)
+            .finish_non_exhaustive()
+    }
 }

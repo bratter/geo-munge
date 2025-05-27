@@ -3,7 +3,7 @@ use dialoguer::Confirm;
 
 use crate::{args::ResetArgs, message::prelude::*};
 
-use super::CommandHandler;
+use super::{CommandHandler, ResponseHandler};
 
 /// Reset command handler
 /// TODO: Add keytype settings
@@ -15,7 +15,10 @@ pub fn reset(handler: &mut CommandHandler, reset: ResetArgs) -> Result<()> {
             .interact_opt()?
             .unwrap_or(false)
     {
-        handler.send(Request::Reset(Reset::new(None, reset.bbox)))?;
+        handler.send(
+            Request::Reset(Reset::new(None, reset.bbox)),
+            ResponseHandler::None,
+        )?;
         Ok(())
     } else {
         bail!("Reset aborted")

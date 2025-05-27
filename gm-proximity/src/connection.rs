@@ -288,7 +288,7 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
                 Some(interests) => {
                     self.interests = Some(interests);
                     poll.registry()
-                        .reregister(&mut self.stream, self.token, Interest::READABLE)?
+                        .reregister(&mut self.stream, self.token, interests)?
                 }
                 None => {
                     self.interests = None;
@@ -468,7 +468,7 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
                     Err(err) => WriteResult::Error(err),
                 },
                 Err(TryRecvError::Empty) => WriteResult::Drained,
-                Err(err) => WriteResult::Error(anyhow!(err)),
+                Err(TryRecvError::Disconnected) => WriteResult::Disconnected,
             },
             // Because write is being called here, we intercept drained as we are not using the queue and only pass it
             // on it the channel is empty, otherwise we go around again
@@ -527,7 +527,7 @@ pub enum ReadResult {
     Response((u32, Response)),
     Continue,
     WouldBlock,
-    /// Expected EOF, unexpected will be returned as errors
+    /// Expected EOF, unexpected will be returned as errors.
     Eof,
     Error(anyhow::Error),
 }
@@ -536,7 +536,9 @@ pub enum WriteResult {
     Continue,
     Drained,
     WouldBlock,
-    /// Expected EOF, unexpected will be returned as errors
+    /// For a direct-from-channel write indicates that that channel has been disconnected.
+    Disconnected,
+    /// Expected EOF, unexpected will be returned as errors.
     Eof,
     Error(anyhow::Error),
 }

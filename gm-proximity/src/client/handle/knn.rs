@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::{args, message::prelude::*};
 
-use super::{CommandHandler, Input};
+use super::{CommandHandler, Input, ResponseHandler};
 
 /// Knn command handler
 /// TODO: Fix this - it is a bare minimum test version - which at least is reporting results, even if the results don't
@@ -35,7 +35,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: args::KnnArgs) -> Result<()> 
             data: find_data,
         };
 
-        handler.send(Request::Knn(knn))?;
+        handler.send(Request::Knn(knn), ResponseHandler::None)?;
     } else {
         // Here we have IO
         let input = Input::try_new(knn_args.file)?;
@@ -50,7 +50,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: args::KnnArgs) -> Result<()> 
                             data: FindData::Keys(vec![data]),
                         };
 
-                        handler.send(Request::Knn(knn))?;
+                        handler.send(Request::Knn(knn), ResponseHandler::None)?;
                     }
                     Err(err) => eprintln!("Could not read line {}: {}", n, err),
                 }
@@ -65,7 +65,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: args::KnnArgs) -> Result<()> 
                             data: FindData::Geom(data),
                         };
 
-                        handler.send(Request::Knn(knn))?;
+                        handler.send(Request::Knn(knn), ResponseHandler::None)?;
                     }
                     Err(err) => eprintln!("Could not read line {}: {}", n, err),
                 }

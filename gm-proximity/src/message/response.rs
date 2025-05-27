@@ -1,5 +1,7 @@
 //! Responses.
 
+use std::fmt::Debug;
+
 use anyhow::Result;
 use bincode::{Decode, Encode};
 
@@ -50,6 +52,9 @@ pub enum Response {
     ///
     /// TODO: This should probably contain more information than just a message.
     Error(String),
+
+    /// A benchmarking request to the server.
+    Bench(BenchRes),
 }
 
 // Use default encode and decode impls
@@ -66,4 +71,25 @@ pub struct Stats {
     pub qt_size: usize,
     pub bytes_sent: usize,
     pub bytes_recv: usize,
+}
+
+#[derive(Encode, Decode)]
+pub struct BenchRes {
+    /// Dummy data to reflect data sent with a response.
+    pub data: Vec<u8>,
+}
+
+impl BenchRes {
+    pub fn with_len(len: usize) -> Self {
+        let mut data = Vec::with_capacity(len);
+        data.resize(len, 0);
+
+        Self { data }
+    }
+}
+
+impl Debug for BenchRes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BenchRes").finish_non_exhaustive()
+    }
 }

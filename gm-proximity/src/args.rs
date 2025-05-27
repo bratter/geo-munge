@@ -15,6 +15,7 @@ pub struct Args {
 pub enum Command {
     Server,
     Client(ClientCommandWrapper),
+    Bench(Bench),
 }
 
 #[derive(Debug, Parser)]
@@ -41,6 +42,11 @@ pub enum ClientCommand {
     ///
     /// It's possible to set k=1 for this, but to avoid setting k, use find to get the single nearest neighbor.
     Knn(KnnArgs),
+
+    /// Benchmarking command to load test the server.
+    ///
+    /// It can be used in a standalone client, but should be used by the main benchmarking command.
+    Bench(BenchClient),
 }
 
 #[derive(Debug, Parser)]
@@ -78,4 +84,53 @@ pub struct KnnArgs {
     /// An optional file input containing items to test.
     #[clap(conflicts_with = "data")]
     pub file: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+pub struct Bench {
+    /// Total amount of data to test with **in Mb**. Doesn't include overhead.
+    pub total_data: Option<usize>,
+
+    #[clap(long, short = 'q')]
+    pub request_size: Option<u32>,
+
+    #[clap(long, short = 'r')]
+    pub response_size: Option<u32>,
+
+    #[clap(long, short = 't')]
+    pub response_ratio: Option<u32>,
+
+    /// Delay to simulate processing time to generate **each response** on the server. This applies to each response,
+    /// not request, so when the response ratio is >1 this delay will apply multiple times to a single request.
+    #[clap(long, short = 'p')]
+    pub handle_delay: Option<u64>,
+
+    #[clap(long, short = 's')]
+    pub send_delay: Option<u64>,
+
+    #[clap(long, short = 'v')]
+    pub receive_delay: Option<u64>,
+}
+
+#[derive(Debug, Parser)]
+pub struct BenchClient {
+    pub total_data: usize,
+
+    #[clap(long, short = 'q')]
+    pub request_size: u32,
+
+    #[clap(long, short = 'r')]
+    pub response_size: u32,
+
+    #[clap(long, short = 't')]
+    pub response_ratio: u32,
+
+    #[clap(long, short = 'p')]
+    pub handle_delay: Option<u64>,
+
+    #[clap(long, short = 's')]
+    pub send_delay: Option<u64>,
+
+    #[clap(long, short = 'v')]
+    pub receive_delay: Option<u64>,
 }
