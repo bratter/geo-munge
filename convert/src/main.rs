@@ -92,7 +92,10 @@ fn run(args: Cli) -> Result<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geolib::format::{Format, MetaMode};
+    use geolib::{
+        csv::CsvSettings,
+        format::{Format, MetaMode},
+    };
     use io::IO;
 
     const JSON: &'static str = r#"
@@ -127,6 +130,7 @@ mod tests {
             input: IO::with_str(JSON.to_string(), Format::Json),
             output: IO::with_output_str(output.clone(), Format::Ndjson),
             mode: MetaMode::Full,
+            csv_settings: CsvSettings::default(),
             quiet: QuietLevel::Normal,
         };
 

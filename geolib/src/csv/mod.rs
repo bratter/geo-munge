@@ -23,6 +23,7 @@ pub enum CsvGeom {
     LngLat(String, String),
     Wkt(String),
     Wkb(String),
+    Json(String),
 }
 
 impl CsvGeom {
@@ -39,6 +40,10 @@ impl CsvGeom {
 
     pub fn wkb(field: Option<String>) -> Self {
         CsvGeom::Wkb(field.unwrap_or_else(|| "geom".to_string()))
+    }
+
+    pub fn json(field: Option<String>) -> Self {
+        CsvGeom::Json(field.unwrap_or_else(|| "geom".to_string()))
     }
 }
 
@@ -61,7 +66,9 @@ impl FromStr for CsvGeom {
             ["wkt", field] => Ok(CsvGeom::wkt(Some(field.to_string()))),
             ["wkb"] => Ok(CsvGeom::wkb(None)),
             ["wkb", field] => Ok(CsvGeom::wkb(Some(field.to_string()))),
-            _ => Err("Invalid format for CsvGeom. Expected 'pt,[lon_field,lat_field]' or 'wkt,[field]' or 'wkb,[field]'".to_string()),
+            ["json"] => Ok(CsvGeom::json(None)),
+            ["json", field] => Ok(CsvGeom::json(Some(field.to_string()))),
+            _ => Err("Invalid format for CsvGeom. Expected 'pt,[lon_field,lat_field]' or 'wkt|wbk|json,[field]'".to_string()),
         }
     }
 }
@@ -109,7 +116,7 @@ impl<R: Read> CsvReader<R> {
                 })?;
                 (Some((lon_idx, lat_idx)), None)
             }
-            CsvGeom::Wkt(field) | CsvGeom::Wkb(field) => {
+            CsvGeom::Wkt(field) | CsvGeom::Wkb(field) | CsvGeom::Json(field) => {
                 let idx = headers.iter().position(|h| h == field).ok_or_else(|| {
                     anyhow!("Geometry field '{}' not found in CSV headers", field)
                 })?;
@@ -152,6 +159,13 @@ impl<R: Read> CsvReader<R> {
                 read_wkb(wkb_bytes)?
                     .try_to_geometry()
                     .ok_or(anyhow!("Unable to read WKB geometry"))
+            }
+            CsvGeom::Json(_) => {
+                let idx = self.wk_idx.expect(EAGER_PARSE_MSG);
+                let geojson_bytes = record.get(idx).ok_or(anyhow!("Geom field not found"))?;
+                let geojson_bytes = std::str::from_utf8(geojson_bytes)?;
+                let geojson = geojson::Geometry::from_str(geojson_bytes)?;
+                Ok(geo::Geometry::try_from(geojson)?)
             }
         }
     }
@@ -231,7 +245,9 @@ impl<I: GeoItemIterator> CsvTransformer<I> {
                 header_record.push_field(lng.as_bytes());
                 header_record.push_field(lat.as_bytes());
             }
-            CsvGeom::Wkt(s) | CsvGeom::Wkb(s) => header_record.push_field(s.as_bytes()),
+            CsvGeom::Wkt(s) | CsvGeom::Wkb(s) | CsvGeom::Json(s) => {
+                header_record.push_field(s.as_bytes())
+            }
         }
 
         self.headers = Some(
@@ -272,6 +288,10 @@ impl<I: GeoItemIterator> CsvTransformer<I> {
                 let mut bytes: Vec<u8> = Vec::with_capacity(geometry_wkb_size(&geom));
                 write_geometry(&mut bytes, &geom, wkb::Endianness::LittleEndian)?;
                 record.push_field(&bytes);
+            }
+            CsvGeom::Json(_) => {
+                let geojson = geojson::Geometry::from(&geom);
+                record.push_field(geojson.to_string().as_bytes());
             }
         };
 
@@ -454,6 +474,24 @@ mod tests {
 
             assert_eq!(std::str::from_utf8(&buf).unwrap(), "lng,lat\n0,0\n1,0\n");
         }
+
+        // TODO: This test
+        /*
+        #[test]
+        fn outputs_json_geom() {
+            let iter = vec![
+                Ok(GeoItem::without_meta(pt(0., 0.))),
+                Ok(GeoItem::without_meta(pt(1., 0.))),
+            ];
+
+            let mut settings = CsvSettings::default();
+            settings.geom = CsvGeom::Json("geom".to_string());
+            let csv = CsvTransformer::new(iter.into_iter(), MetaMode::Shapes, settings);
+            let buf: Vec<u8> = csv.map(|i| i.unwrap().to_vec()).flatten().collect();
+
+            assert_eq!(std::str::from_utf8(&buf).unwrap(), "lng,lat\n0,0\n1,0\n");
+        }
+        */
 
         #[test]
         fn outputs_with_meta_even_when_different_order() {
