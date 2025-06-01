@@ -8,7 +8,7 @@ use geo::{Point, Rect};
 use geojson::Feature;
 use geolib::qt::{Geometry, ToRadians};
 
-use super::encode::IoEncode;
+use super::encode::IoCodec;
 
 #[derive(Debug, Encode, Decode)]
 #[non_exhaustive]
@@ -102,7 +102,7 @@ impl Request {
 }
 
 // Use default encode and decode impls
-impl IoEncode for Request {}
+impl IoCodec for Request {}
 
 /// Reset request type.
 ///

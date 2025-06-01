@@ -8,7 +8,7 @@ mod request;
 mod response;
 
 pub mod prelude {
-    pub use super::encode::IoEncode;
+    pub use super::encode::IoCodec;
     pub use super::request::*;
     pub use super::response::*;
 }

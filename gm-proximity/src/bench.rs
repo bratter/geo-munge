@@ -8,20 +8,21 @@ use crate::{
     ctrlc::RunToken,
 };
 
-/// TODO: Get this working properly
-/// - More parameters
+/// TODO: Improve bench routine
+/// - More parameters for the configs
 /// - Should we take a config file also so less CLI params?
-/// - Instrument!
-/// - Consider pushing a channel to the
 /// - Work out why the server is closing the client connection
 /// - Run multiple iterations potentially with different params
+/// - Add data generation and actual knn calculation
 pub fn run(bench: Bench, running: RunToken) -> Result<()> {
     let (ready_send, ready_recv) = channel::bounded(0);
-    let server_context = crate::Context {
+    let mut server_context = crate::Context {
         config: crate::server::Config::default(),
         ready: Some(ready_send),
         running: running.clone(),
     };
+    server_context.config.request_capacity = 1024;
+    //server_context.config.response_capacity = 4;
     let client_context = crate::Context {
         config: crate::client::Config::default(),
         ready: None,

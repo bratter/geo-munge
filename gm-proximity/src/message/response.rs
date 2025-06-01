@@ -5,7 +5,7 @@ use std::fmt::Debug;
 use anyhow::Result;
 use bincode::{Decode, Encode};
 
-use super::encode::IoEncode;
+use super::encode::IoCodec;
 
 #[derive(Debug, Encode, Decode)]
 #[non_exhaustive]
@@ -58,7 +58,7 @@ pub enum Response {
 }
 
 // Use default encode and decode impls
-impl IoEncode for Response {}
+impl IoCodec for Response {}
 
 impl From<anyhow::Error> for Response {
     fn from(err: anyhow::Error) -> Self {

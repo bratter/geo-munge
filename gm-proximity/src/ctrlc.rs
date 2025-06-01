@@ -22,6 +22,7 @@ pub fn set_ctrlc_handler() -> Result<RunToken> {
         // NOTE: `signal_hook` crate uses libc `_exit()` rather than `std::process::exit`, but don't think it is necessary
         // here, see: https://github.com/vorner/signal-hook/blob/master/src/low_level/mod.rs
         if term_now.load(Ordering::SeqCst) {
+            tracing::warn!("Second ctrl-c detected, terminating...");
             std::process::exit(1);
         }
         // If we are not terminating immediately, then try to gracefully exit, but inform the handler that another

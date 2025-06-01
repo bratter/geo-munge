@@ -3,7 +3,7 @@
 use anyhow::Result;
 use bincode::{Decode, Encode};
 
-pub trait IoEncode
+pub trait IoCodec
 where
     Self: Decode<()> + Encode + Sized,
 {

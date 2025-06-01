@@ -4,17 +4,21 @@ use std::{
     collections::VecDeque,
     io::{ErrorKind, Read, Write},
     sync::atomic::{AtomicUsize, Ordering},
+    usize,
 };
 
 use anyhow::{anyhow, bail, Result};
-use crossbeam::channel::{Receiver, TryRecvError};
+use crossbeam::channel::{Receiver, Sender, TryRecvError, TrySendError};
 use mio::{event::Source, Interest, Poll, Token};
 
 use crate::{message::prelude::*, MAX_CONNECTIONS};
 
 // TODO: Put some buffer instrumentation in to keep track of buffer sizes
+// TODO: Could introduce a PoolConnection that gets returned instead of a Connection, that can also wrap a mutable
+// reference to the pool to make working with the pool easier
+// TODO: Consider disabled read tracking so we don't loop through the whole lot at the top of each io loop
 pub struct ConnectionPool<'a, S> {
-    pool: Vec<Option<Connection<'a, S, Response>>>,
+    pool: Vec<Option<Connection<'a, S, Response, Request>>>,
     write_queue_soft_cap: usize,
     next_conn_id: u32,
     traffic: &'a Traffic,
@@ -35,13 +39,16 @@ impl<'a, S: Source + Read + Write> ConnectionPool<'a, S> {
 
         Ok(Self {
             pool,
-            traffic,
             write_queue_soft_cap,
             next_conn_id: 0,
+            traffic,
         })
     }
 
-    pub fn get_mut_by_msg(&mut self, token: MsgToken) -> Option<&mut Connection<'a, S, Response>> {
+    pub fn get_mut_by_msg(
+        &mut self,
+        token: MsgToken,
+    ) -> Option<&mut Connection<'a, S, Response, Request>> {
         self.pool
             .iter_mut()
             .find(|conn| match conn {
@@ -51,7 +58,10 @@ impl<'a, S: Source + Read + Write> ConnectionPool<'a, S> {
             .as_mut()
     }
 
-    pub fn get_mut_by_conn(&mut self, token: Token) -> Option<&mut Connection<'a, S, Response>> {
+    pub fn get_mut_by_token(
+        &mut self,
+        token: Token,
+    ) -> Option<&mut Connection<'a, S, Response, Request>> {
         self.pool.get_mut(token.0)?.as_mut()
     }
 
@@ -60,7 +70,7 @@ impl<'a, S: Source + Read + Write> ConnectionPool<'a, S> {
     /// First checks if a connection slot is available, rejecting if not. Then tries to register with the poll. If
     /// either fail returns the stream to give the caller the ability to handle (e.g., retry) rather than dropping the
     /// connection itself.
-    pub fn register(&mut self, poll: &mut Poll, mut stream: S) -> AddResult<S> {
+    pub fn register(&mut self, poll: &mut Poll, mut stream: S) -> AddStreamResult<S> {
         match self.find_slot_idx() {
             Some(idx) => {
                 match poll.registry().register(
@@ -69,7 +79,7 @@ impl<'a, S: Source + Read + Write> ConnectionPool<'a, S> {
                     Interest::READABLE | Interest::WRITABLE,
                 ) {
                     Ok(_) => {
-                        let conn = Connection::new_server(
+                        let conn = ServerConnection::new_server(
                             self.next_conn_id,
                             Token(idx),
                             stream,
@@ -78,15 +88,15 @@ impl<'a, S: Source + Read + Write> ConnectionPool<'a, S> {
                         );
 
                         self.pool[idx] = Some(conn);
-                        let result = AddResult::Success(self.next_conn_id);
+                        let result = AddStreamResult::Success(self.next_conn_id);
                         // Must increment the connection identifier
                         self.next_conn_id += 1;
                         result
                     }
-                    Err(_) => AddResult::RegistrationFailure(stream),
+                    Err(_) => AddStreamResult::RegistrationFailure(stream),
                 }
             }
-            None => AddResult::NoSpace(stream),
+            None => AddStreamResult::NoSpace(stream),
         }
     }
 
@@ -126,7 +136,7 @@ impl<'a, S: Source + Read + Write> ConnectionPool<'a, S> {
                             tracing::trace!("Enabling writes on {}", conn.id);
                             conn.enable_interest(poll, Interest::WRITABLE)?;
                         }
-                        if conn.push_write_queue((msg_token.msg_id, res)) == WriteQueueState::Full
+                        if conn.push_write_queue((msg_token, res)) == WriteQueueState::Full
                             && conn.is_readable()
                         {
                             tracing::trace!("Write queue full for connection {}", conn.id);
@@ -146,6 +156,45 @@ impl<'a, S: Source + Read + Write> ConnectionPool<'a, S> {
         Ok(())
     }
 
+    /// Loop through connections in the pool, re-enabling reads.
+    ///
+    /// An Ok result doesn't mean that all have been re-enabled (just in case the channel filled up somehow), but does
+    /// mean there were no errors.
+    #[tracing::instrument(skip_all)]
+    pub fn enable_reads(
+        &mut self,
+        poll: &mut Poll,
+        sender: &Sender<(MsgToken, Request)>,
+    ) -> Result<()> {
+        for conn in &mut self.pool {
+            if let Some(conn) = conn {
+                // Before trying to push, check that there is space available
+                if !conn.should_read(sender) {
+                    continue;
+                }
+
+                tracing::trace!("Re-enabling reads on request channel");
+                match conn.retry_send(sender) {
+                    ReadResult::Continue => {
+                        if let Err(err) = conn.enable_interest(poll, Interest::READABLE) {
+                            tracing::error!("Error enabling interest: {}", err);
+                            let token = conn.token;
+                            self.cleanup(poll, token);
+                            // FIX: Breaking here to avoid double use of &mut connection_pool in the next loop
+                            // iteration, this can be fixed with an entry-like API for connections
+                            break;
+                        }
+                    }
+                    ReadResult::SendFull => {}
+                    // This will only happen when the channel is disconnected, so can error out of the whole method
+                    ReadResult::Error(err) => bail!(err),
+                    _ => unreachable!(),
+                };
+            }
+        }
+        Ok(())
+    }
+
     fn find_slot_idx(&self) -> Option<usize> {
         self.pool
             .iter()
@@ -154,7 +203,7 @@ impl<'a, S: Source + Read + Write> ConnectionPool<'a, S> {
     }
 }
 
-pub enum AddResult<S> {
+pub enum AddStreamResult<S> {
     Success(u32),
     #[allow(dead_code)]
     NoSpace(S),
@@ -162,20 +211,30 @@ pub enum AddResult<S> {
     RegistrationFailure(S),
 }
 
-pub struct Connection<'a, S, T: IoEncode> {
+/// Alias for a client conenction with the request and response params set.
+/// TODO: This shouldn't be required as the new_client method should return the right type, but this seems to be needed
+/// to tell the compiler of the exacxt return type
+pub type ClientConnection<'a, S> = Connection<'a, S, Request, Response>;
+
+/// Alias for a server conenction with the request and response params set.
+/// TODO: This shouldn't be required as the new_server method should return the right type, but this seems to be needed
+/// to tell the compiler of the exacxt return type
+pub type ServerConnection<'a, S> = Connection<'a, S, Response, Request>;
+
+pub struct Connection<'a, S, T: IoCodec, U: IoCodec> {
     id: u32,
     token: Token,
     stream: S,
-    kind: ConnectionKind,
     interests: Option<Interest>,
     read_state: ReadState,
+    read_retry: Option<(MsgToken, U)>,
     write_state: WriteState,
-    write_queue: VecDeque<(u32, T)>,
+    write_queue: VecDeque<(MsgToken, T)>,
     traffic: Option<&'a Traffic>,
     write_queue_soft_cap: usize,
 }
 
-impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
+impl<'a, S: Source + Read + Write, T: IoCodec, U: IoCodec> Connection<'a, S, T, U> {
     /// Make a new Connection.
     ///
     /// This is private as making a client and a server are slightly different.
@@ -184,7 +243,6 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
         id: u32,
         token: Token,
         stream: S,
-        kind: ConnectionKind,
         traffic: Option<&'a Traffic>,
         write_queue_soft_cap: usize,
     ) -> Self {
@@ -192,9 +250,9 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
             id,
             token,
             stream,
-            kind,
             interests: Some(Interest::READABLE | Interest::WRITABLE),
             read_state: ReadState::default(),
+            read_retry: None,
             write_state: WriteState::default(),
             write_queue: VecDeque::default(),
             traffic,
@@ -209,15 +267,8 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
         stream: S,
         traffic: Option<&'a Traffic>,
         write_queue_soft_cap: usize,
-    ) -> Self {
-        Self::new(
-            id,
-            token,
-            stream,
-            ConnectionKind::Server,
-            traffic,
-            write_queue_soft_cap,
-        )
+    ) -> ServerConnection<'a, S> {
+        Connection::new(id, token, stream, traffic, write_queue_soft_cap)
     }
 
     /// Create a new connection from the provided stream, and register with the poll.
@@ -226,15 +277,14 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
         token: Token,
         mut stream: S,
         traffic: Option<&'a Traffic>,
-    ) -> Result<Self> {
+    ) -> Result<ClientConnection<'a, S>> {
         poll.registry()
             .register(&mut stream, token, Interest::READABLE | Interest::WRITABLE)?;
 
-        Ok(Self::new(
+        Ok(Connection::new(
             0,
             token,
             stream,
-            ConnectionKind::Client,
             traffic,
             // No soft cap on clients
             std::usize::MAX,
@@ -243,10 +293,6 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
 
     pub fn id(&self) -> u32 {
         self.id
-    }
-
-    pub fn msg_token(&self, msg_id: u32) -> MsgToken {
-        MsgToken::new(self.id, msg_id)
     }
 
     pub fn is_readable(&self) -> bool {
@@ -261,6 +307,20 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
             Some(i) => i.is_writable(),
             None => false,
         }
+    }
+
+    /// Indicate whether this connection could be made available for reading.
+    pub fn should_read(&self, sender: &Sender<(MsgToken, U)>) -> bool {
+        tracing::trace!(
+            "is_readable {}, wqs {:?}, send len/cap {} {}",
+            self.is_readable(),
+            self.write_queue_state(),
+            sender.len(),
+            sender.capacity().unwrap_or(std::usize::MAX)
+        );
+        !self.is_readable()
+            && self.write_queue_state() == WriteQueueState::Clear
+            && sender.len() < sender.capacity().unwrap_or(std::usize::MAX) * 3 / 4
     }
 
     // TODO: This logic is quite complex. Check to see that we don't miss events in testing due to epoll behavior
@@ -303,7 +363,7 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
         let len = self.write_queue.len();
         if len >= self.write_queue_soft_cap {
             WriteQueueState::Full
-        } else if len >= self.write_queue_soft_cap << 1 {
+        } else if len >= self.write_queue_soft_cap / 2 {
             WriteQueueState::Draining
         } else {
             WriteQueueState::Clear
@@ -314,8 +374,8 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
     ///
     /// This queue is soft capped, and will return a [`WriteQueueCapacity::Full`] when it is at its intended capacity.
     /// Callers should use this hint to throttle appropriately.
-    pub fn push_write_queue(&mut self, msg_with_id: (u32, T)) -> WriteQueueState {
-        self.write_queue.push_back(msg_with_id);
+    pub fn push_write_queue(&mut self, msg_with_token: (MsgToken, T)) -> WriteQueueState {
+        self.write_queue.push_back(msg_with_token);
         self.write_queue_state()
     }
 
@@ -326,7 +386,7 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
     /// make the API simpler.
     /// TODO: Is there some easy way of pulling out all domain specific reading and writing into a trait, not just the
     /// decode and encode? This way the whole io loop is reuseable
-    pub fn read(&mut self) -> ReadResult {
+    pub fn read(&mut self) -> ReadResult<U> {
         match &mut self.read_state {
             ReadState::Header {
                 header_buf,
@@ -376,7 +436,7 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
                             if let ReadState::Body { buf, msg_id, .. } =
                                 std::mem::take(&mut self.read_state)
                             {
-                                self.decode(msg_id, &buf)
+                                self.decode(MsgToken::new(self.id, msg_id), &buf)
                             } else {
                                 unreachable!()
                             }
@@ -388,6 +448,66 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
                     Err(err) => ReadResult::Error(anyhow!(err)),
                 }
             }
+        }
+    }
+
+    /// Read off the incoming stream and send directly into a sender channel.
+    ///
+    /// The sender works in a non-blocking manner. Relative to [`Self::read`] this mtheod only changes the
+    /// [`ReadResult::Message`] to a different result type - continue if successful, send full if the channel is full,
+    /// and an error if we hit any error state.
+    ///
+    /// When [`ReadResult::SendFull`] is hit, the caller needs to ensure that no more messages reach the sender before
+    /// the full state is resolved, or the message will be dropped.
+    ///
+    /// Note that a disconnected channel should be fatal to everything, but here we just make it fatal to the
+    /// connection.
+    pub fn read_into_channel(&mut self, sender: &Sender<(MsgToken, U)>) -> ReadResult<U> {
+        let read_result = self.read();
+        if let ReadResult::Message(msg) = read_result {
+            let token = msg.0;
+            match sender.try_send(msg) {
+                Ok(_) => {
+                    tracing::trace!("Read message {:?}", token);
+                    // Overwrite message with continue if we've sent
+                    ReadResult::Continue
+                }
+                // When full, stash the message and signal that the channel is full
+                Err(TrySendError::Full(msg)) => {
+                    if self.read_retry.is_none() {
+                        self.read_retry = Some(msg);
+                    } else {
+                        tracing::error!("Full channel and retry slot, dropping {:?}", msg.0);
+                    }
+                    ReadResult::SendFull
+                }
+                // When disconnected, we drop the returned message as the server is shutting down anyway
+                Err(TrySendError::Disconnected((msg_token, _))) => {
+                    ReadResult::Error(anyhow!("Sender disconnected, dropping {:?}", msg_token))
+                }
+            }
+        } else {
+            read_result
+        }
+    }
+
+    pub fn retry_send(&mut self, sender: &Sender<(MsgToken, U)>) -> ReadResult<U> {
+        let msg_opt = std::mem::take(&mut self.read_retry);
+        tracing::trace!("retrying send");
+        if let Some(msg) = msg_opt {
+            match sender.try_send(msg) {
+                Ok(_) => ReadResult::Continue,
+                Err(TrySendError::Full(msg)) => {
+                    tracing::warn!("Erroneous retry, send channel full");
+                    self.read_retry = Some(msg);
+                    ReadResult::SendFull
+                }
+                Err(TrySendError::Disconnected(msg)) => {
+                    ReadResult::Error(anyhow!("Sender disconnected, dropping {:?}", msg.0))
+                }
+            }
+        } else {
+            ReadResult::Continue
         }
     }
 
@@ -418,6 +538,7 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
 
             // Write the length, then when finished pass the buffer over to body writing
             WriteState::Header {
+                msg_token,
                 header_buf: len,
                 buf,
                 bytes,
@@ -429,7 +550,11 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
                     *bytes += n;
                     if *bytes == 8 {
                         let buf = std::mem::take(buf);
-                        self.write_state = WriteState::Body { buf, bytes: 0 };
+                        self.write_state = WriteState::Body {
+                            msg_token: *msg_token,
+                            buf,
+                            bytes: 0,
+                        };
                     }
                     WriteResult::Continue
                 }
@@ -437,15 +562,22 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
                 Err(err) => WriteResult::Error(anyhow![err]),
             },
 
-            WriteState::Body { buf, bytes } => match self.stream.write(&buf[*bytes..]) {
+            WriteState::Body {
+                msg_token,
+                buf,
+                bytes,
+            } => match self.stream.write(&buf[*bytes..]) {
                 Ok(0) => WriteResult::Error(anyhow!("Unexpected EOF")),
                 Ok(n) => {
                     self.traffic.map(|t| t.add_send(n));
                     *bytes += n;
                     if *bytes == buf.len() {
+                        let t = *msg_token;
                         self.write_state = WriteState::Awaiting;
+                        WriteResult::Sent(t)
+                    } else {
+                        WriteResult::Continue
                     }
-                    WriteResult::Continue
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => WriteResult::WouldBlock,
                 Err(err) => WriteResult::Error(anyhow![err]),
@@ -460,7 +592,7 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
     pub fn write_from_channel(&mut self, channel: &Receiver<(u32, T)>) -> WriteResult {
         match self.write_state {
             WriteState::Awaiting => match channel.try_recv() {
-                Ok(msg) => match self.encode(msg) {
+                Ok((id, msg)) => match self.encode((MsgToken::new(self.id, id), msg)) {
                     Ok(state) => {
                         self.write_state = state;
                         WriteResult::Continue
@@ -479,29 +611,24 @@ impl<'a, S: Source + Read + Write, T: IoEncode> Connection<'a, S, T> {
         }
     }
 
-    fn decode(&self, msg_id: u32, buf: &[u8]) -> ReadResult {
-        match self.kind {
-            ConnectionKind::Server => match Request::decode_from_slice(buf) {
-                Ok(req) => ReadResult::Request((msg_id, req)),
-                Err(err) => ReadResult::Error(err),
-            },
-            ConnectionKind::Client => match Response::decode_from_slice(buf) {
-                Ok(res) => ReadResult::Response((msg_id, res)),
-                Err(err) => ReadResult::Error(err),
-            },
+    fn decode(&self, msg_token: MsgToken, buf: &[u8]) -> ReadResult<U> {
+        match U::decode_from_slice(buf) {
+            Ok(req) => ReadResult::Message((msg_token, req)),
+            Err(err) => ReadResult::Error(err),
         }
     }
 
-    fn encode(&self, (msg_id, msg): (u32, T)) -> Result<WriteState> {
+    fn encode(&self, (msg_token, msg): (MsgToken, T)) -> Result<WriteState> {
         let buf = msg.encode_to_vec()?;
         let len = u32::to_le_bytes(buf.len() as u32);
-        let msg_id = u32::to_le_bytes(msg_id);
+        let msg_id = u32::to_le_bytes(msg_token.msg_id);
         let mut header_buf = [0u8; 8];
 
         header_buf[0..4].copy_from_slice(&len);
         header_buf[4..8].copy_from_slice(&msg_id);
 
         Ok(WriteState::Header {
+            msg_token,
             header_buf,
             buf,
             bytes: 0,
@@ -520,13 +647,17 @@ impl MsgToken {
     pub fn new(conn_id: u32, msg_id: u32) -> Self {
         Self { conn_id, msg_id }
     }
+
+    pub fn msg(&self) -> u32 {
+        self.msg_id
+    }
 }
 
-pub enum ReadResult {
-    Request((u32, Request)),
-    Response((u32, Response)),
+pub enum ReadResult<T: IoCodec> {
+    Message((MsgToken, T)),
     Continue,
     WouldBlock,
+    SendFull,
     /// Expected EOF, unexpected will be returned as errors.
     Eof,
     Error(anyhow::Error),
@@ -534,6 +665,7 @@ pub enum ReadResult {
 
 pub enum WriteResult {
     Continue,
+    Sent(MsgToken),
     Drained,
     WouldBlock,
     /// For a direct-from-channel write indicates that that channel has been disconnected.
@@ -569,26 +701,20 @@ enum WriteState {
     #[default]
     Awaiting,
     Header {
+        msg_token: MsgToken,
         header_buf: [u8; 8],
         // Generated on encode so stored here to pass to Body
         buf: Vec<u8>,
         bytes: usize,
     },
     Body {
+        msg_token: MsgToken,
         buf: Vec<u8>,
         bytes: usize,
     },
 }
 
-/// The kind of the [`Connection`].
-///
-/// A server conenction will read [`Request`]s and write [`Response`]s, while the client will do the opposite.
-enum ConnectionKind {
-    Server,
-    Client,
-}
-
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WriteQueueState {
     /// Queue is equal to or above soft cap, take action to throttle.
     Full,

@@ -63,18 +63,23 @@ impl Default for Config {
     }
 }
 
-#[tracing::instrument(skip_all, name = "client")]
 pub fn run(cmd: ClientCommand, context: Context<Config>) -> Result<()> {
+    let run_span = tracing::error_span!("client");
+    let _enter = run_span.enter();
+
     // Set up message channels and instrumentation
     let config: &_ = Box::leak(Box::new(context.config));
     let (request_tx, request_rx) = channel::bounded::<(u32, Request)>(config.request_capacity);
-    let (response_tx, response_rx) = channel::bounded::<(u32, Response)>(config.response_capacity);
+    let (response_tx, response_rx) =
+        channel::bounded::<(MsgToken, Response)>(config.response_capacity);
     let traffic: &_ = Box::leak(Box::new(Traffic::default()));
     let mut tracker = Tracker::default();
     let (mut cmd_handler, done) = CommandHandler::new(request_tx, tracker.clone());
 
     let r = context.running.clone();
+    let io_run_span = run_span.clone();
     let io_handle = std::thread::spawn(move || {
+        let _enter = io_run_span.enter();
         match run_client_io_loop(r.clone(), config, traffic, request_rx, response_tx) {
             Ok(_) => tracing::trace!("Client IO loop exit success"),
             Err(err) => tracing::error!("Client IO loop exit error: {}", err),
@@ -85,9 +90,13 @@ pub fn run(cmd: ClientCommand, context: Context<Config>) -> Result<()> {
     // Shift request handling onto its own thread. If this completes fast or is highly blocking (like an interactive
     // terminal) this thread will use minimal resources. If lots of disk/std io is required, it will run in the
     // background while still allowing response handling.
-    let cmd_handle = std::thread::spawn(move || match cmd_handler.handle(cmd) {
-        Ok(_) => tracing::trace!("Client command handler exit success"),
-        Err(err) => tracing::error!("Client command handler exit error: {}", err),
+    let handle_run_span = run_span.clone();
+    let cmd_handle = std::thread::spawn(move || {
+        let _enter = handle_run_span.enter();
+        match cmd_handler.handle(cmd) {
+            Ok(_) => tracing::trace!("Client command handler exit success"),
+            Err(err) => tracing::error!("Client command handler exit error: {}", err),
+        }
     });
 
     // Run the response handling in the main thread using an additional flag to track whether the request thread has
@@ -98,7 +107,7 @@ pub fn run(cmd: ClientCommand, context: Context<Config>) -> Result<()> {
     let mut done_requesting = false;
     while context.running.is_running() {
         match response_rx.recv_timeout(config.shutdown_timeout) {
-            Ok((id, res)) => tracker.handle(id, res)?,
+            Ok((msg_token, res)) => tracker.handle(msg_token.msg(), res)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         };
@@ -116,7 +125,6 @@ pub fn run(cmd: ClientCommand, context: Context<Config>) -> Result<()> {
     // If we break out the the response loop, we must shut down
     context.running.shutdown();
 
-    // TODO: Better join handling
     cmd_handle
         .join()
         .map_err(|_| anyhow!("Cmd handler thread join failed"))?;
@@ -124,8 +132,7 @@ pub fn run(cmd: ClientCommand, context: Context<Config>) -> Result<()> {
         .join()
         .map_err(|_| anyhow!("IO thread join failed"))?;
 
-    // TODO: Better instrumentation/reporting. Tracing here?
-    println!(
+    tracing::info!(
         "Client done; bytes sent={}; bytes recv={}",
         traffic.sent(),
         traffic.recv()
@@ -144,7 +151,7 @@ pub fn run_client_io_loop(
     config: &Config,
     traffic: &Traffic,
     request_rx: Receiver<(u32, Request)>,
-    response_tx: Sender<(u32, Response)>,
+    response_tx: Sender<(MsgToken, Response)>,
 ) -> Result<()> {
     // TODO: On linux have option of stream or TCP?
     #[cfg(unix)]
@@ -155,13 +162,25 @@ pub fn run_client_io_loop(
 
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(config.event_capacity);
-    let mut conn = Connection::new_client(&mut poll, SERVER, stream, Some(traffic))?;
+    let mut conn = ClientConnection::new_client(&mut poll, SERVER, stream, Some(traffic))?;
 
-    let io_span = tracing::trace_span!("io");
+    let io_span = tracing::error_span!("io");
     let _io_span_guard = io_span.enter();
-    tracing::trace!("Starting client IO loop");
+    tracing::info!("Starting client IO loop");
 
     while running == true {
+        // Re-enable read interest if the send channel is no longer full
+        // If any error condition results from the retry, even a full, something must have gone wrong, so we exit
+        if !conn.is_readable() && response_tx.len() < config.response_capacity * 3 / 4 {
+            tracing::trace!("Re-enabling reads on response channel");
+            match conn.retry_send(&response_tx) {
+                ReadResult::Continue => conn.enable_interest(&mut poll, Interest::READABLE)?,
+                ReadResult::SendFull => {}
+                ReadResult::Error(err) => bail!(err),
+                _ => unreachable!(),
+            };
+        }
+
         // Re-enable write interest if there are items in the request channel
         // In the client we don't pre-buffer sends, we just process as-ready
         if !request_rx.is_empty() && !conn.is_writeable() {
@@ -184,16 +203,17 @@ pub fn run_client_io_loop(
             if event.is_readable() {
                 tracing::trace!("Readable");
                 loop {
-                    match conn.read() {
-                        ReadResult::Request(_) => unreachable!(),
+                    match conn.read_into_channel(&response_tx) {
                         // If the channel send fails, we can't proceed, so shut down
                         // This send call will block if the channel is full, providing backpressure
-                        ReadResult::Response(res) => {
-                            let res_id = res.0;
-                            response_tx.send(res)?;
-                            tracing::trace!("Response received:: {}", res_id);
-                        }
+                        // TODO: When we change the server non-blocking here, we can change the client too
+                        ReadResult::Message(_) => unreachable!(),
                         ReadResult::Continue => {}
+                        ReadResult::SendFull => {
+                            tracing::trace!("Send channel full, disabling reads");
+                            conn.disable_interest(&mut poll, Interest::READABLE)?;
+                            break;
+                        }
                         ReadResult::WouldBlock => {
                             tracing::trace!("Read WouldBlock, breaking");
                             break;
@@ -211,6 +231,7 @@ pub fn run_client_io_loop(
                 loop {
                     match conn.write_from_channel(&request_rx) {
                         WriteResult::Continue => {}
+                        WriteResult::Sent(t) => tracing::trace!("Wrote message {:?}", t),
                         WriteResult::Drained => {
                             tracing::trace!("Write drained, breaking");
                             // No longer interested in writes until write buffer is refilled

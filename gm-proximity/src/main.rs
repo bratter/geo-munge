@@ -14,7 +14,7 @@ use anyhow::Result;
 use clap::Parser;
 use crossbeam::channel::Sender;
 use ctrlc::{set_ctrlc_handler, RunToken};
-use tracing::Level;
+use tracing_subscriber::EnvFilter;
 
 use crate::args::{Args, ClientCommandWrapper, Command};
 
@@ -36,7 +36,7 @@ fn main() -> Result<()> {
     // Enable tracing
     // TODO: Configure better
     tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
 

@@ -26,8 +26,9 @@ impl Handler {
 
     /// Handle an incoming request.
     /// TODO: Add timing to wrap the requests?
-    #[tracing::instrument(skip_all, name = "handle_req")]
     pub fn handle(&self, (msg_token, req): (MsgToken, Request), traffic: &Traffic) {
+        tracing::trace!("Handling {:?}", msg_token);
+
         let context = self.context(msg_token);
 
         // TODO: These handlers currently don't return a result. This does mean they miss failures in the channel, and that

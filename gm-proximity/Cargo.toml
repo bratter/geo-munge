@@ -8,7 +8,6 @@ anyhow = { workspace = true }
 bincode = "2.0.1"
 clap = { workspace = true }
 ctrlc = "3.4.6"
-threadpool = "1.8.1"
 geojson = { workspace = true }
 geo = { workspace = true }
 geolib = { workspace = true }
