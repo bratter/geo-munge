@@ -6,7 +6,6 @@ use crate::{args::ResetArgs, message::prelude::*};
 use super::{CommandHandler, ResponseHandler};
 
 /// Reset command handler
-/// TODO: Add keytype settings
 pub fn reset(handler: &mut CommandHandler, reset: ResetArgs) -> Result<()> {
     // Short circuit will avoid confirm if force is true
     if reset.force
@@ -15,8 +14,17 @@ pub fn reset(handler: &mut CommandHandler, reset: ResetArgs) -> Result<()> {
             .interact_opt()?
             .unwrap_or(false)
     {
+        // key int and key bytes are mutually exclusive, so can test in turn
+        let key_mode = if let Some(ptr) = reset.key_int {
+            KeyMode::CustomU32(ptr)
+        } else if let Some(ptr) = reset.key_bytes {
+            KeyMode::MetaPointer(ptr)
+        } else {
+            KeyMode::AutoIncrement
+        };
+
         handler.send(
-            Request::Reset(Reset::new(None, reset.bbox)),
+            Request::Reset(ResetReq::new(key_mode, reset.bbox)),
             ResponseHandler::None,
         )?;
         Ok(())

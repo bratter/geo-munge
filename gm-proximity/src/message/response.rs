@@ -5,7 +5,7 @@ use std::fmt::Debug;
 use anyhow::Result;
 use bincode::{Decode, Encode};
 
-use super::encode::IoCodec;
+use super::{encode::IoCodec, request::KeyMode};
 
 #[derive(Debug, Encode, Decode)]
 #[non_exhaustive]
@@ -39,7 +39,7 @@ pub enum Response {
     ///
     /// Contains a vector of results from a Knn calculation, wrapped in a result for failed rows.
     /// TODO: Response type without errors, better response type overall
-    KnnData(Vec<Result<(usize, f64), String>>),
+    KnnData(Vec<Result<(u32, f64), String>>),
 
     /// Data response.
     ///
@@ -68,6 +68,7 @@ impl From<anyhow::Error> for Response {
 
 #[derive(Debug, Encode, Decode)]
 pub struct Stats {
+    pub key_mode: KeyMode,
     pub qt_size: usize,
     pub bytes_sent: usize,
     pub bytes_recv: usize,

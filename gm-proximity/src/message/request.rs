@@ -4,9 +4,8 @@ use std::{fmt::Debug, iter::FilterMap, slice::Split, str::FromStr};
 
 use anyhow::{bail, Error, Result};
 use bincode::{Decode, Encode};
-use geo::{Point, Rect};
+use geo::{Geometry, Point, Rect};
 use geojson::Feature;
-use geolib::qt::{Geometry, ToRadians};
 
 use super::encode::IoCodec;
 
@@ -22,16 +21,8 @@ pub enum Request {
     /// Reset request.
     ///
     /// Truncate the quadtree. Options to reset the primary key and bounding box, otherwise will reset these to the
-    /// defaults, although they can be changed prior to inserting.
-    Reset(Reset),
-
-    /// Define the primary key type to use.
-    ///
-    /// Can only be run on an empty Quadtree. Set the primary key mode to either auto-increment (the default) or to some
-    /// metadata column with a type.
-    ///
-    /// TODO: Implement the ability to set the keytype
-    KeyType(KeyType),
+    /// defaults.
+    Reset(ResetReq),
 
     /// Define the bounding box.
     ///
@@ -66,7 +57,7 @@ pub enum Request {
     ///
     /// Can take a max count, radius or bounding box constraints, and metadata filters.
     /// TODO: Also do find, also do filters
-    Knn(Knn),
+    Knn(KnnReq),
 
     /// Filter for all items inside a bounding box.
     ///
@@ -90,7 +81,6 @@ impl Request {
         match self {
             Request::Stats => true,
             Request::Reset(_) => true,
-            Request::KeyType(_) => true,
             Request::Bbox(_) => true,
             Request::Insert(_) => true,
             Request::Delete => true,
@@ -108,26 +98,26 @@ impl IoCodec for Request {}
 ///
 /// Contains an optional key type and bounding box to provide settings in a single request.
 #[derive(Debug, Default, Encode, Decode)]
-pub struct Reset {
-    pub keytype: Option<KeyType>,
+pub struct ResetReq {
+    pub key_mode: KeyMode,
     pub bbox: Option<Bbox>,
 }
 
-impl Reset {
-    pub fn new(keytype: Option<KeyType>, bbox: Option<Bbox>) -> Self {
-        Self { keytype, bbox }
+impl ResetReq {
+    pub fn new(key_mode: KeyMode, bbox: Option<Bbox>) -> Self {
+        Self { key_mode, bbox }
     }
 }
 
 /// Key type setting request data.
 ///
 /// Can be used in a [`Request::KeyType`], but more likely to be used in [`Request::Reset`].
-#[derive(Debug, Default, Encode, Decode)]
-pub enum KeyType {
+#[derive(Debug, Default, Clone, Encode, Decode)]
+pub enum KeyMode {
     #[default]
     AutoIncrement,
-    // TODO: Need to add the type here
-    Meta(String),
+    CustomU32(String),
+    MetaPointer(String),
 }
 
 /// Bounding box request data.
@@ -225,14 +215,14 @@ impl From<DataStream> for Vec<u8> {
 
 // TODO: The item here needs to also have id and metadata
 impl<'a> IntoIterator for &'a DataStream {
-    type Item = Result<Geometry<f64>>;
+    type Item = Result<Geometry>;
     type IntoIter =
-        FilterMap<Split<'a, u8, fn(&u8) -> bool>, fn(&[u8]) -> Option<Result<Geometry<f64>>>>;
+        FilterMap<Split<'a, u8, fn(&u8) -> bool>, fn(&[u8]) -> Option<Result<Geometry>>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.data
             .split(is_newline as fn(&u8) -> bool)
-            .filter_map(filter_map as fn(&[u8]) -> Option<Result<Geometry<f64>>>)
+            .filter_map(filter_map as fn(&[u8]) -> Option<Result<Geometry>>)
     }
 }
 
@@ -240,7 +230,7 @@ fn is_newline(b: &u8) -> bool {
     *b == b'\n'
 }
 
-fn filter_map(line: &[u8]) -> Option<Result<Geometry<f64>>> {
+fn filter_map(line: &[u8]) -> Option<Result<Geometry>> {
     let line = line.trim_ascii();
     if line.is_empty() {
         None
@@ -249,16 +239,17 @@ fn filter_map(line: &[u8]) -> Option<Result<Geometry<f64>>> {
     }
 }
 
-fn parse_line(line: &[u8]) -> Result<Geometry<f64>> {
+fn parse_line(line: &[u8]) -> Result<Geometry> {
     let f = std::str::from_utf8(line)?.parse::<Feature>()?;
-    let mut geom: Geometry<f64> = geo::Geometry::try_from(f)?.try_into()?;
-    geom.to_radians_in_place();
+    let geom: Geometry = geo::Geometry::try_from(f)?.try_into()?;
+    // FIX: Deal with radian conversion appropriately.
+    //geom.to_radians_in_place();
 
     Ok(geom)
 }
 
 #[derive(Debug, Encode, Decode)]
-pub struct Knn {
+pub struct KnnReq {
     pub k: usize,
     pub r: Option<f64>,
     pub data: FindData,

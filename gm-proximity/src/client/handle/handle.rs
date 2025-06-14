@@ -114,8 +114,8 @@ impl ResponseHandler {
             Response::Success(None) => println!("{} success", prefix),
             Response::Done(n) => println!("{} done with {} responses", prefix, n),
             Response::Stats(n) => println!(
-                "{} QT size={}; bytes sent={}; bytes recv={}",
-                prefix, n.qt_size, n.bytes_sent, n.bytes_recv
+                "{} QT size={}; key: {:?}; bytes sent={}; bytes recv={}",
+                prefix, n.qt_size, n.key_mode, n.bytes_sent, n.bytes_recv
             ),
             Response::InsertResult { success, fail } => {
                 println!("{} inserted {}, failed {}", prefix, success, fail)

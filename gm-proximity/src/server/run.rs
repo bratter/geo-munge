@@ -1,25 +1,19 @@
 //! Server handler for GM-Proximity.
 
-use std::{
-    io::ErrorKind,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{io::ErrorKind, sync::Arc, time::Duration};
 
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use crossbeam::channel::{self, Receiver, RecvTimeoutError, Sender};
-use geo::Rect;
 #[cfg(windows)]
 use mio::net::TcpListener;
 #[cfg(unix)]
 use mio::net::UnixListener;
 use mio::{Events, Interest, Poll, Token};
 
-use geolib::qt::{QtData, Quadtree, ToRadians};
-
 use crate::{connection::*, ctrlc::*, message::prelude::*, Context, MAX_CONNECTIONS};
 
-use super::handle::Handler;
+use super::{geo_store::GeoStore, handle::Handler};
 
 /// Set the listener to be the next index above the max connections to avoid collisions
 /// With a fixed connection pool this is easier than making the first connection 1
@@ -137,10 +131,10 @@ pub fn run(context: Context<Config>) -> Result<()> {
     // graceful shutdown - this timeout can be relatively long as the shutdown is not time-critical
     // Note that the handle function takes the channel rather than just returning the response as the server may choose
     // to chunk responses
-    // TODO: See todo notes in the function implementation
-    let quadtree = build_qt(Reset::default());
-    let quadtree = Arc::new(RwLock::new(quadtree));
-    let handler = Handler::new(quadtree, response_tx);
+    // TODO: Initializing with the default GeoStore options. This should be considered and aligned with bounding box and
+    // key mode before finalizing (esp. given key mode is stored in the handler)
+    let geo_store = ArcSwap::from(Arc::new(GeoStore::new()));
+    let handler = Handler::new(geo_store, response_tx);
 
     // TODO: Add parallelism back with better threading mechanism, note need to keep handler lightweight and clonable
     // TODO: Improve and instrument this loop - should the handler be cloned? Should we ignore channel shutdown?
@@ -161,20 +155,6 @@ pub fn run(context: Context<Config>) -> Result<()> {
     io_handle.join().expect("Couldn't join io handle");
     tracing::info!("Geo Munge Proximity server shut down successfully");
     Ok(())
-}
-
-/// Make a basic quadtree.
-///
-/// TODO: In this simple setup we are passing a single-access qt to each of the io threads that will also manage the
-/// calculation. Once a basic version is working this needs to be upgraded, and the make_bbox function improved.
-/// TODO: The naming of the is_bounds argument is wrong, it should be called is_point_qt
-pub fn build_qt(reset: Reset) -> Quadtree {
-    let mut bounds: Rect = reset.bbox.unwrap_or_default().into();
-    bounds.to_radians_in_place();
-
-    let qt_opts = QtData::new(false, bounds, None, None);
-
-    Quadtree::new(qt_opts)
 }
 
 /// Spawn a thread and start the main event loop.

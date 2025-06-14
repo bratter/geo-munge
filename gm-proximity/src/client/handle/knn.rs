@@ -29,7 +29,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: args::KnnArgs) -> Result<()> 
             FindData::Geom(DataStream::from(data.into_bytes()))
         };
 
-        let knn = Knn {
+        let knn = KnnReq {
             k: knn_args.k,
             r: knn_args.r,
             data: find_data,
@@ -44,7 +44,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: args::KnnArgs) -> Result<()> 
             for (n, data_result) in input.into_key_iter().enumerate() {
                 match data_result {
                     Ok(data) => {
-                        let knn = Knn {
+                        let knn = KnnReq {
                             k: knn_args.k,
                             r: knn_args.r,
                             data: FindData::Keys(vec![data]),
@@ -59,7 +59,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: args::KnnArgs) -> Result<()> 
             for (n, data_result) in input.into_data_stream_iter().enumerate() {
                 match data_result {
                     Ok(data) => {
-                        let knn = Knn {
+                        let knn = KnnReq {
                             k: knn_args.k,
                             r: knn_args.r,
                             data: FindData::Geom(data),

@@ -1,12 +1,17 @@
-use anyhow::Result;
-use geolib::qt::{Geometry, Quadtree};
+use std::sync::Arc;
 
-use crate::message::prelude::*;
+use anyhow::Result;
+use geo::Geometry;
+
+use crate::{
+    message::prelude::*,
+    server::geo_store::{GeoStore, Knn as KnnT},
+};
 
 use super::Context;
 
-// TODO: Just fix this to see what the problem is
-pub fn knn(handler: Context, knn: Knn) {
+// TODO: FIx the trait name vs the data name - change the data name
+pub fn knn(handler: Context, knn: KnnReq) {
     // TODO: Handle other types of incoming find data formats
     let response = match &knn.data {
         FindData::Geom(shapes) => process_geom_stream(&handler, knn.k, knn.r, shapes.into_iter()),
@@ -20,8 +25,6 @@ pub fn knn(handler: Context, knn: Knn) {
 }
 
 // TODO: If there are more settings, bundle them into a QtSettings struct
-// TODO: When this evolves into a processing thread, we can send results back to the output queue over a channel
-// however we want, but for the time being we just collect ans send as data.
 // TODO: We need to think what metadata to return from the matched geom. At least the id, but possibly the rest as a setting.
 // Same applies to the stored shape - don't want the overhead of returning it unless required by the client as the
 // client should already know or could query afterwards
@@ -33,30 +36,24 @@ fn process_geom_stream(
     handler: &Context,
     k: usize,
     r: Option<f64>,
-    geoms: impl Iterator<Item = Result<Geometry<f64>>>,
-) -> Vec<Result<(usize, f64), String>> {
-    let qt = &*handler.read_qt();
-
+    geoms: impl Iterator<Item = Result<Geometry>>,
+) -> Vec<Result<(u32, f64), String>> {
     geoms
         .flat_map(|geom| match geom {
-            Ok(g) => exec_knn(&qt, k, r, g),
+            Ok(g) => exec_knn(&handler.store.load(), k, r, g),
             Err(err) => vec![Err(err.to_string())],
         })
         .collect()
 }
 
+// TODO: Knn should only return the usize id and the distance - needs to be mapped here
 fn exec_knn<'a>(
-    qt: &'a Quadtree,
+    qt: &'a Arc<GeoStore>,
     k: usize,
     r: Option<f64>,
-    item: Geometry<f64>,
-) -> Vec<Result<(usize, f64), String>> {
-    match qt.knn_from_geom(item, k, r) {
-        Ok(result) => result
-            .into_iter()
-            // TODO: The quadtree itself should return a better response
-            .map(|(datum, distance)| Ok((datum.index(), distance)))
-            .collect(),
-        Err(err) => vec![Err(err.to_string())],
-    }
+    item: Geometry,
+) -> Vec<Result<(u32, f64), String>> {
+    qt.knn_r(&item, k, r.unwrap_or(std::f64::INFINITY))
+        .map(|res| Ok((res.0.id, res.1)))
+        .collect()
 }

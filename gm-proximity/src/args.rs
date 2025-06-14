@@ -54,6 +54,22 @@ pub struct ResetArgs {
     #[clap(long, short)]
     pub bbox: Option<Bbox>,
 
+    /// Use a u32 key from metadata instead of an auto-increment.
+    ///
+    /// The key must exist and be within the range of a u32 for all items or operations will fail.
+    ///
+    /// The argument takes a string that contains the JSON Pointer definition to a numeric field.
+    #[clap(long, short = 'k', conflicts_with = "key_bytes")]
+    pub key_int: Option<String>,
+
+    /// Use an arbitrary field from metadata instead of an auto-increment.
+    ///
+    /// The field must be less than or equal to 16 bytes long or operations will fail. This is intended for use with
+    /// alphanumeric identifiers. The argument takes a string that contains the JSON Pointer definition to a string
+    /// field.
+    #[clap(long, short = 'y')]
+    pub key_bytes: Option<String>,
+
     #[clap(long, short)]
     pub force: bool,
 }

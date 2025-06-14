@@ -1,27 +1,40 @@
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::atomic::AtomicU32;
+use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use crossbeam::channel::Sender;
-use geolib::qt::Quadtree;
 
 use crate::connection::{MsgToken, Traffic};
 use crate::message::prelude::*;
+use crate::server::geo_store::GeoStore;
 
 use super::{bench, insert, knn, reset, stats};
 
-#[derive(Clone)]
 pub struct Handler {
-    qt: Arc<RwLock<Quadtree>>,
+    store: ArcSwap<GeoStore>,
     response_tx: Sender<(MsgToken, Response)>,
+    key_gen: ArcSwap<KeyGenerator>,
 }
 
 impl Handler {
-    pub fn new(qt: Arc<RwLock<Quadtree>>, response_tx: Sender<(MsgToken, Response)>) -> Self {
-        Self { qt, response_tx }
+    pub fn new(store: ArcSwap<GeoStore>, response_tx: Sender<(MsgToken, Response)>) -> Self {
+        let key_gen = ArcSwap::from(Arc::new(KeyGenerator::default()));
+
+        Self {
+            store,
+            response_tx,
+            key_gen,
+        }
     }
 
     /// Generate a [`Context`] to pass around with this request.
     pub fn context(&self, msg_token: MsgToken) -> Context {
-        Context::new(Arc::clone(&self.qt), self.response_tx.clone(), msg_token)
+        Context::new(
+            &self.store,
+            &self.key_gen,
+            self.response_tx.clone(),
+            msg_token,
+        )
     }
 
     /// Handle an incoming request.
@@ -36,9 +49,6 @@ impl Handler {
         match req {
             Request::Stats => stats(context, traffic),
             Request::Reset(r) => reset(context, r),
-            Request::KeyType(_) => {
-                context.send(Response::Error("KeyType resetting not implemented".into()))
-            }
             Request::Bbox(_) => {
                 context.send(Response::Error("BBox resetting not implemented".into()))
             }
@@ -54,33 +64,26 @@ impl Handler {
 }
 
 /// Cheap container for data structure and channel access.
-pub struct Context {
-    qt: Arc<RwLock<Quadtree>>,
+pub struct Context<'a> {
+    pub store: &'a ArcSwap<GeoStore>,
+    pub key_gen: &'a ArcSwap<KeyGenerator>,
     response_tx: Sender<(MsgToken, Response)>,
     msg_token: MsgToken,
 }
 
-impl Context {
+impl<'a> Context<'a> {
     pub fn new(
-        qt: Arc<RwLock<Quadtree>>,
+        store: &'a ArcSwap<GeoStore>,
+        key_gen: &'a ArcSwap<KeyGenerator>,
         response_tx: Sender<(MsgToken, Response)>,
         msg_token: MsgToken,
     ) -> Self {
         Self {
-            qt,
+            store,
+            key_gen,
             response_tx,
             msg_token,
         }
-    }
-
-    pub fn read_qt(&self) -> RwLockReadGuard<'_, Quadtree> {
-        // NOTE: Ok to propagate panic with unwrap as the only error is for a poisoned RwLock
-        self.qt.read().unwrap()
-    }
-
-    pub fn write_qt(&self) -> RwLockWriteGuard<'_, Quadtree> {
-        // NOTE: Ok to propagate panic with unwrap as the only error is for a poisoned RwLock
-        self.qt.write().unwrap()
     }
 
     pub fn send(&self, response: Response) {
@@ -89,23 +92,62 @@ impl Context {
     }
 }
 
+pub enum KeyGenerator {
+    AutoIncrement(AtomicU32),
+    CustomU32(String),
+    MetaPointer(AtomicU32, String),
+}
+
+impl From<KeyMode> for KeyGenerator {
+    fn from(value: KeyMode) -> Self {
+        match value {
+            KeyMode::AutoIncrement => Self::AutoIncrement(0.into()),
+            KeyMode::CustomU32(ptr) => Self::CustomU32(ptr),
+            KeyMode::MetaPointer(ptr) => Self::MetaPointer(0.into(), ptr),
+        }
+    }
+}
+
+impl From<&KeyGenerator> for KeyMode {
+    fn from(value: &KeyGenerator) -> Self {
+        match value {
+            KeyGenerator::AutoIncrement(_) => KeyMode::AutoIncrement,
+            KeyGenerator::CustomU32(ptr) => KeyMode::CustomU32(ptr.clone()),
+            KeyGenerator::MetaPointer(_, ptr) => KeyMode::MetaPointer(ptr.clone()),
+        }
+    }
+}
+
+impl Default for KeyGenerator {
+    fn default() -> Self {
+        Self::AutoIncrement(0.into())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crossbeam::channel::{self, Receiver};
 
-    use crate::server::run::build_qt;
-
     use super::*;
 
-    impl Context {
+    impl<'a> Context<'a> {
+        pub fn make_store() -> (ArcSwap<GeoStore>, ArcSwap<KeyGenerator>) {
+            (
+                ArcSwap::from(Arc::new(GeoStore::new())),
+                ArcSwap::from(Arc::new(KeyGenerator::default())),
+            )
+        }
+
         /// Implementation to make a dummy context for testing purposes only using a fresh quadtree and a also returning
         /// the rx end of the response channel.
-        pub fn test_new(token: MsgToken) -> (Receiver<(MsgToken, Response)>, Self) {
+        pub fn test_new(
+            (store, key_gen): &'a (ArcSwap<GeoStore>, ArcSwap<KeyGenerator>),
+            token: MsgToken,
+        ) -> (Receiver<(MsgToken, Response)>, Self) {
             let (tx, rx) = channel::unbounded();
-            let qt = Arc::new(RwLock::new(build_qt(Reset::default())));
-            let handler = Self::new(qt, tx, token);
+            let context = Self::new(&store, &key_gen, tx, token);
 
-            (rx, handler)
+            (rx, context)
         }
     }
 }

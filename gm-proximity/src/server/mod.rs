@@ -1,5 +1,6 @@
 //! Server implementation for GM-Proximity.
 
+mod geo_store;
 mod handle;
 mod run;
 

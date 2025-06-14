@@ -1,14 +1,18 @@
-use crate::{message::prelude::*, server::run::build_qt};
+use std::sync::Arc;
+
+use crate::{message::prelude::*, server::geo_store::GeoStore};
 
 use super::Context;
 
-/// Resets the quadtree.
-///
-/// Drops all memory associated with the original quadree, replacing it with a fresh one. It will not cancel any other
-/// in-progress operations.
-pub fn reset(handler: Context, reset: Reset) {
-    // Best way to drop the quadtree is to memory replace with a new one, ensuring a complete reset
-    let _ = std::mem::replace(&mut *handler.write_qt(), build_qt(reset));
+/// Resets the [`GeoStore`].
+pub fn reset(context: Context, reset: ResetReq) {
+    let new_store = match reset.key_mode {
+        KeyMode::MetaPointer(ref ptr) => GeoStore::with_custom_key(ptr.clone()),
+        _ => GeoStore::new(),
+    };
 
-    handler.send(Response::Success(None));
+    context.key_gen.store(Arc::new(reset.key_mode.into()));
+    context.store.store(Arc::new(new_store));
+
+    context.send(Response::Success(None));
 }

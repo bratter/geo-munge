@@ -17,3 +17,7 @@ mio = { version = "1.0.3", features = ["net", "os-ext"] }
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+quadtree = { path = "../../quadtree" }
+dashmap = "6.1.0"
+fxhash = "0.2.1"
+arc-swap = "1.7.1"
