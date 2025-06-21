@@ -2,21 +2,21 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use geo::Geometry;
+use geojson::Feature;
 
 use crate::{
     message::prelude::*,
-    server::geo_store::{GeoStore, Knn as KnnT},
+    server::geo_store::{GeoStore, Knn as KnnTrait, NodeId},
 };
 
 use super::Context;
 
-// TODO: FIx the trait name vs the data name - change the data name
 pub fn knn(handler: Context, knn: KnnReq) {
-    // TODO: Handle other types of incoming find data formats
+    // TODO: Handle custom key format for the find
     let response = match &knn.data {
         FindData::Geom(shapes) => process_geom_stream(&handler, knn.k, knn.r, shapes.into_iter()),
         // TODO: Here we need to pull the shape from the Map storage and pass it to the quadtree
-        FindData::Keys(_keys) => todo!(),
+        FindData::Keys(keys) => process_key_stream(&handler, knn.k, knn.r, keys.as_slice()),
     };
 
     handler.send(Response::KnnData(response));
@@ -36,24 +36,58 @@ fn process_geom_stream(
     handler: &Context,
     k: usize,
     r: Option<f64>,
-    geoms: impl Iterator<Item = Result<Geometry>>,
+    geoms: impl Iterator<Item = Result<Feature>>,
 ) -> Vec<Result<(u32, f64), String>> {
     geoms
         .flat_map(|geom| match geom {
-            Ok(g) => exec_knn(&handler.store.load(), k, r, g),
+            Ok(g) => exec_knn_on_feature(&handler.store.load(), k, r, g),
             Err(err) => vec![Err(err.to_string())],
         })
         .collect()
 }
 
 // TODO: Knn should only return the usize id and the distance - needs to be mapped here
+// TODO: Need to eliminate as much intermediate collection as we can here and in key stream - Impl Iter return?
+#[inline(always)]
+fn exec_knn_on_feature<'a>(
+    qt: &'a Arc<GeoStore>,
+    k: usize,
+    r: Option<f64>,
+    feature: Feature,
+) -> Vec<Result<(u32, f64), String>> {
+    match Geometry::try_from(feature) {
+        Ok(geom) => exec_knn(qt, k, r, &geom).collect(),
+        Err(err) => vec![Err(err.to_string())],
+    }
+}
+
+#[inline(always)]
 fn exec_knn<'a>(
     qt: &'a Arc<GeoStore>,
     k: usize,
     r: Option<f64>,
-    item: Geometry,
-) -> Vec<Result<(u32, f64), String>> {
-    qt.knn_r(&item, k, r.unwrap_or(std::f64::INFINITY))
+    geom: &Geometry,
+) -> impl Iterator<Item = Result<(u32, f64), String>> {
+    qt.knn_r(geom, k, r.unwrap_or(std::f64::INFINITY))
         .map(|res| Ok((res.0.id, res.1)))
-        .collect()
+}
+
+fn process_key_stream(
+    handler: &Context,
+    k: usize,
+    r: Option<f64>,
+    keys: &[NodeId],
+) -> Vec<Result<(u32, f64), String>> {
+    let store = handler.store.load();
+    let mut results = Vec::new();
+
+    for key in keys {
+        if let Some(gr) = store.get(*key) {
+            results.extend(exec_knn(&store, k, r, &gr.geometry));
+        } else {
+            todo!()
+        }
+    }
+
+    results
 }

@@ -4,7 +4,7 @@ use std::{fmt::Debug, iter::FilterMap, slice::Split, str::FromStr};
 
 use anyhow::{bail, Error, Result};
 use bincode::{Decode, Encode};
-use geo::{Geometry, Point, Rect};
+use geo::{Point, Rect};
 use geojson::Feature;
 
 use super::encode::IoCodec;
@@ -215,14 +215,13 @@ impl From<DataStream> for Vec<u8> {
 
 // TODO: The item here needs to also have id and metadata
 impl<'a> IntoIterator for &'a DataStream {
-    type Item = Result<Geometry>;
-    type IntoIter =
-        FilterMap<Split<'a, u8, fn(&u8) -> bool>, fn(&[u8]) -> Option<Result<Geometry>>>;
+    type Item = Result<Feature>;
+    type IntoIter = FilterMap<Split<'a, u8, fn(&u8) -> bool>, fn(&[u8]) -> Option<Result<Feature>>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.data
             .split(is_newline as fn(&u8) -> bool)
-            .filter_map(filter_map as fn(&[u8]) -> Option<Result<Geometry>>)
+            .filter_map(filter_map as fn(&[u8]) -> Option<Result<Feature>>)
     }
 }
 
@@ -230,7 +229,7 @@ fn is_newline(b: &u8) -> bool {
     *b == b'\n'
 }
 
-fn filter_map(line: &[u8]) -> Option<Result<Geometry>> {
+fn filter_map(line: &[u8]) -> Option<Result<Feature>> {
     let line = line.trim_ascii();
     if line.is_empty() {
         None
@@ -239,13 +238,12 @@ fn filter_map(line: &[u8]) -> Option<Result<Geometry>> {
     }
 }
 
-fn parse_line(line: &[u8]) -> Result<Geometry> {
-    let f = std::str::from_utf8(line)?.parse::<Feature>()?;
-    let geom: Geometry = geo::Geometry::try_from(f)?.try_into()?;
+/// Convert to a [`Feature`]. Use a function to enable ? usage.
+#[inline]
+fn parse_line(line: &[u8]) -> Result<Feature> {
     // FIX: Deal with radian conversion appropriately.
     //geom.to_radians_in_place();
-
-    Ok(geom)
+    Ok(std::str::from_utf8(line)?.parse::<Feature>()?)
 }
 
 #[derive(Debug, Encode, Decode)]
@@ -264,7 +262,7 @@ pub enum FindData {
 
     /// Run the find for a set of primary keys already in the quadtree.
     /// TODO: Support other key types?
-    Keys(Vec<usize>),
+    Keys(Vec<u32>),
 }
 
 #[derive(Encode, Decode)]

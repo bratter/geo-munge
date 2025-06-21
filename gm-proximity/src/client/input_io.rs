@@ -116,7 +116,7 @@ pub struct KeyIterator {
 }
 
 impl Iterator for KeyIterator {
-    type Item = Result<usize>;
+    type Item = Result<u32>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let line_result = self.inner.next()?;

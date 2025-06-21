@@ -17,6 +17,7 @@ use geojson::JsonValue;
 // TODO: GeoNum or similar for the numeric type?
 // TODO: What about the generic? Likely fine as-is
 // TODO: How to handle errors (if any) in the output? e.g., run into shapes that it can't process
+// TODO: Filter out same key responses
 pub trait Knn<'a, T: 'a> {
     fn knn_r(&'a self, cmp: &Geometry, k: usize, r: f64) -> impl Iterator<Item = (&'a T, f64)>;
 
@@ -140,53 +141,41 @@ impl GeoStore {
         self.id_index.len()
     }
 
-    /// Insert a new record. Overwrites any existing record with same ID.
-    ///
-    /// If using an additional custom key, must use insert_with_meta.
-    /// TODO: Could also error if the if already exists - note that the multiple key arrangement needs handling here and
-    /// in the meta insert
-    pub fn insert(&self, id: NodeId, geometry: Geometry<f64>) -> Result<()> {
-        if self.has_custom_key() {
-            bail!("Must provide metadata when using a custom key");
-        }
-
-        let record = Arc::new(GeoRecordInner {
-            id,
-            geometry,
-            metadata: None,
-            is_deleted: AtomicBool::new(false),
-        });
-
-        self.spatial_index.insert(&record)?;
-        self.id_index.insert(id, record);
-        Ok(())
-    }
-
     /// Insert a new record with metadata.
     ///
     /// If using an additional custom key, metadata must be provided or the insert will fail.
+    ///
+    /// Will error if the key already exists.
+    ///
+    /// TODO: Could also error if the if already exists - note that the multiple key arrangement needs handling here and
+    /// in the meta insert
     /// TODO: Have to handle cases where keys already exist - could be some interesting race conditions
-    pub fn insert_with_meta(
+    /// WARN: Revisit prevention of race conditions on inserts - id_index should be primary, and everything else synced,
+    /// but need to work through how to synchronize? We should be able to assume that the primary key will always be
+    /// correct - impose that condition on the caller, and should also be the first check that happens, so if the caller
+    /// ensures this we don't need anything, if we want to be defensive, just need to manage time-of-check, time-of-use
+    /// on the id_index insert. Will also need to be able to rollback if a later insert fails.
+    pub fn insert(
         &self,
         id: NodeId,
         geometry: Geometry<f64>,
-        metadata: JsonValue,
+        metadata: Option<JsonValue>,
     ) -> Result<()> {
         let record = Arc::new(GeoRecordInner {
             id,
             geometry,
-            metadata: Some(metadata),
+            metadata,
             is_deleted: AtomicBool::new(false),
         });
 
         // Do this after the record to avoid a double conditional, the unwrap is fine as we wrap above
-        // Also have to do before the other inserts as this can easily fail
+        // Best to do before the other inserts as this can easily fail
         if self.has_custom_key() {
             let custom_key = self.extract_custom_key(&record.metadata.as_ref().unwrap())?;
             self.custom_key.insert(custom_key, Arc::clone(&record));
         }
 
-        // TODO: Going to need some sort of rollback on inserts
+        // TODO: Going to need some sort of rollback on inserts - maybe use entry API
         self.spatial_index.insert(&record)?;
         self.id_index.insert(id, record);
         Ok(())
@@ -201,11 +190,7 @@ impl GeoStore {
         I: IntoIterator<Item = (NodeId, Geometry<f64>, Option<JsonValue>)>,
     {
         for (id, geometry, metadata) in records {
-            if let Some(metadata) = metadata {
-                self.insert_with_meta(id, geometry, metadata)?;
-            } else {
-                self.insert(id, geometry)?;
-            }
+            self.insert(id, geometry, metadata)?;
         }
 
         Ok(())
@@ -252,8 +237,8 @@ impl GeoStore {
 
     /// Retrieve a record by extracting a custom key field from a JSON value.
     ///
-    /// Will return [`None`] if the key doesn't exist or there is no custom key on the store. Similar to get, this
     /// does not check deletion status.
+    /// Will return [`None`] if the key doesn't exist or there is no custom key on the store. Similar to get, this
     pub fn get_with_meta(&self, meta: JsonValue) -> Option<GeoRecord> {
         if let Ok(key) = self.extract_custom_key(&meta) {
             self.custom_key.get(&key).map(|r| Arc::clone(&r))
@@ -264,6 +249,7 @@ impl GeoStore {
 
     pub fn clear(&self) {
         self.id_index.clear();
+        self.custom_key.clear();
         self.spatial_index.clear();
     }
 
@@ -271,7 +257,7 @@ impl GeoStore {
         self.custom_key_pointer.is_some()
     }
 
-    // TODO: Use this in the metadata insert to do the custom key thing
+    /// Using the stored JSON Pointer, extract the custom primary key for the passed metadata.
     fn extract_custom_key(&self, metadata: &JsonValue) -> Result<[u8; 16]> {
         let ptr = self
             .custom_key_pointer
