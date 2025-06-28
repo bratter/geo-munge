@@ -1,11 +1,10 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader, Lines, Read, Stdin},
-    num::ParseIntError,
     path::Path,
 };
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 
 use crate::message::prelude::*;
 
@@ -37,18 +36,9 @@ impl Input {
         }
     }
 
-    /// Convert the Input into an iterator of line-oriented bytes.
-    pub fn into_data_stream_iter(self) -> DataStreamIterator {
-        DataStreamIterator {
-            inner: self.lines(),
-        }
-    }
-
-    /// Convert the Input into an iterator of usize primary keys.
-    pub fn into_key_iter(self) -> KeyIterator {
-        KeyIterator {
-            inner: self.lines(),
-        }
+    /// Convert the Input into an iterator of line-oriented [`Feature`] types.
+    pub fn into_feature_iter(self) -> FeatureIterator {
+        FeatureIterator::new(self)
     }
 }
 
@@ -86,50 +76,40 @@ impl BufRead for Input {
     }
 }
 
-pub struct DataStreamIterator {
+pub struct FeatureIterator {
     inner: Lines<Input>,
+    count: usize,
 }
 
-impl Iterator for DataStreamIterator {
-    type Item = Result<DataStream>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let line_result = self.inner.next()?;
-
-        match line_result {
-            Ok(mut line) => {
-                // TODO: Avoid recursion?
-                if line.len() == 0 {
-                    self.next()
-                } else {
-                    line.push('\n');
-                    Some(Ok(DataStream::from(line.into_bytes())))
-                }
-            }
-            Err(err) => Some(Err(anyhow!(err))),
+impl FeatureIterator {
+    pub fn new(input: Input) -> Self {
+        Self {
+            inner: input.lines(),
+            count: 0,
         }
     }
 }
 
-pub struct KeyIterator {
-    inner: Lines<Input>,
-}
-
-impl Iterator for KeyIterator {
-    type Item = Result<u32>;
+impl Iterator for FeatureIterator {
+    type Item = Feature;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let line_result = self.inner.next()?;
-
-        match line_result {
-            Ok(line) => {
-                if line.len() == 0 {
-                    self.next()
-                } else {
-                    Some(line.parse().map_err(|err: ParseIntError| anyhow!(err)))
+        while let Some(line_result) = self.inner.next() {
+            match line_result
+                .map_err(Into::<anyhow::Error>::into)
+                .and_then(|s| Ok(s.parse::<Feature>()?))
+            {
+                Ok(f) => {
+                    self.count += 1;
+                    return Some(f);
+                }
+                Err(err) => {
+                    eprintln!("Could not read line {}: {}", self.count, err);
+                    self.count += 1;
+                    continue;
                 }
             }
-            Err(err) => Some(Err(anyhow!(err))),
         }
+        None
     }
 }

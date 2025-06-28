@@ -2,21 +2,22 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use geo::Geometry;
-use geojson::Feature;
 
 use crate::{
     message::prelude::*,
-    server::geo_store::{GeoStore, Knn as KnnTrait, NodeId},
+    server::geo_store::{GeoStore, Knn as KnnTrait},
 };
 
 use super::Context;
 
 pub fn knn(handler: Context, knn: KnnReq) {
     // TODO: Handle custom key format for the find
-    let response = match &knn.data {
-        FindData::Geom(shapes) => process_geom_stream(&handler, knn.k, knn.r, shapes.into_iter()),
+    let response = match knn.data {
+        FindData::Features(shapes) => {
+            process_geom_stream(&handler, knn.k, knn.r, shapes.into_iter())
+        }
         // TODO: Here we need to pull the shape from the Map storage and pass it to the quadtree
-        FindData::Keys(keys) => process_key_stream(&handler, knn.k, knn.r, keys.as_slice()),
+        FindData::Keys(keys) => process_key_stream(&handler, knn.k, knn.r, &keys),
     };
 
     handler.send(Response::KnnData(response));
@@ -36,13 +37,10 @@ fn process_geom_stream(
     handler: &Context,
     k: usize,
     r: Option<f64>,
-    geoms: impl Iterator<Item = Result<Feature>>,
+    geoms: impl Iterator<Item = Feature>,
 ) -> Vec<Result<(u32, f64), String>> {
     geoms
-        .flat_map(|geom| match geom {
-            Ok(g) => exec_knn_on_feature(&handler.store.load(), k, r, g),
-            Err(err) => vec![Err(err.to_string())],
-        })
+        .flat_map(|geom| exec_knn_on_feature(&handler.store.load(), k, r, geom))
         .collect()
 }
 
@@ -55,7 +53,7 @@ fn exec_knn_on_feature<'a>(
     r: Option<f64>,
     feature: Feature,
 ) -> Vec<Result<(u32, f64), String>> {
-    match Geometry::try_from(feature) {
+    match Geometry::try_from(feature.0) {
         Ok(geom) => exec_knn(qt, k, r, &geom).collect(),
         Err(err) => vec![Err(err.to_string())],
     }
@@ -76,16 +74,25 @@ fn process_key_stream(
     handler: &Context,
     k: usize,
     r: Option<f64>,
-    keys: &[NodeId],
+    keys: &KeySet,
 ) -> Vec<Result<(u32, f64), String>> {
     let store = handler.store.load();
     let mut results = Vec::new();
 
-    for key in keys {
-        if let Some(gr) = store.get(*key) {
-            results.extend(exec_knn(&store, k, r, &gr.geometry));
-        } else {
-            todo!()
+    match keys {
+        KeySet::Uid(keys) => {
+            for key in keys {
+                if let Some(gr) = store.get(key) {
+                    results.extend(exec_knn(&store, k, r, &gr.geometry));
+                }
+            }
+        }
+        KeySet::Custom(keys) => {
+            for key in keys {
+                if let Some(gr) = store.get_with_custom_key(key) {
+                    results.extend(exec_knn(&store, k, r, &gr.geometry));
+                }
+            }
         }
     }
 

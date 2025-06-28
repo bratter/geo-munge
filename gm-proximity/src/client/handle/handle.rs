@@ -5,7 +5,7 @@ use crossbeam::channel::{self, Receiver, Sender};
 
 use crate::{args::ClientCommand, message::prelude::*};
 
-use super::{bench, knn, load, reset, Tracker};
+use super::{handlers, Tracker};
 
 /// Client command handler. Translates client commands into requests.
 pub struct CommandHandler {
@@ -34,10 +34,12 @@ impl CommandHandler {
                 self.send(Request::Stats, ResponseHandler::None)?;
                 Ok(())
             }
-            ClientCommand::Reset(r) => reset(self, r),
-            ClientCommand::Load { file } => load(self, file),
-            ClientCommand::Knn(knn_args) => knn(self, knn_args),
-            ClientCommand::Bench(bench_args) => bench(self, bench_args),
+            ClientCommand::Reset(r) => handlers::reset(self, r),
+            ClientCommand::Load { file } => handlers::load(self, file),
+            ClientCommand::Knn(knn_args) => handlers::knn(self, knn_args),
+            ClientCommand::Get(get_args) => handlers::get(self, get_args),
+            ClientCommand::Delete(delete_args) => handlers::delete(self, delete_args),
+            ClientCommand::Bench(bench_args) => handlers::bench(self, bench_args),
         };
 
         // As this is a oneshot and shouldn't be called anywhere else, we don't care about the result
@@ -112,16 +114,26 @@ impl ResponseHandler {
         match res {
             Response::Success(Some(msg)) => println!("{} {}", prefix, msg),
             Response::Success(None) => println!("{} success", prefix),
+            // TODO: When handling done should cross-check number of responses
             Response::Done(n) => println!("{} done with {} responses", prefix, n),
             Response::Stats(n) => println!(
                 "{} QT size={}; key: {:?}; bytes sent={}; bytes recv={}",
                 prefix, n.qt_size, n.key_mode, n.bytes_sent, n.bytes_recv
             ),
-            Response::InsertResult { success, fail } => {
-                println!("{} inserted {}, failed {}", prefix, success, fail)
+            Response::ResultCounts { success, fail } => {
+                println!("{} succeed {}, failed {}", prefix, success, fail)
+            }
+            Response::FeatureData(results) => {
+                for r in results {
+                    println!("{:?}", r);
+                }
+            }
+            Response::MetaData(results) => {
+                for r in results {
+                    println!("{:?}", r);
+                }
             }
             Response::KnnData(results) => println!("{} knn: {:?}", prefix, results),
-            Response::Data => println!("{} data", prefix),
             Response::Error(msg) => println!("{} error: {}", prefix, msg),
             Response::Bench(_) => unreachable!(),
         }

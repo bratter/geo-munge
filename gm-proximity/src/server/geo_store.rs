@@ -5,11 +5,13 @@ use std::sync::{
     Arc,
 };
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use geo::{Geometry, Rect};
 use geojson::JsonValue;
+
+use crate::message::{CustomKey, NodeId};
 
 // TODO: Traits can come from the SpatialIndex crate, but staged here for now
 // TODO: If we want to make the spatial index generic we might need a trait for insert/delete, then use SpatialIndex as
@@ -18,6 +20,7 @@ use geojson::JsonValue;
 // TODO: What about the generic? Likely fine as-is
 // TODO: How to handle errors (if any) in the output? e.g., run into shapes that it can't process
 // TODO: Filter out same key responses
+// FIX: Have to properly manage radian conversion, maybe on insert is best
 pub trait Knn<'a, T: 'a> {
     fn knn_r(&'a self, cmp: &Geometry, k: usize, r: f64) -> impl Iterator<Item = (&'a T, f64)>;
 
@@ -39,8 +42,6 @@ pub trait BboxSearch<T> {
     fn get_bbox(&self, bbox: &Rect) -> impl Iterator<Item = T>;
 }
 
-pub type NodeId = u32;
-
 /// Base record containing the actual data.
 pub struct GeoRecordInner {
     pub id: NodeId,
@@ -54,6 +55,20 @@ pub struct GeoRecordInner {
 /// Shared record type used throughout the system.
 pub type GeoRecord = Arc<GeoRecordInner>;
 
+impl From<&GeoRecordInner> for geojson::Feature {
+    fn from(value: &GeoRecordInner) -> Self {
+        let mut feature: geojson::Feature = geojson::Geometry::from(&value.geometry).into();
+        feature.id = Some(geojson::feature::Id::Number(value.id.into()));
+        feature.properties = match &value.metadata {
+            Some(JsonValue::Object(meta)) => Some(meta.clone()),
+            None => None,
+            _ => unreachable!(),
+        };
+
+        feature
+    }
+}
+
 /// Placeholder spatial index.
 pub struct SpatialIndex;
 
@@ -64,11 +79,7 @@ impl SpatialIndex {
         Ok(())
     }
 
-    pub fn remove(&self, _id: NodeId) {
-        // No-op placeholder
-    }
-
-    pub fn clear(&self) {
+    pub fn remove(&self, _id: &NodeId) {
         // No-op placeholder
     }
 }
@@ -99,7 +110,7 @@ impl BboxSearch<GeoRecord> for SpatialIndex {
 /// TODO: Other options for custom key, or make it generic to save space when not used
 pub struct GeoStore {
     id_index: DashMap<NodeId, GeoRecord, FxBuildHasher>,
-    custom_key: DashMap<[u8; 16], GeoRecord, FxBuildHasher>,
+    custom_key: DashMap<CustomKey, GeoRecord, FxBuildHasher>,
     spatial_index: SpatialIndex,
     custom_key_pointer: Option<String>,
 }
@@ -123,18 +134,6 @@ impl GeoStore {
         let mut store = Self::new();
         store.custom_key_pointer = Some(key_ptr);
         store
-    }
-
-    // TODO: To avoid permutations if we add other things, create a builder? If no builder, create a with capacity and
-    // custom key
-    // TODO: Add with capacity for the spatial index?
-    pub fn with_capacity(capacity: usize) -> Self {
-        GeoStore {
-            id_index: DashMap::with_capacity_and_hasher(capacity, FxBuildHasher::new()),
-            custom_key: DashMap::with_capacity_and_hasher(capacity, FxBuildHasher::new()),
-            spatial_index: SpatialIndex,
-            custom_key_pointer: None,
-        }
     }
 
     pub fn size(&self) -> usize {
@@ -182,25 +181,31 @@ impl GeoStore {
     }
 
     /// Bulk insert multiple records.
-    /// TODO: Work on the input type
     /// TODO: Work on parallelizing and SIMD here
-    /// TODO: Work on error return - stop on first error or just accumulate an error response?
-    pub fn bulk_insert<I>(&self, records: I) -> Result<()>
+    /// TODO: Consider adding failure reasons and/or ids instead of just a count
+    pub fn bulk_insert<I>(&self, records: I) -> (usize, usize)
     where
         I: IntoIterator<Item = (NodeId, Geometry<f64>, Option<JsonValue>)>,
     {
+        let mut insert_count: usize = 0;
+        let mut error_count: usize = 0;
+
         for (id, geometry, metadata) in records {
-            self.insert(id, geometry, metadata)?;
+            match self.insert(id, geometry, metadata) {
+                Ok(_) => insert_count += 1,
+                Err(_) => error_count += 1,
+            }
         }
 
-        Ok(())
+        (insert_count, error_count)
     }
 
     /// Soft-delete a record by ID.
-    /// TODO: Need a delete with custom id method too
-    pub fn delete(&self, id: NodeId) {
-        if let Some((_, record)) = self.id_index.remove(&id) {
-            record.is_deleted.store(true, Ordering::Release);
+    ///
+    /// Returns true if something was freshly deleted, false otherwise.
+    pub fn delete(&self, id: &NodeId) -> bool {
+        if let Some((_, record)) = self.id_index.remove(id) {
+            let is_deleted = record.is_deleted.fetch_or(true, Ordering::Release);
             self.spatial_index.remove(id);
 
             // TODO: Is there a cleaner way of doing this, also that doesn't use an unwrap? This is a reason why we
@@ -212,6 +217,24 @@ impl GeoStore {
                     self.custom_key.remove(&custom_key);
                 }
             }
+            !is_deleted
+        } else {
+            false
+        }
+    }
+
+    /// Soft-delete a record with a custom key.
+    ///
+    /// Returns true if something is freshly deleted, false otherwise.
+    pub fn delete_with_custom_key(&self, custom_key: &CustomKey) -> bool {
+        if let Some((_, record)) = self.custom_key.remove(&custom_key) {
+            let is_deleted = record.is_deleted.fetch_or(true, Ordering::Release);
+            self.id_index.remove(&record.id);
+            self.spatial_index.remove(&record.id);
+
+            !is_deleted
+        } else {
+            false
         }
     }
 
@@ -219,7 +242,7 @@ impl GeoStore {
     ///
     /// This does not check the deletion status, which introduces a small race condition, but is still eventually
     /// consistent.
-    pub fn get(&self, id: NodeId) -> Option<GeoRecord> {
+    pub fn get(&self, id: &NodeId) -> Option<GeoRecord> {
         self.id_index.get(&id).map(|r| Arc::clone(&r))
     }
 
@@ -227,7 +250,7 @@ impl GeoStore {
     ///
     /// Will return [`None`] if the key doesn't exist or there is no custom key on the store. Similar to get, this
     /// does not check deletion status.
-    pub fn get_with_custom_key(&self, custom_key: &[u8; 16]) -> Option<GeoRecord> {
+    pub fn get_with_custom_key(&self, custom_key: &CustomKey) -> Option<GeoRecord> {
         if self.has_custom_key() {
             self.custom_key.get(custom_key).map(|r| Arc::clone(&r))
         } else {
@@ -235,48 +258,26 @@ impl GeoStore {
         }
     }
 
-    /// Retrieve a record by extracting a custom key field from a JSON value.
-    ///
-    /// does not check deletion status.
-    /// Will return [`None`] if the key doesn't exist or there is no custom key on the store. Similar to get, this
-    pub fn get_with_meta(&self, meta: JsonValue) -> Option<GeoRecord> {
-        if let Ok(key) = self.extract_custom_key(&meta) {
-            self.custom_key.get(&key).map(|r| Arc::clone(&r))
-        } else {
-            None
-        }
-    }
-
-    pub fn clear(&self) {
-        self.id_index.clear();
-        self.custom_key.clear();
-        self.spatial_index.clear();
-    }
-
     fn has_custom_key(&self) -> bool {
         self.custom_key_pointer.is_some()
     }
 
     /// Using the stored JSON Pointer, extract the custom primary key for the passed metadata.
-    fn extract_custom_key(&self, metadata: &JsonValue) -> Result<[u8; 16]> {
+    /// TODO: Expose this so that incoming items can determine the custom key before getting/deleting?
+    fn extract_custom_key(&self, metadata: &JsonValue) -> Result<CustomKey> {
         let ptr = self
             .custom_key_pointer
             .as_ref()
-            .ok_or(anyhow!("No custom key pointer"))?;
-        let val = metadata
-            .pointer(ptr.as_str())
+            .ok_or(anyhow!("No custom key pointer"))?
+            .as_str();
+
+        metadata
+            .pointer(ptr)
             .ok_or(anyhow!("Unable to locate field at {}", ptr))?
             .as_str()
             .ok_or(anyhow!("Field is not a string"))?
-            .as_bytes();
-
-        if val.len() <= 16 {
-            let mut bytes = [0u8; 16];
-            bytes[0..val.len()].copy_from_slice(val);
-            Ok(bytes)
-        } else {
-            bail!("Key should be 16 characters or less");
-        }
+            .as_bytes()
+            .try_into()
     }
 }
 

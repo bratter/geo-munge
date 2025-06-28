@@ -5,7 +5,7 @@ use std::fmt::Debug;
 use anyhow::Result;
 use bincode::{Decode, Encode};
 
-use super::{encode::IoCodec, request::KeyMode};
+use super::{encode::IoCodec, request::KeyMode, Feature, JsonValue, NodeId};
 
 #[derive(Debug, Encode, Decode)]
 #[non_exhaustive]
@@ -29,22 +29,25 @@ pub enum Response {
     /// number of layers.
     Stats(Stats),
 
-    /// Insertion result response.
-    ///
-    /// Returns the number of successes and failures
+    /// Response type that captures a count of successes and failures.
     /// TODO: Upgrade to contain failure details?
-    InsertResult { success: usize, fail: usize },
+    ResultCounts { success: usize, fail: usize },
+
+    /// Feature data as a response.
+    ///
+    /// Contains a vector of results of GeoJson Features.
+    FeatureData(Vec<Result<Feature, String>>),
+
+    /// Metadata as a response.
+    ///
+    /// Contains a vector of results of NodeIds and JsonValues.
+    MetaData(Vec<Result<(NodeId, JsonValue), String>>),
 
     /// Knn result data.
     ///
     /// Contains a vector of results from a Knn calculation, wrapped in a result for failed rows.
     /// TODO: Response type without errors, better response type overall
-    KnnData(Vec<Result<(u32, f64), String>>),
-
-    /// Data response.
-    ///
-    /// Any response that requires data to be returned.
-    Data,
+    KnnData(Vec<Result<(NodeId, f64), String>>),
 
     /// An error response.
     ///

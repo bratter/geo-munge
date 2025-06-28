@@ -1,13 +1,12 @@
 //! Requests.
 
-use std::{fmt::Debug, iter::FilterMap, slice::Split, str::FromStr};
+use std::{fmt::Debug, num::ParseIntError, str::FromStr};
 
 use anyhow::{bail, Error, Result};
 use bincode::{Decode, Encode};
 use geo::{Point, Rect};
-use geojson::Feature;
 
-use super::encode::IoCodec;
+use super::{encode::IoCodec, CustomKey, Feature, NodeId};
 
 #[derive(Debug, Encode, Decode)]
 #[non_exhaustive]
@@ -22,18 +21,13 @@ pub enum Request {
     ///
     /// Truncate the quadtree. Options to reset the primary key and bounding box, otherwise will reset these to the
     /// defaults.
-    Reset(ResetReq),
-
-    /// Define the bounding box.
     ///
     /// Will default to the whole Earth bounding box of `[-180, -90, 180, 90]`. Anything outside the bounding box will
     /// be rejected. The bounding box can be grown after initialization, but it cannot be shrunk.
     ///
     /// The underlying quadtree implementation reserves the right to not set the bounding box exactly if it would be
     /// more efficient to choose a large bounding box. It will never be smaller.
-    ///
-    /// TODO: Implement the ability to set the bbox on a quadtree
-    Bbox(Bbox),
+    Reset(ResetReq),
 
     /// Insert request.
     ///
@@ -44,16 +38,15 @@ pub enum Request {
     /// If possible, clients SHOULD batch insertion requests to improve efficiency. Batches should be sized small enough to
     /// avoid over-using memory, but can be larger than 1 to make inserts more efficient. The server MAY choose to
     /// arbitrarily chunk large batches, but will not batch across requests.
-    Insert(DataStream),
+    Insert(Vec<Feature>),
 
-    /// Delete request.
-    ///
-    /// Delete an item using its primary key.
-    ///
-    /// TODO: Implment deletion after metadata work
-    Delete,
+    /// Get items using either the uid or a custom key.
+    Get(GetReq),
 
-    /// Conduct a KNN search on the Quadtree.
+    /// Delete items using either the uid or a custom key.
+    Delete(KeySet),
+
+    /// Conduct a KNN search on the stored data.
     ///
     /// Can take a max count, radius or bounding box constraints, and metadata filters.
     /// TODO: Also do find, also do filters
@@ -77,15 +70,16 @@ impl Request {
     /// tracking after a single response. When false, the server will send at least two responses, the last of which
     /// will be done that will contain the number of messages excluding the done.
     /// TODO: Could signal done with the Done or Success response types instead
+    /// TODO: Do we still need this?
     pub fn is_oneshot(&self) -> bool {
         match self {
             Request::Stats => true,
             Request::Reset(_) => true,
-            Request::Bbox(_) => true,
             Request::Insert(_) => true,
-            Request::Delete => true,
+            Request::Delete(_) => true,
             Request::Knn(_) => false,
             Request::Window => false,
+            Request::Get(_) => false,
             Request::Bench(_) => false,
         }
     }
@@ -111,7 +105,7 @@ impl ResetReq {
 
 /// Key type setting request data.
 ///
-/// Can be used in a [`Request::KeyType`], but more likely to be used in [`Request::Reset`].
+/// Likely to be used in [`Request::Reset`].
 #[derive(Debug, Default, Clone, Encode, Decode)]
 pub enum KeyMode {
     #[default]
@@ -193,59 +187,6 @@ impl FromStr for Bbox {
     }
 }
 
-/// Wrapper type for a stream of shape data.
-#[derive(Debug, Default, Encode, Decode)]
-pub struct DataStream {
-    data: Vec<u8>,
-}
-
-// TODO: This should take a lifetime and be generic over AsRef &[u8], unless this would be worse for Vecs (but think
-// that the froms can just work with either
-impl From<Vec<u8>> for DataStream {
-    fn from(data: Vec<u8>) -> Self {
-        DataStream { data }
-    }
-}
-
-impl From<DataStream> for Vec<u8> {
-    fn from(value: DataStream) -> Self {
-        value.data
-    }
-}
-
-// TODO: The item here needs to also have id and metadata
-impl<'a> IntoIterator for &'a DataStream {
-    type Item = Result<Feature>;
-    type IntoIter = FilterMap<Split<'a, u8, fn(&u8) -> bool>, fn(&[u8]) -> Option<Result<Feature>>>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.data
-            .split(is_newline as fn(&u8) -> bool)
-            .filter_map(filter_map as fn(&[u8]) -> Option<Result<Feature>>)
-    }
-}
-
-fn is_newline(b: &u8) -> bool {
-    *b == b'\n'
-}
-
-fn filter_map(line: &[u8]) -> Option<Result<Feature>> {
-    let line = line.trim_ascii();
-    if line.is_empty() {
-        None
-    } else {
-        Some(parse_line(line))
-    }
-}
-
-/// Convert to a [`Feature`]. Use a function to enable ? usage.
-#[inline]
-fn parse_line(line: &[u8]) -> Result<Feature> {
-    // FIX: Deal with radian conversion appropriately.
-    //geom.to_radians_in_place();
-    Ok(std::str::from_utf8(line)?.parse::<Feature>()?)
-}
-
 #[derive(Debug, Encode, Decode)]
 pub struct KnnReq {
     pub k: usize,
@@ -254,15 +195,67 @@ pub struct KnnReq {
     // TODO: Add filters
 }
 
-// TODO: This should work for find too, covers shapes, pk input, any other modes
 #[derive(Debug, Encode, Decode)]
 pub enum FindData {
     /// Run the find for the stream of passed features.
-    Geom(DataStream),
+    Features(Vec<Feature>),
 
     /// Run the find for a set of primary keys already in the quadtree.
-    /// TODO: Support other key types?
-    Keys(Vec<u32>),
+    Keys(KeySet),
+}
+
+#[derive(Debug, Encode, Decode)]
+pub struct GetReq {
+    pub keys: KeySet,
+    pub meta_only: bool,
+}
+
+#[derive(Debug, Encode, Decode)]
+pub enum KeySet {
+    Uid(Vec<NodeId>),
+    Custom(Vec<CustomKey>),
+}
+
+impl KeySet {
+    pub fn parse_with_type(s: &str, key_bytes: bool) -> Result<Self> {
+        if key_bytes {
+            Self::custom_from_str(s)
+        } else {
+            Self::uid_from_str(s)
+        }
+    }
+
+    pub fn uid_from_str(s: &str) -> Result<Self> {
+        let ks = s
+            .split(',')
+            .map(|b| b.parse())
+            .collect::<Result<Vec<u32>, ParseIntError>>()?
+            .into();
+
+        Ok(ks)
+    }
+
+    pub fn custom_from_str(s: &str) -> Result<Self> {
+        let ks = s
+            .split(',')
+            .map(|b| CustomKey::try_from(b.as_bytes()))
+            .collect::<Result<Vec<CustomKey>>>()?
+            .into();
+
+        Ok(ks)
+    }
+}
+
+impl From<Vec<NodeId>> for KeySet {
+    fn from(value: Vec<NodeId>) -> Self {
+        KeySet::Uid(value)
+    }
+}
+
+impl From<Vec<CustomKey>> for KeySet {
+    fn from(value: Vec<CustomKey>) -> Self {
+        KeySet::Custom(value)
+    }
 }
 
 #[derive(Encode, Decode)]

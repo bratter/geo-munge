@@ -8,7 +8,7 @@ use crate::connection::{MsgToken, Traffic};
 use crate::message::prelude::*;
 use crate::server::geo_store::GeoStore;
 
-use super::{bench, insert, knn, reset, stats};
+use super::handlers;
 
 pub struct Handler {
     store: ArcSwap<GeoStore>,
@@ -47,18 +47,16 @@ impl Handler {
         // TODO: These handlers currently don't return a result. This does mean they miss failures in the channel, and that
         // all other errors are appropriate just to send to the client. Can revist this decision.
         match req {
-            Request::Stats => stats(context, traffic),
-            Request::Reset(r) => reset(context, r),
-            Request::Bbox(_) => {
-                context.send(Response::Error("BBox resetting not implemented".into()))
-            }
-            Request::Insert(i) => insert(context, i),
-            Request::Delete => context.send(Response::Error("Delete not implemented".into())),
-            Request::Knn(knn_data) => knn(context, knn_data),
+            Request::Stats => handlers::stats(context, traffic),
+            Request::Reset(r) => handlers::reset(context, r),
+            Request::Insert(i) => handlers::insert(context, i),
+            Request::Delete(key_set) => handlers::delete(context, key_set),
+            Request::Knn(knn_data) => handlers::knn(context, knn_data),
+            Request::Get(get_req) => handlers::get(context, get_req),
             Request::Window => {
                 context.send(Response::Error("Window queries not implemented".into()))
             }
-            Request::Bench(bench_data) => bench(context, bench_data),
+            Request::Bench(bench_data) => handlers::bench(context, bench_data),
         }
     }
 }

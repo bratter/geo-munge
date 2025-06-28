@@ -2,24 +2,39 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::message::prelude::*;
+use crate::{input_io::Input, message::prelude::*};
 
-use super::{CommandHandler, Input, ResponseHandler};
+use super::{CommandHandler, ResponseHandler};
 
-/// Load command handler
+// TODO: Move these to a more central location if batching required elsewhere and we use the same stats
+// TODO: Is it possible to have this 64kb batch size? How do we measure outside of the bincode serialization?
+//const MAX_BATCH_BYTES: usize = 64 * 1024;
+const MAX_BATCH_COUNT: usize = 100;
+
+/// Load command handler.
+///
+/// Breaks when a send fails as these will be terminal errors, but WARN only on individual line errors as these could be
+/// recoverable.
 pub fn load(handler: &mut CommandHandler, file: Option<PathBuf>) -> Result<()> {
-    // TODO: This might be more efficient if we don't transport this via lines, but grab using byte separators directly,
-    // then have the request take a slice instead of a Vec
-    // TODO: Batch lines
-    for (n, data_result) in Input::try_new(file)?.into_data_stream_iter().enumerate() {
-        match data_result {
-            Ok(data) => {
-                // TODO: Do we want to break out of the loop on an error, or just report on these - think they are
-                // mostly stream faliures, if this is the case then aborting is correct
-                handler.send(Request::Insert(data), ResponseHandler::None)?;
-            }
-            Err(err) => eprintln!("Could not read line {}: {}", n, err),
+    let mut data_stream = Vec::with_capacity(MAX_BATCH_COUNT);
+    let mut batch_count = 0;
+
+    // TODO: After doing all the data structure work, revist this to see if we can make the whole IPC pipeline more
+    // effcienct, specifically less copying and conversion
+    for feature in Input::try_new(file)?.into_feature_iter() {
+        if batch_count >= MAX_BATCH_COUNT {
+            let batch = std::mem::replace(&mut data_stream, Vec::with_capacity(MAX_BATCH_COUNT));
+            handler.send(Request::Insert(batch), ResponseHandler::None)?;
+            batch_count = 0;
         }
+
+        data_stream.push(feature);
+        batch_count += 1;
+    }
+
+    // Do a final flush
+    if data_stream.len() > 0 {
+        handler.send(Request::Insert(data_stream), ResponseHandler::None)?;
     }
 
     Ok(())

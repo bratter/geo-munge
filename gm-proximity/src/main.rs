@@ -7,6 +7,7 @@ mod bench;
 mod client;
 mod connection;
 mod ctrlc;
+mod input_io;
 mod message;
 mod server;
 

@@ -1,14 +1,20 @@
 mod bench;
+mod delete;
+mod get;
 mod handle;
 mod knn;
 mod load;
 mod reset;
 mod tracker;
 
-use super::input_io::Input;
-use bench::bench;
+mod handlers {
+    pub use super::bench::bench;
+    pub use super::delete::delete;
+    pub use super::get::get;
+    pub use super::knn::knn;
+    pub use super::load::load;
+    pub use super::reset::reset;
+}
+
 pub use handle::{CommandHandler, ResponseHandler};
-use knn::knn;
-use load::load;
-use reset::reset;
 pub use tracker::Tracker;
