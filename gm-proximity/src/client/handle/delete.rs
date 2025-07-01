@@ -2,7 +2,7 @@ use crate::{args::DeleteArgs, message::prelude::*};
 
 use anyhow::Result;
 
-use super::{CommandHandler, ResponseHandler};
+use super::CommandHandler;
 
 /// Delete command handler.
 ///
@@ -10,7 +10,7 @@ use super::{CommandHandler, ResponseHandler};
 pub fn delete(handler: &mut CommandHandler, del_args: DeleteArgs) -> Result<()> {
     let keys = KeySet::parse_with_type(&del_args.keys, del_args.key_bytes)?;
 
-    handler.send(Request::Delete(keys), ResponseHandler::None)?;
+    handler.send(Request::Delete(keys))?;
 
     Ok(())
 }

@@ -9,6 +9,7 @@ use super::{handlers, Tracker};
 
 /// Client command handler. Translates client commands into requests.
 pub struct CommandHandler {
+    pub reponse_handler: ResponseHandler,
     request_tx: Sender<(u32, Request)>,
     tracker: Tracker,
     done_send: Sender<()>,
@@ -19,6 +20,7 @@ impl CommandHandler {
     pub fn new(request_tx: Sender<(u32, Request)>, tracker: Tracker) -> (Self, Receiver<()>) {
         let (done_send, done_recv) = channel::bounded::<()>(1);
         let handler = Self {
+            reponse_handler: ResponseHandler::None,
             request_tx,
             tracker,
             done_send,
@@ -31,7 +33,7 @@ impl CommandHandler {
     pub fn handle(&mut self, req: ClientCommand) -> Result<()> {
         let res = match req {
             ClientCommand::Stats => {
-                self.send(Request::Stats, ResponseHandler::None)?;
+                self.send(Request::Stats)?;
                 Ok(())
             }
             ClientCommand::Reset(r) => handlers::reset(self, r),
@@ -39,6 +41,7 @@ impl CommandHandler {
             ClientCommand::Knn(knn_args) => handlers::knn(self, knn_args),
             ClientCommand::Get(get_args) => handlers::get(self, get_args),
             ClientCommand::Delete(delete_args) => handlers::delete(self, delete_args),
+            ClientCommand::Repl => handlers::repl(self),
             ClientCommand::Bench(bench_args) => handlers::bench(self, bench_args),
         };
 
@@ -52,16 +55,22 @@ impl CommandHandler {
     /// Send a request for dispatch.
     ///
     /// Will block until the request channel has capacity.
-    pub fn send(&mut self, req: Request, handler: ResponseHandler) -> Result<()> {
+    pub fn send(&mut self, req: Request) -> Result<()> {
         // Get an id and bump to the next one
         let id = self.next_req_id;
         self.next_req_id += 1;
 
         // Track the request before sending so we know when we have received responses
-        let _ = self.tracker.track(id, &req, handler);
+        // TODO: Unwind the tracking if this fails?
+        let _ = self.tracker.track(id, &req, self.reponse_handler.clone());
         self.request_tx.send((id, req))?;
 
         Ok(())
+    }
+
+    /// Report the number of outstanding requests in the tracker.
+    pub fn outstanding(&self) -> usize {
+        self.tracker.outstanding()
     }
 }
 
@@ -71,22 +80,32 @@ impl CommandHandler {
 // (responses are single threaded anyway, and blocking requests is unlikely to be an issue) use RWLock (unlikely to
 // help), wrapping the TrackerData in an Arc and using that to clone, or something else.
 // TODO: We can't clone if we want to mutate anyway
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub enum ResponseHandler {
+    #[default]
     None,
+    Repl(Sender<()>),
     Bench(Option<Duration>),
 }
 
 impl ResponseHandler {
     // TODO: Better flow with duration
-    pub fn handle(&self, id: u32, duration: Option<Duration>, res: &Response) {
+    pub fn handle(&self, id: u32, done: Option<Duration>, res: &Response) {
         // TODO: Remove when stable or a non-clone solution found
         // Checking that the response handler doesn't get too big to clone
         debug_assert!(std::mem::size_of::<ResponseHandler>() <= 32);
 
         match self {
             // TODO: As a placeholder, print responses until we have better handling
-            ResponseHandler::None => Self::print(id, duration, res),
+            ResponseHandler::None => Self::print(id, done, res),
+            // TODO: Perhaps some more sophisticated repl handling here
+            ResponseHandler::Repl(sender) => {
+                // Signal that the request is complete when the last response has been recieved
+                Self::print(id, done, res);
+                if done.is_some() {
+                    sender.send(()).expect("channel disconnected");
+                }
+            }
             ResponseHandler::Bench(receive_delay) => {
                 match res {
                     // The response just contains empty data that we ignore, but we delay to simulate io lag

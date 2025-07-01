@@ -12,6 +12,11 @@ use super::CommandHandler;
 
 /// Benchmarking command handler
 pub fn bench(handler: &mut CommandHandler, bench: BenchClient) -> Result<()> {
+    // Set delays ands build the response handler
+    let receive_delay = bench.receive_delay.map(Duration::from_millis);
+    let delay = bench.send_delay.map(Duration::from_millis);
+    handler.reponse_handler = ResponseHandler::Bench(receive_delay);
+
     // Determine the total data and the amount shipped per request
     // This is a duplicate of what we do in the wrapper
     let total_data = bench.total_data * 1024 * 1024;
@@ -23,9 +28,6 @@ pub fn bench(handler: &mut CommandHandler, bench: BenchClient) -> Result<()> {
             bench.request_size
         );
     }
-
-    let receive_delay = bench.receive_delay.map(Duration::from_millis);
-    let delay = bench.send_delay.map(Duration::from_millis);
 
     for _ in 0..request_count {
         if let Some(t) = delay {
@@ -41,10 +43,7 @@ pub fn bench(handler: &mut CommandHandler, bench: BenchClient) -> Result<()> {
             data,
         };
 
-        handler.send(
-            Request::Bench(bench_req),
-            ResponseHandler::Bench(receive_delay),
-        )?;
+        handler.send(Request::Bench(bench_req))?;
     }
 
     Ok(())

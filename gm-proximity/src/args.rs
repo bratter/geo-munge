@@ -49,6 +49,9 @@ pub enum ClientCommand {
     /// It's possible to set k=1 for this, but to avoid setting k, use find to get the single nearest neighbor.
     Knn(KnnArgs),
 
+    /// Start a REPL loop.
+    Repl,
+
     /// Benchmarking command to load test the server.
     ///
     /// It can be used in a standalone client, but should be used by the main benchmarking command.

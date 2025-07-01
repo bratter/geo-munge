@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::{args::KnnArgs, input_io::Input, message::prelude::*};
 
-use super::{CommandHandler, ResponseHandler};
+use super::CommandHandler;
 
 /// Knn command handler
 /// TODO: Fix this - it is a bare minimum test version - which at least is reporting results, even if the results don't
@@ -35,7 +35,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
             data: find_data,
         };
 
-        handler.send(Request::Knn(knn), ResponseHandler::None)?;
+        handler.send(Request::Knn(knn))?;
     } else {
         // Here we have IO
         let input = Input::try_new(knn_args.file)?;
@@ -64,7 +64,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
                     r: knn_args.r,
                     data: FindData::Keys(ks),
                 };
-                handler.send(Request::Knn(knn_req), ResponseHandler::None)?;
+                handler.send(Request::Knn(knn_req))?;
             }
         } else {
             // TODO: Here we are just doing one feature per request... batch this
@@ -75,7 +75,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
                     r: knn_args.r,
                     data: FindData::Features(vec![f]),
                 };
-                handler.send(Request::Knn(knn_req), ResponseHandler::None)?;
+                handler.send(Request::Knn(knn_req))?;
             }
         }
     }

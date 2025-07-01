@@ -2,7 +2,7 @@ use crate::{args::GetArgs, message::prelude::*};
 
 use anyhow::Result;
 
-use super::{CommandHandler, ResponseHandler};
+use super::CommandHandler;
 
 /// Get command handler.
 ///
@@ -10,13 +10,10 @@ use super::{CommandHandler, ResponseHandler};
 pub fn get(handler: &mut CommandHandler, get_args: GetArgs) -> Result<()> {
     let keys = KeySet::parse_with_type(&get_args.keys, get_args.key_bytes)?;
 
-    handler.send(
-        Request::Get(GetReq {
-            keys,
-            meta_only: get_args.meta_only,
-        }),
-        ResponseHandler::None,
-    )?;
+    handler.send(Request::Get(GetReq {
+        keys,
+        meta_only: get_args.meta_only,
+    }))?;
 
     Ok(())
 }

@@ -93,20 +93,24 @@ impl FeatureIterator {
 impl Iterator for FeatureIterator {
     type Item = Feature;
 
+    // The next method silently filters blank lines and reports errors on all other parse failures
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(line_result) = self.inner.next() {
-            match line_result
-                .map_err(Into::<anyhow::Error>::into)
-                .and_then(|s| Ok(s.parse::<Feature>()?))
-            {
-                Ok(f) => {
-                    self.count += 1;
-                    return Some(f);
-                }
+            match line_result {
+                Ok(s) if s.len() == 0 => {}
+                Ok(s) => match s.parse::<Feature>() {
+                    Ok(f) => {
+                        self.count += 1;
+                        return Some(f);
+                    }
+                    Err(err) => {
+                        eprintln!("Could not read line {}: {}", self.count, err);
+                        self.count += 1;
+                    }
+                },
                 Err(err) => {
                     eprintln!("Could not read line {}: {}", self.count, err);
                     self.count += 1;
-                    continue;
                 }
             }
         }

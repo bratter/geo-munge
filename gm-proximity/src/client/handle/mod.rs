@@ -4,6 +4,7 @@ mod get;
 mod handle;
 mod knn;
 mod load;
+mod repl;
 mod reset;
 mod tracker;
 
@@ -13,6 +14,7 @@ mod handlers {
     pub use super::get::get;
     pub use super::knn::knn;
     pub use super::load::load;
+    pub use super::repl::repl;
     pub use super::reset::reset;
 }
 

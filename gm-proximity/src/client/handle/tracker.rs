@@ -80,13 +80,13 @@ impl Tracker {
         let td = self.get(id)?;
 
         let is_oneshot = self.is_oneshot(id)?;
-        let duration = if is_oneshot || matches!(res, Response::Done(_)) {
+        let done = if is_oneshot || matches!(res, Response::Done(_)) {
             Some(self.retire(id)?)
         } else {
             None
         };
 
-        td.handler.handle(id, duration, &res);
+        td.handler.handle(id, done, &res);
 
         Ok(())
     }
