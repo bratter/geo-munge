@@ -8,7 +8,7 @@ use std::{
     str::FromStr,
 };
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use bincode::{BorrowDecode, Decode, Encode};
 
 mod encode;
@@ -30,7 +30,7 @@ pub mod prelude {
 // TODO: Make this work with numeric JSON values, or at least not insert them?
 pub type NodeId = u32;
 
-#[derive(Debug, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
 pub struct CustomKey([u8; 16]);
 
 impl TryFrom<&[u8]> for CustomKey {
@@ -43,6 +43,23 @@ impl TryFrom<&[u8]> for CustomKey {
             Ok(CustomKey(bytes))
         } else {
             bail!("Key should be 16 characters or less");
+        }
+    }
+}
+
+impl TryFrom<&geojson::JsonValue> for CustomKey {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &geojson::JsonValue) -> Result<Self, Self::Error> {
+        match value {
+            geojson::JsonValue::Number(n) => n
+                .as_i64()
+                .ok_or(anyhow!("Cannot cast to i64"))?
+                .to_le_bytes()
+                .as_slice()
+                .try_into(),
+            geojson::JsonValue::String(s) => s.as_bytes().try_into(),
+            _ => bail!("Field is not a string or i64"),
         }
     }
 }

@@ -5,7 +5,7 @@ use std::sync::{
     Arc,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use geo::{Geometry, Rect};
@@ -146,9 +146,6 @@ impl GeoStore {
     ///
     /// Will error if the key already exists.
     ///
-    /// TODO: Could also error if the if already exists - note that the multiple key arrangement needs handling here and
-    /// in the meta insert
-    /// TODO: Have to handle cases where keys already exist - could be some interesting race conditions
     /// WARN: Revisit prevention of race conditions on inserts - id_index should be primary, and everything else synced,
     /// but need to work through how to synchronize? We should be able to assume that the primary key will always be
     /// correct - impose that condition on the caller, and should also be the first check that happens, so if the caller
@@ -167,16 +164,37 @@ impl GeoStore {
             is_deleted: AtomicBool::new(false),
         });
 
-        // Do this after the record to avoid a double conditional, the unwrap is fine as we wrap above
+        // Do this after the record to avoid a double conditional
         // Best to do before the other inserts as this can easily fail
+        // No need to rollback here on failure as this is the first insert
         if self.has_custom_key() {
-            let custom_key = self.extract_custom_key(&record.metadata.as_ref().unwrap())?;
-            self.custom_key.insert(custom_key, Arc::clone(&record));
+            match &record.metadata {
+                Some(value) => {
+                    let custom_key = self.extract_custom_key(value)?;
+                    match self.custom_key.entry(custom_key) {
+                        dashmap::Entry::Occupied(_) => {
+                            bail!("Duplicate key {:x} for custom key", custom_key);
+                        }
+                        dashmap::Entry::Vacant(vacant) => vacant.insert(Arc::clone(&record)),
+                    }
+                }
+                None => bail!("Custom key set, but no meta available"),
+            };
         }
 
-        // TODO: Going to need some sort of rollback on inserts - maybe use entry API
-        self.spatial_index.insert(&record)?;
-        self.id_index.insert(id, record);
+        if let Err(err) = self.spatial_index.insert(&record) {
+            self.delete(&id);
+            bail!(err);
+        }
+
+        match self.id_index.entry(id) {
+            dashmap::Entry::Occupied(_) => {
+                self.delete(&id);
+                bail!("Duplicate key {}", id);
+            }
+            dashmap::Entry::Vacant(vacant) => vacant.insert(record),
+        };
+
         Ok(())
     }
 
@@ -263,6 +281,7 @@ impl GeoStore {
     }
 
     /// Using the stored JSON Pointer, extract the custom primary key for the passed metadata.
+    /// This supports both string and i64 keys
     /// TODO: Expose this so that incoming items can determine the custom key before getting/deleting?
     fn extract_custom_key(&self, metadata: &JsonValue) -> Result<CustomKey> {
         let ptr = self
@@ -274,9 +293,6 @@ impl GeoStore {
         metadata
             .pointer(ptr)
             .ok_or(anyhow!("Unable to locate field at {}", ptr))?
-            .as_str()
-            .ok_or(anyhow!("Field is not a string"))?
-            .as_bytes()
             .try_into()
     }
 }

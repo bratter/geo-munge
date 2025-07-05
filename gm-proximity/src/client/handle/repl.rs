@@ -265,11 +265,11 @@ fn build_path() -> Option<PathBuf> {
 
 fn build_reset() -> Option<ResetArgs> {
     let key_type = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("What key type?")
+        .with_prompt("What key type (esc to cancel)?")
         .items(&["Auto", "Custom Increment", "Custom Value"])
         .default(0)
-        .interact()
-        .unwrap();
+        .interact_opt()
+        .unwrap()?;
 
     let json_ptr: Option<String> = if key_type > 0 {
         let ptr = Input::with_theme(&ColorfulTheme::default())

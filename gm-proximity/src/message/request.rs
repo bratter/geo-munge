@@ -2,7 +2,7 @@
 
 use std::{fmt::Debug, num::ParseIntError, str::FromStr};
 
-use anyhow::{bail, Error, Result};
+use anyhow::{bail, Error, Ok, Result};
 use bincode::{Decode, Encode};
 use geo::{Point, Rect};
 
@@ -159,6 +159,7 @@ impl From<Bbox> for Rect {
     }
 }
 
+// TODO: Better error messages for floats on let entries, and better bounds checking
 impl FromStr for Bbox {
     type Err = Error;
 
@@ -236,11 +237,14 @@ impl KeySet {
     }
 
     pub fn custom_from_str(s: &str) -> Result<Self> {
-        let ks = s
-            .split(',')
-            .map(|b| CustomKey::try_from(b.as_bytes()))
-            .collect::<Result<Vec<CustomKey>>>()?
-            .into();
+        let ks = match s.parse::<geojson::JsonValue>()? {
+            geojson::JsonValue::Array(arr) => arr
+                .iter()
+                .map(CustomKey::try_from)
+                .collect::<Result<Vec<CustomKey>>>()?
+                .into(),
+            v => vec![CustomKey::try_from(&v)?].into(),
+        };
 
         Ok(ks)
     }
