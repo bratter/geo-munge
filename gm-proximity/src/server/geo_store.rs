@@ -10,39 +10,13 @@ use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use geo::{Geometry, Rect};
 use geojson::JsonValue;
+use spatial::{BasicQuadTree, BboxSearch, Knn, SpatialIndex};
 
-use crate::message::{CustomKey, NodeId};
-
-// TODO: Traits can come from the SpatialIndex crate, but staged here for now
-// TODO: If we want to make the spatial index generic we might need a trait for insert/delete, then use SpatialIndex as
-// a wrapper type
-// TODO: GeoNum or similar for the numeric type?
-// TODO: What about the generic? Likely fine as-is
-// TODO: How to handle errors (if any) in the output? e.g., run into shapes that it can't process
-// TODO: Filter out same key responses
-// FIX: Have to properly manage radian conversion, maybe on insert is best
-pub trait Knn<'a, T: 'a> {
-    fn knn_r(&'a self, cmp: &Geometry, k: usize, r: f64) -> impl Iterator<Item = (&'a T, f64)>;
-
-    fn knn(&'a self, cmp: &Geometry, k: usize) -> impl Iterator<Item = (&'a T, f64)> {
-        self.knn_r(cmp, k, std::f64::INFINITY)
-    }
-
-    fn find_nearest_r(&'a self, cmp: &Geometry, r: f64) -> Option<(&'a T, f64)> {
-        self.knn_r(cmp, 1, r).next()
-    }
-
-    fn find_nearest(&'a self, cmp: &Geometry) -> Option<(&'a T, f64)> {
-        self.knn(cmp, 1).next()
-    }
-}
-
-pub trait BboxSearch<T> {
-    /// Query spatial index by bounding box. Returns an iterator.
-    fn get_bbox(&self, bbox: &Rect) -> impl Iterator<Item = T>;
-}
+// TODO: Move Bbox?
+use crate::message::{prelude::Bbox, CustomKey, NodeId};
 
 /// Base record containing the actual data.
+/// FIX: Have to properly manage radian conversion, maybe on insert is best
 pub struct GeoRecordInner {
     pub id: NodeId,
     pub geometry: Geometry<f64>,
@@ -69,35 +43,15 @@ impl From<&GeoRecordInner> for geojson::Feature {
     }
 }
 
-/// Placeholder spatial index.
-pub struct SpatialIndex;
-
-impl SpatialIndex {
-    // TODO: Can this fail, e.g., if the shape is outside the bbox
-    pub fn insert(&self, _record: &GeoRecord) -> Result<()> {
-        // No-op placeholder
-        Ok(())
-    }
-
-    pub fn remove(&self, _id: &NodeId) {
-        // No-op placeholder
+impl AsRef<Geometry> for GeoRecordInner {
+    fn as_ref(&self) -> &Geometry {
+        &self.geometry
     }
 }
 
-impl Knn<'_, GeoRecord> for SpatialIndex {
-    fn knn_r(
-        &self,
-        _cmp: &Geometry,
-        _k: usize,
-        _r: f64,
-    ) -> impl Iterator<Item = (&GeoRecord, f64)> {
-        std::iter::empty()
-    }
-}
-
-impl BboxSearch<GeoRecord> for SpatialIndex {
-    fn get_bbox(&self, _bbox: &Rect) -> impl Iterator<Item = GeoRecord> {
-        std::iter::empty()
+impl PartialEq<NodeId> for GeoRecordInner {
+    fn eq(&self, other: &NodeId) -> bool {
+        &self.id == other
     }
 }
 
@@ -111,16 +65,17 @@ impl BboxSearch<GeoRecord> for SpatialIndex {
 pub struct GeoStore {
     id_index: DashMap<NodeId, GeoRecord, FxBuildHasher>,
     custom_key: DashMap<CustomKey, GeoRecord, FxBuildHasher>,
-    spatial_index: SpatialIndex,
+    spatial_index: BasicQuadTree<GeoRecord>,
     custom_key_pointer: Option<String>,
 }
 
+// TODO: Should the bbox struct be pulled into this module instead?
 impl GeoStore {
-    pub fn new() -> Self {
+    pub fn new(bbox: geo::Rect) -> Self {
         GeoStore {
             id_index: DashMap::with_hasher(FxBuildHasher::new()),
             custom_key: DashMap::with_hasher(FxBuildHasher::new()),
-            spatial_index: SpatialIndex,
+            spatial_index: BasicQuadTree::new(bbox),
             custom_key_pointer: None,
         }
     }
@@ -130,8 +85,8 @@ impl GeoStore {
     /// The custom index is extracted from each record's metadata using JSON Pointer passed with this call. This means
     /// that all entries using a custom key must have metadata. See https://datatracker.ietf.org/doc/html/rfc6901 for
     /// details on JSON pointer syntax.
-    pub fn with_custom_key(key_ptr: String) -> Self {
-        let mut store = Self::new();
+    pub fn with_custom_key(bbox: Rect, key_ptr: String) -> Self {
+        let mut store = Self::new(bbox);
         store.custom_key_pointer = Some(key_ptr);
         store
     }
@@ -182,7 +137,7 @@ impl GeoStore {
             };
         }
 
-        if let Err(err) = self.spatial_index.insert(&record) {
+        if let Err(err) = self.spatial_index.insert(Arc::clone(&record)) {
             self.delete(&id);
             bail!(err);
         }
@@ -299,18 +254,18 @@ impl GeoStore {
 
 impl Default for GeoStore {
     fn default() -> Self {
-        Self::new()
+        Self::new(Bbox::default().into())
     }
 }
 
-impl Knn<'_, GeoRecord> for GeoStore {
-    fn knn_r(&self, cmp: &Geometry, k: usize, r: f64) -> impl Iterator<Item = (&GeoRecord, f64)> {
+impl Knn<GeoRecord> for GeoStore {
+    fn knn_r(&self, cmp: &Geometry, k: usize, r: f64) -> impl Iterator<Item = (GeoRecord, f64)> {
         self.spatial_index.knn_r(cmp, k, r)
     }
 }
 
-impl BboxSearch<GeoRecord> for GeoStore {
-    fn get_bbox(&self, bbox: &Rect) -> impl Iterator<Item = GeoRecord> {
+impl BboxSearch<'_, GeoRecord> for GeoStore {
+    fn get_bbox(&self, bbox: &Rect) -> impl Iterator<Item = &GeoRecord> {
         self.spatial_index
             .get_bbox(bbox)
             .filter(|r| !r.is_deleted.load(Ordering::Acquire))

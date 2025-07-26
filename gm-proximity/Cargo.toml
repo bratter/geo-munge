@@ -11,6 +11,7 @@ ctrlc = "3.4.6"
 geojson = { workspace = true }
 geo = { workspace = true }
 geolib = { workspace = true }
+spatial = { workspace = true }
 dialoguer = "0.11.0"
 atty = "0.2.14"
 mio = { version = "1.0.3", features = ["net", "os-ext"] }

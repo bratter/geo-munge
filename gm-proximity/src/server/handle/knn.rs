@@ -2,11 +2,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use geo::Geometry;
+use spatial::Knn as KnnTrait;
 
-use crate::{
-    message::prelude::*,
-    server::geo_store::{GeoStore, Knn as KnnTrait},
-};
+use crate::{message::prelude::*, server::geo_store::GeoStore};
 
 use super::Context;
 

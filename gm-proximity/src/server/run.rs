@@ -133,7 +133,7 @@ pub fn run(context: Context<Config>) -> Result<()> {
     // to chunk responses
     // TODO: Initializing with the default GeoStore options. This should be considered and aligned with bounding box and
     // key mode before finalizing (esp. given key mode is stored in the handler)
-    let geo_store = ArcSwap::from(Arc::new(GeoStore::new()));
+    let geo_store = ArcSwap::from(Arc::new(GeoStore::default()));
     let handler = Handler::new(geo_store, response_tx);
 
     // TODO: Add parallelism back with better threading mechanism, note need to keep handler lightweight and clonable

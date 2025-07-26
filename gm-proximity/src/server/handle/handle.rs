@@ -131,7 +131,7 @@ mod test {
     impl<'a> Context<'a> {
         pub fn make_store() -> (ArcSwap<GeoStore>, ArcSwap<KeyGenerator>) {
             (
-                ArcSwap::from(Arc::new(GeoStore::new())),
+                ArcSwap::from(Arc::new(GeoStore::default())),
                 ArcSwap::from(Arc::new(KeyGenerator::default())),
             )
         }
