@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["proximity", "gm-proximity", "meta", "geolib", "bench", "convert"]
+members = ["proximity", "gm-proximity", "meta", "geolib", "bench", "convert", "spatial"]
 exclude = ["data/*"]
 
 [workspace.package]
@@ -20,6 +20,7 @@ wkt = "0.13.0"
 wkb = "0.8.0"
 geo-traits = "0.2.0"
 geolib = { path = "geolib" }
+spatial = { path = "spatial" }
 # TODO: Is serde even required? And should rand be dev or bench only?
 
 [profile.debug-release]

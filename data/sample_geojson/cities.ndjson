@@ -1,0 +1,20 @@
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [-74.006, 40.7128]}, "properties": {"city": "New York"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [-118.2437, 34.0522]}, "properties": {"city": "Los Angeles"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [-0.1276, 51.5074]}, "properties": {"city": "London"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [2.3522, 48.8566]}, "properties": {"city": "Paris"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [13.405, 52.52]}, "properties": {"city": "Berlin"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [37.6173, 55.7558]}, "properties": {"city": "Moscow"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [31.2357, 30.0444]}, "properties": {"city": "Cairo"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [18.4241, -33.9249]}, "properties": {"city": "Cape Town"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [36.8219, -1.2921]}, "properties": {"city": "Nairobi"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [55.2708, 25.2048]}, "properties": {"city": "Dubai"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [72.8777, 19.0760]}, "properties": {"city": "Mumbai"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [100.5018, 13.7563]}, "properties": {"city": "Bangkok"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [103.8198, 1.3521]}, "properties": {"city": "Singapore"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [151.2093, -33.8688]}, "properties": {"city": "Sydney"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [174.7633, -36.8485]}, "properties": {"city": "Auckland"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [139.6917, 35.6895]}, "properties": {"city": "Tokyo"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [126.9780, 37.5665]}, "properties": {"city": "Seoul"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [-58.3816, -34.6037]}, "properties": {"city": "Buenos Aires"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [-46.6333, -23.5505]}, "properties": {"city": "São Paulo"}}
+{"type": "Feature", "geometry": {"type": "Point", "coordinates": [-99.1332, 19.4326]}, "properties": {"city": "Mexico City"}}

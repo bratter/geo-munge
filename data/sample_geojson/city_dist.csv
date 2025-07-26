@@ -1,0 +1,401 @@
+﻿city_a,city_b,distance
+New York,New York,0
+New York,Los Angeles,3935751.691
+New York,London,5570243.013
+New York,Paris,5837248.967
+New York,Berlin,6385012.405
+New York,Moscow,7510274.981
+New York,Cairo,9022005.304
+New York,Cape Town,12564845.72
+New York,Nairobi,11843182.95
+New York,Dubai,11008089.32
+New York,Mumbai,12538033.39
+New York,Bangkok,13931997.08
+New York,Singapore,15332519.27
+New York,Sydney,15988777.59
+New York,Auckland,14193888.25
+New York,Tokyo,10848822.98
+New York,Seoul,11052592.09
+New York,Buenos Aires,8526205.891
+New York,São Paulo,7685636.178
+New York,Mexico City,3359387.681
+Los Angeles,New York,3935751.691
+Los Angeles,Los Angeles,0
+Los Angeles,London,8755624.748
+Los Angeles,Paris,9085521.365
+Los Angeles,Berlin,9309688.172
+Los Angeles,Moscow,9769111.182
+Los Angeles,Cairo,12200731.25
+Los Angeles,Cape Town,16050870.37
+Los Angeles,Nairobi,15544490.42
+Los Angeles,Dubai,13390524.61
+Los Angeles,Mumbai,13991201.8
+Los Angeles,Bangkok,13303092.22
+Los Angeles,Singapore,14120995.62
+Los Angeles,Sydney,12073523.41
+Los Angeles,Auckland,10496496.62
+Los Angeles,Tokyo,8815485.532
+Los Angeles,Seoul,9585810.965
+Los Angeles,Buenos Aires,9852036.791
+Los Angeles,São Paulo,9906386.834
+Los Angeles,Mexico City,2490486.409
+London,New York,5570243.013
+London,Los Angeles,8755624.748
+London,London,0
+London,Paris,343549.2237
+London,Berlin,931557.1801
+London,Moscow,2500527.009
+London,Cairo,3511304.672
+London,Cape Town,9671010.488
+London,Nairobi,6820526.143
+London,Dubai,5473423.667
+London,Mumbai,7191692.688
+London,Bangkok,9531818.556
+London,Singapore,10847846.31
+London,Sydney,16993944.86
+London,Auckland,18336020.68
+London,Tokyo,9558719.626
+London,Seoul,8857356.248
+London,Buenos Aires,11127820.86
+London,São Paulo,9497423.443
+London,Mexico City,8928755.53
+Paris,New York,5837248.967
+Paris,Los Angeles,9085521.365
+Paris,London,343549.2237
+Paris,Paris,0
+Paris,Berlin,877464.5379
+Paris,Moscow,2486251.719
+Paris,Cairo,3210015.406
+Paris,Cape Town,9341751.727
+Paris,Nairobi,6483896.622
+Paris,Dubai,5246730.213
+Paris,Mumbai,7009342.486
+Paris,Bangkok,9443115.346
+Paris,Singapore,10729039.14
+Paris,Sydney,16960520.8
+Paris,Auckland,18545324.17
+Paris,Tokyo,9712084.564
+Paris,Seoul,8965745.714
+Paris,Buenos Aires,11050134.14
+Paris,São Paulo,9401903.621
+Paris,Mexico City,9196265.978
+Berlin,New York,6385012.405
+Berlin,Los Angeles,9309688.172
+Berlin,London,931557.1801
+Berlin,Paris,877464.5379
+Berlin,Berlin,0
+Berlin,Moscow,1608833.558
+Berlin,Cairo,2891838.204
+Berlin,Cape Town,9624604.922
+Berlin,Nairobi,6370786.672
+Berlin,Dubai,4624302.928
+Berlin,Mumbai,6286158.062
+Berlin,Bangkok,8603261.99
+Berlin,Singapore,9916312.551
+Berlin,Sydney,16094522.18
+Berlin,Auckland,17746703.27
+Berlin,Tokyo,8916118.068
+Berlin,Seoul,8126794.048
+Berlin,Buenos Aires,11909533.57
+Berlin,São Paulo,10252879.62
+Berlin,Mexico City,9726681.441
+Moscow,New York,7510274.981
+Moscow,Los Angeles,9769111.182
+Moscow,London,2500527.009
+Moscow,Paris,2486251.719
+Moscow,Berlin,1608833.558
+Moscow,Moscow,0
+Moscow,Cairo,2902990.438
+Moscow,Cape Town,10137415.42
+Moscow,Nairobi,6343857.388
+Moscow,Dubai,3686600.383
+Moscow,Mumbai,5027968.507
+Moscow,Bangkok,7064474.008
+Moscow,Singapore,8420723.783
+Moscow,Sydney,14496178.58
+Moscow,Auckland,16198354.51
+Moscow,Tokyo,7478251.114
+Moscow,Seoul,6605529.499
+Moscow,Buenos Aires,13475572.36
+Moscow,São Paulo,11806428.32
+Moscow,Mexico City,10719409.07
+Cairo,New York,9022005.304
+Cairo,Los Angeles,12200731.25
+Cairo,London,3511304.672
+Cairo,Paris,3210015.406
+Cairo,Berlin,2891838.204
+Cairo,Moscow,2902990.438
+Cairo,Cairo,0
+Cairo,Cape Town,7239256.944
+Cairo,Nairobi,3534491.623
+Cairo,Dubai,2423355.923
+Cairo,Mumbai,4358216.25
+Cairo,Bangkok,7269041.374
+Cairo,Singapore,8260261.395
+Cairo,Sydney,14416556.39
+Cairo,Auckland,16569539.26
+Cairo,Tokyo,9564321.357
+Cairo,Seoul,8485757.755
+Cairo,Buenos Aires,11812761.3
+Cairo,São Paulo,10219666.73
+Cairo,Mexico City,12368600.6
+Cape Town,New York,12564845.72
+Cape Town,Los Angeles,16050870.37
+Cape Town,London,9671010.488
+Cape Town,Paris,9341751.727
+Cape Town,Berlin,9624604.922
+Cape Town,Moscow,10137415.42
+Cape Town,Cairo,7239256.944
+Cape Town,Cape Town,0
+Cape Town,Nairobi,4102473.764
+Cape Town,Dubai,7639965.1
+Cape Town,Mumbai,8242563.943
+Cape Town,Bangkok,10145352.35
+Cape Town,Singapore,9667050.219
+Cape Town,Sydney,11011679.34
+Cape Town,Auckland,11772433.14
+Cape Town,Tokyo,14731610.2
+Cape Town,Seoul,13714367.39
+Cape Town,Buenos Aires,6869763.338
+Cape Town,São Paulo,6344704.978
+Cape Town,Mexico City,13700222.99
+Nairobi,New York,11843182.95
+Nairobi,Los Angeles,15544490.42
+Nairobi,London,6820526.143
+Nairobi,Paris,6483896.622
+Nairobi,Berlin,6370786.672
+Nairobi,Moscow,6343857.388
+Nairobi,Cairo,3534491.623
+Nairobi,Cape Town,4102473.764
+Nairobi,Nairobi,0
+Nairobi,Dubai,3553170.293
+Nairobi,Mumbai,4541727.901
+Nairobi,Bangkok,7209547.998
+Nairobi,Singapore,7454959.305
+Nairobi,Sydney,12151412.54
+Nairobi,Auckland,13953084.29
+Nairobi,Tokyo,11251507.76
+Nairobi,Seoul,10108905.09
+Nairobi,Buenos Aires,10401695.93
+Nairobi,São Paulo,9283080.367
+Nairobi,Mexico City,14816698.84
+Dubai,New York,11008089.32
+Dubai,Los Angeles,13390524.61
+Dubai,London,5473423.667
+Dubai,Paris,5246730.213
+Dubai,Berlin,4624302.928
+Dubai,Moscow,3686600.383
+Dubai,Cairo,2423355.923
+Dubai,Cape Town,7639965.1
+Dubai,Nairobi,3553170.293
+Dubai,Dubai,0
+Dubai,Mumbai,1935092.392
+Dubai,Bangkok,4884806.222
+Dubai,Singapore,5837150.589
+Dubai,Sydney,12049541.12
+Dubai,Auckland,14202096.66
+Dubai,Tokyo,7933112.594
+Dubai,Seoul,6783410.724
+Dubai,Buenos Aires,13646504.73
+Dubai,São Paulo,12226193.58
+Dubai,Mexico City,14331973.35
+Mumbai,New York,12538033.39
+Mumbai,Los Angeles,13991201.8
+Mumbai,London,7191692.688
+Mumbai,Paris,7009342.486
+Mumbai,Berlin,6286158.062
+Mumbai,Moscow,5027968.507
+Mumbai,Cairo,4358216.25
+Mumbai,Cape Town,8242563.943
+Mumbai,Nairobi,4541727.901
+Mumbai,Dubai,1935092.392
+Mumbai,Mumbai,0
+Mumbai,Bangkok,3001637.023
+Mumbai,Singapore,3903782.524
+Mumbai,Sydney,10156832.6
+Mumbai,Auckland,12297604.99
+Mumbai,Tokyo,6723969.047
+Mumbai,Seoul,5595190.505
+Mumbai,Buenos Aires,14935154.53
+Mumbai,São Paulo,13774029.73
+Mumbai,Mexico City,15645394.43
+Bangkok,New York,13931997.08
+Bangkok,Los Angeles,13303092.22
+Bangkok,London,9531818.556
+Bangkok,Paris,9443115.346
+Bangkok,Berlin,8603261.99
+Bangkok,Moscow,7064474.008
+Bangkok,Cairo,7269041.374
+Bangkok,Cape Town,10145352.35
+Bangkok,Nairobi,7209547.998
+Bangkok,Dubai,4884806.222
+Bangkok,Mumbai,3001637.023
+Bangkok,Bangkok,0
+Bangkok,Singapore,1426760.929
+Bangkok,Sydney,7536422.672
+Bangkok,Auckland,9572538.768
+Bangkok,Tokyo,4602975.827
+Bangkok,Seoul,3722107.418
+Bangkok,Buenos Aires,16873240.46
+Bangkok,São Paulo,16395648.48
+Bangkok,Mexico City,15744347.96
+Singapore,New York,15332519.27
+Singapore,Los Angeles,14120995.62
+Singapore,London,10847846.31
+Singapore,Paris,10729039.14
+Singapore,Berlin,9916312.551
+Singapore,Moscow,8420723.783
+Singapore,Cairo,8260261.395
+Singapore,Cape Town,9667050.219
+Singapore,Nairobi,7454959.305
+Singapore,Dubai,5837150.589
+Singapore,Mumbai,3903782.524
+Singapore,Bangkok,1426760.929
+Singapore,Singapore,0
+Singapore,Sydney,6306259.423
+Singapore,Auckland,8417132.95
+Singapore,Tokyo,5315092.998
+Singapore,Seoul,4671951.201
+Singapore,Buenos Aires,15882407.77
+Singapore,São Paulo,15987029.72
+Singapore,Mexico City,16606724.82
+Sydney,New York,15988777.59
+Sydney,Los Angeles,12073523.41
+Sydney,London,16993944.86
+Sydney,Paris,16960520.8
+Sydney,Berlin,16094522.18
+Sydney,Moscow,14496178.58
+Sydney,Cairo,14416556.39
+Sydney,Cape Town,11011679.34
+Sydney,Nairobi,12151412.54
+Sydney,Dubai,12049541.12
+Sydney,Mumbai,10156832.6
+Sydney,Bangkok,7536422.672
+Sydney,Singapore,6306259.423
+Sydney,Sydney,0
+Sydney,Auckland,2155901.304
+Sydney,Tokyo,7826625.868
+Sydney,Seoul,8329267.165
+Sydney,Buenos Aires,11801082.43
+Sydney,São Paulo,13357224.47
+Sydney,Mexico City,12972865.96
+Auckland,New York,14193888.25
+Auckland,Los Angeles,10496496.62
+Auckland,London,18336020.68
+Auckland,Paris,18545324.17
+Auckland,Berlin,17746703.27
+Auckland,Moscow,16198354.51
+Auckland,Cairo,16569539.26
+Auckland,Cape Town,11772433.14
+Auckland,Nairobi,13953084.29
+Auckland,Dubai,14202096.66
+Auckland,Mumbai,12297604.99
+Auckland,Bangkok,9572538.768
+Auckland,Singapore,8417132.95
+Auckland,Sydney,2155901.304
+Auckland,Auckland,0
+Auckland,Tokyo,8841096.662
+Auckland,Seoul,9621477.695
+Auckland,Buenos Aires,10354910.65
+Auckland,São Paulo,12020173.99
+Auckland,Mexico City,10955478.3
+Tokyo,New York,10848822.98
+Tokyo,Los Angeles,8815485.532
+Tokyo,London,9558719.626
+Tokyo,Paris,9712084.564
+Tokyo,Berlin,8916118.068
+Tokyo,Moscow,7478251.114
+Tokyo,Cairo,9564321.357
+Tokyo,Cape Town,14731610.2
+Tokyo,Nairobi,11251507.76
+Tokyo,Dubai,7933112.594
+Tokyo,Mumbai,6723969.047
+Tokyo,Bangkok,4602975.827
+Tokyo,Singapore,5315092.998
+Tokyo,Sydney,7826625.868
+Tokyo,Auckland,8841096.662
+Tokyo,Tokyo,0
+Tokyo,Seoul,1152619.85
+Tokyo,Buenos Aires,18369747.88
+Tokyo,São Paulo,18534266.35
+Tokyo,Mexico City,11305958.92
+Seoul,New York,11052592.09
+Seoul,Los Angeles,9585810.965
+Seoul,London,8857356.248
+Seoul,Paris,8965745.714
+Seoul,Berlin,8126794.048
+Seoul,Moscow,6605529.499
+Seoul,Cairo,8485757.755
+Seoul,Cape Town,13714367.39
+Seoul,Nairobi,10108905.09
+Seoul,Dubai,6783410.724
+Seoul,Mumbai,5595190.505
+Seoul,Bangkok,3722107.418
+Seoul,Singapore,4671951.201
+Seoul,Sydney,8329267.165
+Seoul,Auckland,9621477.695
+Seoul,Tokyo,1152619.85
+Seoul,Seoul,0
+Seoul,Buenos Aires,19431759.19
+Seoul,São Paulo,18342023.73
+Seoul,Mexico City,12051654.73
+Buenos Aires,New York,8526205.891
+Buenos Aires,Los Angeles,9852036.791
+Buenos Aires,London,11127820.86
+Buenos Aires,Paris,11050134.14
+Buenos Aires,Berlin,11909533.57
+Buenos Aires,Moscow,13475572.36
+Buenos Aires,Cairo,11812761.3
+Buenos Aires,Cape Town,6869763.338
+Buenos Aires,Nairobi,10401695.93
+Buenos Aires,Dubai,13646504.73
+Buenos Aires,Mumbai,14935154.53
+Buenos Aires,Bangkok,16873240.46
+Buenos Aires,Singapore,15882407.77
+Buenos Aires,Sydney,11801082.43
+Buenos Aires,Auckland,10354910.65
+Buenos Aires,Tokyo,18369747.88
+Buenos Aires,Seoul,19431759.19
+Buenos Aires,Buenos Aires,0
+Buenos Aires,São Paulo,1674872.246
+Buenos Aires,Mexico City,7392188.894
+São Paulo,New York,7685636.178
+São Paulo,Los Angeles,9906386.834
+São Paulo,London,9497423.443
+São Paulo,Paris,9401903.621
+São Paulo,Berlin,10252879.62
+São Paulo,Moscow,11806428.32
+São Paulo,Cairo,10219666.73
+São Paulo,Cape Town,6344704.978
+São Paulo,Nairobi,9283080.367
+São Paulo,Dubai,12226193.58
+São Paulo,Mumbai,13774029.73
+São Paulo,Bangkok,16395648.48
+São Paulo,Singapore,15987029.72
+São Paulo,Sydney,13357224.47
+São Paulo,Auckland,12020173.99
+São Paulo,Tokyo,18534266.35
+São Paulo,Seoul,18342023.73
+São Paulo,Buenos Aires,1674872.246
+São Paulo,São Paulo,0
+São Paulo,Mexico City,7432033.959
+Mexico City,New York,3359387.681
+Mexico City,Los Angeles,2490486.409
+Mexico City,London,8928755.53
+Mexico City,Paris,9196265.978
+Mexico City,Berlin,9726681.441
+Mexico City,Moscow,10719409.07
+Mexico City,Cairo,12368600.6
+Mexico City,Cape Town,13700222.99
+Mexico City,Nairobi,14816698.84
+Mexico City,Dubai,14331973.35
+Mexico City,Mumbai,15645394.43
+Mexico City,Bangkok,15744347.96
+Mexico City,Singapore,16606724.82
+Mexico City,Sydney,12972865.96
+Mexico City,Auckland,10955478.3
+Mexico City,Tokyo,11305958.92
+Mexico City,Seoul,12051654.73
+Mexico City,Buenos Aires,7392188.894
+Mexico City,São Paulo,7432033.959
+Mexico City,Mexico City,0

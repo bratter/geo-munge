@@ -632,6 +632,7 @@ dependencies = [
  "geolib",
  "mio",
  "quadtree 0.0.5",
+ "spatial",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1287,6 +1288,16 @@ dependencies = [
  "num-traits",
  "robust",
  "smallvec",
+]
+
+[[package]]
+name = "spatial"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "approx",
+ "geo",
+ "geojson",
 ]
 
 [[package]]
