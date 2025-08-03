@@ -11,7 +11,7 @@ use crate::{
     p,
 };
 
-use super::newton::{vertical_line_to_line, vertical_line_to_point};
+use super::newton::{meridian_to_meridian, meridian_to_point};
 
 /// Internal struct for ensuring Lng wrapping math works correctly.
 #[derive(Debug, Clone, Copy)]
@@ -142,12 +142,8 @@ pub fn haversine_pt_rect<T: GeoFloat>(pt: &Point<T>, rect: &Rect<T>) -> T {
         PtRectPostion::SouthWest => haversine(pt, &Point::from(rect.min())),
         PtRectPostion::NorthWest => haversine(pt, &Point::new(rect.min().x, rect.max().y)),
         // Vertical lines (constant longitude) require numerical solving
-        PtRectPostion::East => {
-            vertical_line_to_point(rect.min().y, rect.max().y, rect.max().x, pt).0
-        }
-        PtRectPostion::West => {
-            vertical_line_to_point(rect.min().y, rect.max().y, rect.min().x, pt).0
-        }
+        PtRectPostion::East => meridian_to_point(rect.min().y, rect.max().y, rect.max().x, pt).0,
+        PtRectPostion::West => meridian_to_point(rect.min().y, rect.max().y, rect.min().x, pt).0,
     }
 }
 
@@ -205,7 +201,7 @@ pub fn haversine_rect_rect<T: GeoFloat>(r1: &Rect<T>, r2: &Rect<T>) -> T {
                 )
             };
 
-            vertical_line_to_line(&l1, &l2)
+            meridian_to_meridian(&l1, &l2)
         }
         // When neither overlaps, take the distance from the closest
         // corners, accounting for wrapping lngs
@@ -236,8 +232,6 @@ pub fn haversine_rect_rect<T: GeoFloat>(r1: &Rect<T>, r2: &Rect<T>) -> T {
 ///
 /// Inputs and outputs are in radians. Convert radians to a linear distance by
 /// multiplying by the sphere's radius.
-///
-/// TODO: Check whether this is the right logic here with interior holes, etc.
 pub fn haversine_pt_poly<T: GeoFloat>(pt: &Point<T>, poly: &Polygon<T>) -> T {
     // Distance is 0 if it intersects anywhere in the polygon
     // Otherwise find the ring with the smallest distance, inside or out
@@ -264,7 +258,7 @@ mod test {
         MEAN_EARTH_RADIUS,
     };
 
-    use super::*;
+    use super::{super::gradient_descent, *};
 
     #[test]
     fn haversine_is_correct() {
@@ -338,29 +332,33 @@ mod test {
 
         // Test lat below
         let b2 = Rect::new(p!(0.1, -0.4), p!(0.3, -0.5));
-
         assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), 0.3);
 
         // Test lng greater than, min dist @ 0.4, b2 ends higher
         let b2 = Rect::new(p!(0.6, 0.2), p!(0.8, 0.6));
-        let d = haversine(&p!(0.5, 0.4), &p!(0.6, 0.4));
+        let (d, _, _) = gradient_descent::meridian_to_meridian(
+            &l!(0.5, -0.1, 0.5, 0.4),
+            &l!(0.6, 0.2, 0.6, 0.6),
+        );
         assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
 
         // Test lng greater than, min dist @ -0.1, b2 starts lower
         let b2 = Rect::new(p!(0.7, -0.2), p!(0.8, -0.1));
-
-        let d = haversine(&p!(0.5, -0.1), &p!(0.7, -0.1));
+        let (d, _, _) = gradient_descent::meridian_to_meridian(
+            &l!(0.5, -0.1, 0.5, 0.4),
+            &l!(0.7, -0.2, 0.7, -0.1),
+        );
         assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
 
         // Test lng less than - min dist @ 0.3, b1 ends higher
-
         let b2 = Rect::new(p!(-0.2, 0.0), p!(-0.1, 0.3));
-        let d = haversine(&p!(0.1, 0.3), &p!(-0.1, 0.3));
-
+        let (d, _, _) = gradient_descent::meridian_to_meridian(
+            &l!(0.1, -0.1, 0.1, 0.4),
+            &l!(-0.1, 0.0, -0.1, 0.3),
+        );
         assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
 
         // Test corner - top left
-
         let b2 = Rect::new(p!(-0.2, -0.3), p!(-0.1, -0.2));
         let d = haversine(&p!(0.1, -0.1), &p!(-0.1, -0.2));
         assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
@@ -386,10 +384,15 @@ mod test {
         let b1 = Rect::new(p!(2.9, 0.0), p!(3.0, 0.4));
 
         // Test overlapping latitude
-
         let b2 = Rect::new(p!(-3.0, 0.1), p!(-2.9, 0.3));
-        let d = haversine(&p!(3.0, 0.3), &p!(-3.0, 0.3));
+        let (d, _, _) = gradient_descent::meridian_to_meridian(
+            &l!(3.0, 0.0, 3.0, 0.4),
+            &l!(-3.0, 0.1, -3.0, 0.3),
+        );
         assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
+
+        // Sanity check on overall distance - much less than a circle
+        assert!(d < PI / 8.0);
 
         // Test corner
         let b2 = Rect::new(p!(-2.8, -0.4), p!(-2.7, -0.2));

@@ -36,7 +36,7 @@ pub fn read_cities() -> impl Iterator<Item = (String, Point)> {
         })
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TestRecord {
     pub name: String,
     pub point: geo::Geometry,

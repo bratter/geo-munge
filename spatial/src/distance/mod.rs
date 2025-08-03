@@ -1,3 +1,4 @@
+mod gradient_descent;
 mod haversine;
 mod newton;
 
@@ -6,8 +7,12 @@ use geo::{GeoFloat, Geometry};
 use haversine::*;
 
 // TODO: Have to handle radian conversion appropriately, maybe as a numeric type?
+// TODO: Ensure that implementations are all done for line, point, and rect combinations; work on polygons later
 // TODO: Need to work out what we want for the result type - all result, or assoc type - we can't panic, but might not
 // be able to do all distances
+
+const VALID_GF: &str = "Valid GeoFloat";
+const MAX_ITERATIONS_MSG: &str = "Max iterations exceeded without convergence";
 
 pub trait Distance<G, T: GeoFloat> {
     fn distance(&self, other: &G) -> T;

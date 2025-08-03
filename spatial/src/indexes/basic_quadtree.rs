@@ -21,9 +21,10 @@ use crate::{
 /// amortize the cost of unbalanced trees.
 const MAX_CHILDREN: usize = 8;
 
+/// Expect message for a poisoned lock.
 const POISON: &str = "Lock poisoned";
 
-/// Simple reference implementation of a quadtree as a starting point for index development.
+/// Reference implementation of a quadtree as a starting point for index development.
 pub struct BasicQuadTree<T> {
     root: Arc<RwLock<Node<T>>>,
 }
@@ -90,6 +91,7 @@ where
     }
 }
 
+#[derive(Debug)]
 struct Node<T> {
     bbox: Rect,
     nodes: Option<[Arc<RwLock<Node<T>>>; 4]>,
@@ -218,8 +220,6 @@ enum WorkType<T> {
     Node(Arc<RwLock<Node<T>>>),
 }
 
-// TODO: What behavior if multiple nodes at same point?
-// TODO: Explicitly determine and document error behavior in the trait
 impl<T> Knn<T> for BasicQuadTree<T>
 where
     T: Deref + Clone,
@@ -227,8 +227,6 @@ where
 {
     fn knn_r(&self, cmp: &Geometry, k: usize, r: f64) -> impl Iterator<Item = (T, f64)> {
         // Start by seeding the work stack with the root node
-        // TODO: Do we allow errors if the cmp is not within the root? Don't think it matters, but should check. If we
-        // do, then it makes it more appropriate to error elsewhere
         let root = Arc::clone(&self.root);
         let d_root = root.read().expect(POISON).bbox.distance(cmp);
 
@@ -258,7 +256,6 @@ where
                 // Pop inside the while loop as we need to iterate before popping, but we don't need the pop result
                 work.pop();
 
-                // TODO: How to handle/document equal distances... think make it arbitrary so that len never exceeds k
                 if results.len() >= k {
                     return results.into_iter();
                 }
@@ -277,7 +274,6 @@ where
                     let d: f64 = cmp.distance(child.as_ref());
 
                     // Only add children where the distance is not NaN or infinite
-                    // TODO: Confirm that we just skip invalids here, i.e., be forgiving
                     if d.is_finite() {
                         work.push((WorkType::Child(child.clone()), d));
                     }
@@ -289,7 +285,7 @@ where
                         let d: f64 = bbox.distance(cmp);
 
                         // Only push sub nodes where the distance is not NaN or infinite
-                        // TODO: This should never be the case, so can delete?
+                        // Note that this should never occur, but leaving the check just in case
                         if d.is_finite() {
                             work.push((WorkType::Node(Arc::clone(&sub_node)), d));
                         }
@@ -311,12 +307,59 @@ impl<'a, T: 'a> BboxSearch<'a, T> for BasicQuadTree<T> {
 
 #[cfg(test)]
 mod test {
+    use approx::assert_abs_diff_eq;
+
     use super::*;
 
     use crate::{
         harness::{read_cities_as_record, read_city_pairs},
         math::get_earth_bbox,
+        MEAN_EARTH_RADIUS,
     };
+
+    #[test]
+    fn knn_returns_self_d_equals_0_london() {
+        let name = "London";
+        let cities = read_cities_as_record();
+        let cmp = cities
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap()
+            .point
+            .clone();
+
+        let qt = BasicQuadTree::new(get_earth_bbox());
+        for city in &cities {
+            qt.insert(city).unwrap();
+        }
+
+        let (record, d) = qt.knn(&cmp, 1).next().unwrap();
+        assert_eq!(record.name, name);
+        assert_eq!(d, 0.0);
+    }
+
+    // Note that this was failing to converge, so checking specifically.
+    // FIX: Get this working, it seems that there are issues in the southern hemisphere
+    #[test]
+    fn knn_returns_self_d_equals_0_sydney() {
+        let name = "Sydney";
+        let cities = read_cities_as_record();
+        let cmp = cities
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap()
+            .point
+            .clone();
+
+        let qt = BasicQuadTree::new(get_earth_bbox());
+        for city in &cities {
+            qt.insert(city).unwrap();
+        }
+
+        let (record, d) = qt.knn(&cmp, 1).next().unwrap();
+        assert_eq!(record.name, name);
+        assert_eq!(d, 0.0);
+    }
 
     #[test]
     fn knn_iterates_all_in_order() {
@@ -341,8 +384,14 @@ mod test {
 
         let knn_result = qt.knn(&cmp, usize::MAX).collect::<Vec<_>>();
 
-        eprintln!("{}", knn_result.len());
-        eprintln!("{}", knn_result[0].0.name);
-        eprintln!("{}", knn_result[1].0.name);
+        // We return all records
+        assert_eq!(knn_result.len(), cities.len());
+
+        // We are in the right order and right distances
+        // Tested to the neareste meter
+        for ((test, test_d), (exp_name, exp_d)) in knn_result.iter().zip(city_dist) {
+            assert_eq!(test.name, exp_name);
+            assert_abs_diff_eq!(*test_d * MEAN_EARTH_RADIUS, exp_d, epsilon = 1.0);
+        }
     }
 }

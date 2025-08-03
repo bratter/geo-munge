@@ -1,33 +1,21 @@
-//! Newton's method approximation function for numerical solutions.
+//! Newton's method approximation functions for numerical solutions to distance problems.
 //!
 //! Numerical approximation is required when there is no analytical solution to nearest points. This module contains
-//! implementations of Newton's method for simple approximation methodologies.
+//! implementations of Newton's method for simple approximation methodologies. These generally converge fast, but can be
+//! temperamental and are therefore tested against the slower but more robust gradient descent functions.
 
 use geo::{GeoFloat, Line, Point};
 
-use crate::math::{closest, is_between};
+use crate::p;
 
-use super::haversine::haversine;
+use super::{haversine, MAX_ITERATIONS_MSG, VALID_GF};
 
-const VALID_GF: &str = "Valid GeoFloat";
-const MAX_ITERATIONS_MSG: &str = "Max iterations exceeded without convergence";
 const DEBUG_DISPLAY: bool = false;
-// TODO: Consider switching to scale aware tolerance and delta
+// TODO: Consider switching to scale aware tolerance and delta, and also accounting for precision in geofloats
 const TOLERANCE: f64 = 1e-6;
 const DELTA: f64 = 1e-7;
 
-#[inline]
-fn tolerance<T: GeoFloat>() -> T {
-    T::from(TOLERANCE).expect(VALID_GF)
-}
-
-#[inline]
-fn delta<T: GeoFloat>() -> T {
-    T::from(DELTA).expect(VALID_GF)
-}
-
-/// Find the minimum distance from a point to a vertical line segment (constant longitude) using Newton's method
-/// optimization.
+/// Find the minimum distance between a meridian segments and a point using Newton's method optimization.
 ///
 /// # Arguments
 /// * `lat_a` - Minimum latitude of the line segment (in radians)
@@ -41,18 +29,37 @@ fn delta<T: GeoFloat>() -> T {
 /// # Assumptions
 /// - point is inside the latitude bounds of the line represented by `lat_a` and `lat_b`
 /// - point is not on the line segment
-pub(super) fn vertical_line_to_point<T: GeoFloat>(
+///
+/// This method heavily relies on the nature of the specific meridian-to-point problem, requiring that the problem has:
+/// - A single minimum point within the domain, and no other critical points
+/// - If the minimum is inside the domain, then the function is also convex
+/// - If the minimum is outside the domain the curve will be monotonic
+///
+/// This allows the initial shortcutting based on monotonicity detection and aggressive stepping as there will never be
+/// any local minima.
+pub(super) fn meridian_to_point<T: GeoFloat>(
     lat_a: T,
     lat_b: T,
     lon: T,
     point: &Point<T>,
 ) -> (T, Point<T>) {
-    const MAX_ITERATIONS: usize = 10;
+    if DEBUG_DISPLAY {
+        eprintln!(
+            "Inputs: lat_a = {:.6} lat_b = {:.6} lon = {:.6} | pt = {:.6}, {:.6}",
+            lat_a.to_f64().unwrap(),
+            lat_b.to_f64().unwrap(),
+            lon.to_f64().unwrap(),
+            point.x().to_f64().unwrap(),
+            point.y().to_f64().unwrap()
+        );
+    }
 
     // Setup, including ensuring correct ordering of the input lat range
-    let tolerance = tolerance();
-    let delta = delta();
+    let tolerance = T::from(TOLERANCE).expect(VALID_GF);
+    let delta = T::from(DELTA).expect(VALID_GF);
+    let half = T::from(0.5).expect(VALID_GF);
     let two = T::one() + T::one();
+
     let lat_min = lat_a.min(lat_b);
     let lat_max = lat_a.max(lat_b);
 
@@ -61,33 +68,79 @@ pub(super) fn vertical_line_to_point<T: GeoFloat>(
 
     // Constrain the latitude domain for calculation - this works as the function has a well defined relationship where
     // the great circle distance will be closest within a reasonable range of the point
-    // TODO: Confirm that this works, potentially using prop testing
+    // TODO: Confirm that this works, potentially using prop testing, want it to be as tight as possible
     let lon_range = T::from(3.0).expect(VALID_GF) * (point.x() - lon).abs();
     let lat_min = lat_min.max(point.y() - lon_range);
     let lat_max = lat_max.min(point.y() + lon_range);
 
-    // Initial guess: midpoint parameter
-    let mut t = T::from(0.5).expect(VALID_GF);
+    // For ease of computation, we consider optimizing d = f(t) where t [0, 1] rather than reproducing the latitudes
+    // everywhere, also providing a closure that easily converts to a latitude where required
+    let mut t: T;
 
-    for i in 0..MAX_ITERATIONS {
+    // The closure lets us easily calculate d = f(t) in a single step
+    let dist_ft = |t: T| haversine(&p!(lon, lat_min + t * (lat_max - lat_min)), point);
+
+    // Test whether the minimum distance lies at either of the endpoints
+    let dist_at_min = dist_ft(T::zero());
+    let dist_at_min_fwd = dist_ft(delta);
+    let grad_at_min = (dist_at_min_fwd - dist_at_min) / delta;
+
+    // If the gradient at the minimum latitude is > 0 this point must be the minimum as it is impossible for there to be
+    // an internal minimum or the other end being a minimum while all the known properties hold
+    if grad_at_min > T::zero() {
+        if DEBUG_DISPLAY {
+            eprintln!(
+                "Gradient at min lat = {:+.6e}, min dist = {:.6}",
+                grad_at_min.to_f64().unwrap(),
+                dist_at_min.to_f64().unwrap(),
+            );
+        }
+
+        // In debug mode, determine whether or not we are constraining the range - will be used to ensure that we are no
+        // both constraining the range, then falsely claiming that the minimum distance is at the end of the range
+        debug_assert!(lat_min <= lat_a.min(lat_b));
+        return (dist_at_min, p!(lon, lat_min));
+    }
+
+    let dist_at_max = dist_ft(T::one());
+    let dist_at_max_back = dist_ft(T::one() - delta);
+    let grad_at_max = (dist_at_max - dist_at_max_back) / delta;
+
+    // Similarly, if the gradient at the max latitude is < 0 this point must be the minimum
+    if grad_at_max < T::zero() {
+        if DEBUG_DISPLAY {
+            eprintln!(
+                "Gradient at max lat = {:+.6e}, min dist = {:.6}",
+                grad_at_max.to_f64().unwrap(),
+                dist_at_max.to_f64().unwrap(),
+            );
+        }
+
+        // See notes above
+        debug_assert!(lat_max >= lat_a.max(lat_b));
+        return (dist_at_max, p!(lon, lat_max));
+    }
+
+    if DEBUG_DISPLAY {
+        eprintln!("  i     dist       lat        t_new | bound conv  |        dt         ddt");
+    }
+
+    // Now seed the initial t guess at the halfway point
+    t = half;
+
+    // Now when we get to iteration we know that we have an internal minimum point
+    // TODO: Confirm the best number of iterations to use here based on prop testing
+    for i in 0..20 {
         // Current guess of point on line
-        let current_lat = lat_min + t * (lat_max - lat_min);
-        let current_point = Point::new(lon, current_lat);
-        let distance = haversine(&current_point, point);
+        let distance = dist_ft(t);
 
         // Numerical derivatives using central difference
         // Central difference is more accurate but slightly more calculations than one-sided stepping
         let t_plus = (t + delta).min(T::one());
         let t_minus = (t - delta).max(T::zero());
 
-        let lat_plus = lat_min + t_plus * (lat_max - lat_min);
-        let lat_minus = lat_min + t_minus * (lat_max - lat_min);
-
-        let point_plus = Point::new(lon, lat_plus);
-        let point_minus = Point::new(lon, lat_minus);
-
-        let dist_plus = haversine(&point_plus, point);
-        let dist_minus = haversine(&point_minus, point);
+        let dist_plus = dist_ft(t_plus);
+        let dist_minus = dist_ft(t_minus);
 
         let first_derivative = (dist_plus - dist_minus) / (two * delta);
         let second_derivative = (dist_plus - two * distance + dist_minus) / (delta * delta);
@@ -98,276 +151,127 @@ pub(super) fn vertical_line_to_point<T: GeoFloat>(
             // Use gradient descent if second derivative is near zero
             t - T::from(0.01).expect(VALID_GF) * first_derivative
         } else {
+            // TODO: Fix if keeping step check
             t - first_derivative / second_derivative
         };
 
-        // Clamp to [0, 1] bounds
+        // Clamp to [0, 1] bounds then test convergence
+        // FIX: We should know that we are not converged at the boundary by definition
         let t_clamped = t_new.clamp(T::zero(), T::one());
+        let hit_boundary = (t_clamped - t_new).abs() > T::epsilon();
+        let converged = if hit_boundary {
+            let at_lower = t_clamped <= T::epsilon();
+            let boundary_grad = if at_lower { grad_at_min } else { grad_at_max };
+
+            (at_lower && boundary_grad > T::zero())
+                || (!at_lower && boundary_grad < T::zero())
+                || boundary_grad.abs() < tolerance
+        } else {
+            (t_clamped - t).abs() < tolerance
+        };
 
         if DEBUG_DISPLAY {
             eprintln!(
-                "{} {:.6} {:.6} {:.10} {:.10} | {:.10} {:.10}",
+                "{:3} {:.6} {:+.6} {:.10} | {:5} {:5} | {:+.6e} {:+.6e}",
                 i,
                 distance.to_f64().unwrap(),
-                current_lat.to_f64().unwrap(),
-                t.to_f64().unwrap(),
+                (lat_min + t * (lat_max - lat_min)).to_f64().unwrap(),
                 t_new.to_f64().unwrap(),
+                hit_boundary,
+                converged,
                 first_derivative.to_f64().unwrap(),
                 second_derivative.to_f64().unwrap(),
             );
         }
 
         // Check convergence then do a final distance calculation
-        if (t_clamped - t).abs() < tolerance {
-            // Final distance calculation
-            let final_lat = lat_min + t * (lat_max - lat_min);
-            let final_point = Point::new(lon, final_lat);
-
-            return (haversine(&final_point, point), final_point);
+        if converged {
+            let final_lat = lat_min + t_clamped * (lat_max - lat_min);
+            return (dist_ft(t_clamped), p!(lon, final_lat));
         }
 
-        t = t_clamped;
+        // When not converged and also at a boundary, then we bisect to restart, otherwise take the newton rec
+        t = if hit_boundary {
+            (t + t_clamped) / two
+        } else {
+            t_clamped
+        };
     }
 
     // TODO: Consider if we want to failover gracefully in production
     panic!("{}", MAX_ITERATIONS_MSG);
 }
 
-// FIX: This isn't working right - the alternation isn't producing the desired results
-pub(super) fn vertical_line_to_line<T: GeoFloat>(l1: &Line<T>, l2: &Line<T>) -> T {
-    const MAX_ITERATIONS: usize = 10;
-
-    // Assert verticality
+/// Find the minimum distance between two meridian segments using Newton's method optimization.
+///
+/// # Arguments
+/// * `l1` - The first segment, must have constant x value (in radians)
+/// * `l2` - The second segment, must have constant x value (in radians)  
+///
+/// # Returns
+/// Minimum distance in radians
+///
+/// # Assumptions
+/// - both of the provided segments are meridians (i.e., same x-value at start and end
+/// - the segments overlap
+pub(super) fn meridian_to_meridian<T: GeoFloat>(l1: &Line<T>, l2: &Line<T>) -> T {
     debug_assert_eq!(l1.dx(), T::zero());
     debug_assert_eq!(l2.dx(), T::zero());
 
-    let tolerance = tolerance::<T>() * T::from(0.1).unwrap();
-    let two = T::one() + T::one();
+    // Sort endpoints by latitude
+    let l1_min = l1.start.y.min(l1.end.y);
+    let l1_max = l1.start.y.max(l1.end.y);
+    let l2_min = l2.start.y.min(l2.end.y);
+    let l2_max = l2.start.y.max(l2.end.y);
 
-    // The initial point into the vertical line calculation is the midpoint of the second line
-    let mut d1;
-    let mut d2 = T::infinity();
-    let mut p1;
-    let mut p2 = Point::new(l2.start.x, (l2.start.y + l2.end.y) / two);
+    // Check overlap
+    let overlap_min = l1_min.max(l2_min);
+    let overlap_max = l1_max.min(l2_max);
+
+    debug_assert!(
+        overlap_min <= overlap_max,
+        "provided line segments do not overlap"
+    );
+
+    // Pick the one with larger absolute value (closer to a pole)
+    let (chosen_pt, other_line) = if overlap_min.abs() >= overlap_max.abs() {
+        if l1_min > l2_min {
+            (p!(l1.start.x, l1_min), l2)
+        } else {
+            (p!(l2.start.x, l2_min), l1)
+        }
+    } else {
+        if l1_max < l2_max {
+            (p!(l1.start.x, l1_max), l2)
+        } else {
+            (p!(l2.start.x, l2_max), l1)
+        }
+    };
 
     if DEBUG_DISPLAY {
-        eprintln!(
-            "l1 {:.4} {:.4} l2 {:.4} {:.4}",
-            l1.start.y.to_f64().unwrap(),
-            l1.end.y.to_f64().unwrap(),
-            l2.start.y.to_f64().unwrap(),
-            l2.end.y.to_f64().unwrap()
-        );
+        eprintln!("point: {:?} line: {:?}", chosen_pt, other_line);
     }
 
-    for i in 0..MAX_ITERATIONS {
-        // First run an optimization using the guess point on the second line, shortcutting if the guess point is
-        // outside the range of the y's
-        (d1, p1) = inner_vline_to_point(&p2, l1);
+    // Then the problem reduces to a line_to_point optimization
+    let (d, _) = meridian_to_point(
+        other_line.start.y,
+        other_line.end.y,
+        other_line.start.x,
+        &chosen_pt,
+    );
 
-        if DEBUG_DISPLAY {
-            eprintln!(
-                "d1 {} {:.8} | {:.6} {:.6}",
-                i,
-                d1.to_f64().unwrap(),
-                p1.y().to_f64().unwrap(),
-                p2.y().to_f64().unwrap()
-            );
-        }
-
-        if (d1 - d2).abs() < tolerance {
-            return d1;
-        }
-
-        // Then in the same loop iteration run an optimization using the first line guess point
-        (d2, p2) = inner_vline_to_point(&p1, l2);
-
-        if DEBUG_DISPLAY {
-            eprintln!(
-                "d2 {} {:.8} | {:.6} {:.6}",
-                i,
-                d2.to_f64().unwrap(),
-                p1.y().to_f64().unwrap(),
-                p2.y().to_f64().unwrap()
-            );
-        }
-
-        if (d1 - d2).abs() < tolerance {
-            return d2;
-        }
-    }
-
-    // TODO: Consider if we want to failover gracefully in production
-    panic!("{}", MAX_ITERATIONS_MSG);
-}
-
-/// Run a single optimization for a given guess point on the second line.
-///
-/// Manages the special case where the point is outside the range of y's.
-fn inner_vline_to_point<T: GeoFloat>(pt: &Point<T>, line: &Line<T>) -> (T, Point<T>) {
-    if is_between(pt.y(), line.start.y, line.end.y) {
-        vertical_line_to_point(line.start.y, line.end.y, line.start.x, &pt)
-    } else {
-        let test_pt = Point::new(line.start.x, closest(pt.y(), line.start.y, line.end.y));
-        (haversine(&pt, &test_pt), test_pt)
-    }
+    d
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::p;
-
+    use super::super::gradient_descent;
     use super::*;
     use approx::assert_abs_diff_eq;
     use std::f64::consts::PI;
 
-    /// Whether to print elp messages in debug numerical solvers.
-    const DEBUG_DISPLAY_TEST: bool = false;
-
     /// Constant for a single degree.
     const DEGREE: f64 = 0.01745;
-
-    /// Subdivision-based fallback method for determining pt - line distances.
-    ///
-    /// This method should be reliable but slow and can be used for testing purposes as a reference implementation for
-    /// prop testing or to find roots manually for unit tests.
-    pub(super) fn gradient_descent_vline_pt<T: GeoFloat>(
-        lat_a: T,
-        lat_b: T,
-        lon: T,
-        point: &Point<T>,
-    ) -> (T, Point<T>) {
-        // Setup, including ensuring correct ordering of the input lat range
-        // We use a tighter tolerance for accuracy rather than efficiency
-        let tolerance = tolerance::<T>() * T::from(0.01).unwrap();
-        let lat_min = lat_a.min(lat_b);
-        let lat_max = lat_a.max(lat_b);
-
-        // For gradient descent, start at t = 0
-        let mut t = T::zero();
-        let mut delta = T::from(0.1).unwrap();
-        let mut d_cur = T::from(9.0).unwrap(); // As long as it's bigger than PI it should be fine
-        let mut d_prev: T;
-        let mut pt_cur;
-
-        if DEBUG_DISPLAY_TEST {
-            eprintln!("   i t_value  d_prev   d_cur");
-        }
-
-        for i in 0..=1000 {
-            d_prev = d_cur;
-
-            let current_lat = lat_min + t * (lat_max - lat_min);
-            pt_cur = Point::new(lon, current_lat);
-            d_cur = haversine(&pt_cur, point);
-
-            if (d_prev - d_cur).abs() < tolerance {
-                return (d_cur, pt_cur);
-            }
-
-            if d_cur > d_prev {
-                delta = -delta / (T::one() + T::one());
-            }
-
-            if DEBUG_DISPLAY_TEST {
-                eprintln!(
-                    "{:>4} {:.6} {:.6} {:.6}",
-                    i,
-                    t.to_f64().unwrap(),
-                    d_prev.to_f64().unwrap(),
-                    d_cur.to_f64().unwrap()
-                );
-            }
-
-            t = t + delta;
-        }
-
-        // Safety hatch - looks like a solution won't converge with these inputs
-        panic!("{}", MAX_ITERATIONS_MSG);
-    }
-
-    /// Gradient descent fallback for calculating vertical lines differences.
-    ///
-    /// This method should be reliable but slow and can be used for testing purposes as a reference implementation for
-    /// prop testing or to find roots manually for unit tests.
-    /// TODO: Make sure this works well and converges all the time
-    pub(super) fn gradient_descent_vline_vline<T: GeoFloat>(
-        l1: &Line<T>,
-        l2: &Line<T>,
-    ) -> (T, Point<T>, Point<T>) {
-        let tolerance = tolerance::<T>() * T::from(0.001).unwrap();
-        let h = T::from(1e-8).unwrap();
-        let two = T::one() + T::one();
-        let mut learning_rate = T::from(0.01).unwrap();
-
-        let mut t1 = T::from(0.5).unwrap();
-        let mut t2 = T::from(0.5).unwrap();
-        let mut pt1 = l1.start_point();
-        let mut pt2 = l2.start_point();
-        let mut d = T::from(9.0).unwrap(); // As long as it's bigger than PI it should be fine
-
-        if DEBUG_DISPLAY_TEST {
-            eprintln!("   i: t1       t2       | pt1_lat   pt2_lat   | d_cur    lr");
-        }
-
-        for i in 0..=10000 {
-            let (pt1_plus, pt1_minus) = extract_points(t1, &l1, h);
-            let (pt2_plus, pt2_minus) = extract_points(t2, &l2, h);
-
-            let grad1 = (haversine(&pt1_plus, &pt2) - haversine(&pt1_minus, &pt2)) / (two * h);
-            let grad2 = (haversine(&pt2_plus, &pt1) - haversine(&pt2_minus, &pt1)) / (two * h);
-
-            // Apply an adaptive learning rate that scales back movement as it gets closer to convergence, then
-            // calculate the new distance
-            let t1_new = (t1 - learning_rate * grad1).clamp(T::zero(), T::one());
-            let t2_new = (t2 - learning_rate * grad2).clamp(T::zero(), T::one());
-
-            pt1 = p!(l1.start.x, l1.start.y + t1_new * (l1.end.y - l1.start.y));
-            pt2 = p!(l2.start.x, l2.start.y + t2_new * (l2.end.y - l2.start.y));
-            let d_new = haversine(&pt1, &pt2);
-
-            // Check convergence
-            if (d_new - d).abs() < tolerance
-                && ((t1_new - t1).powi(2) + (t2_new - t2).powi(2)).sqrt() < tolerance
-            {
-                return (d, pt1, pt2);
-            }
-
-            // Change the learning rate to reflect progress being made, moving further when heading in the right
-            // direction, but backing off when getting further from the minimum to slow down the approach
-            if d_new < d {
-                learning_rate = learning_rate * T::from(1.1).unwrap();
-            } else {
-                learning_rate = learning_rate * T::from(0.5).unwrap();
-            }
-
-            t1 = t1_new;
-            t2 = t2_new;
-            d = d_new;
-
-            if DEBUG_DISPLAY_TEST {
-                eprintln!(
-                    "{:>4}: {:.6} {:.6} | {:+.6} {:+.6} | {:.6} {:.6}",
-                    i,
-                    t1.to_f64().unwrap(),
-                    t2.to_f64().unwrap(),
-                    pt1.y().to_f64().unwrap(),
-                    pt2.y().to_f64().unwrap(),
-                    d.to_f64().unwrap(),
-                    learning_rate.to_f64().unwrap(),
-                );
-            }
-        }
-
-        // Safety hatch - looks like a solution won't converge with these inputs
-        panic!("{}", MAX_ITERATIONS_MSG);
-    }
-
-    fn extract_points<T: GeoFloat>(t: T, line: &Line<T>, h: T) -> (Point<T>, Point<T>) {
-        let lat = line.start.y + t * (line.end.y - line.start.y);
-
-        (p!(line.start.x, lat + h), p!(line.start.x, lat - h))
-    }
 
     mod point_vertical_line {
         use super::*;
@@ -380,7 +284,7 @@ mod tests {
             let lat_max = PI / 6.0; // 30°
             let lon = 0.0; // 0°
             let point = Point::new(-PI / 12.0, PI / 12.0); // -45°, 15°
-            let (d, _) = vertical_line_to_point(lat_min, lat_max, lon, &point);
+            let (d, _) = meridian_to_point(lat_min, lat_max, lon, &point);
 
             // Expected: distance to point from numerical solution
             let expected_point = Point::new(0.0, 0.2706);
@@ -397,7 +301,7 @@ mod tests {
             let lat_max = PI / 9.0; // 20°
             let lon = PI / 2.0; // 90°
             let point = Point::new(2.0 * PI / 3.0, 0.0); // 120°, 0°
-            let (d, _) = vertical_line_to_point(lat_min, lat_max, lon, &point);
+            let (d, _) = meridian_to_point(lat_min, lat_max, lon, &point);
 
             // Expected: distance to point (90°, 0°)
             let expected_point = Point::new(PI / 2.0, 0.0);
@@ -414,7 +318,7 @@ mod tests {
             let lat_max = PI / 18.0; // 10°
             let lon = 0.0; // 0°
             let point = Point::new(PI / 4.0, 0.0); // 45°, 0°
-            let (d, _) = vertical_line_to_point(lat_min, lat_max, lon, &point);
+            let (d, _) = meridian_to_point(lat_min, lat_max, lon, &point);
 
             // Expected: distance to midpoint (0°, 0°)
             let expected_point = Point::new(0.0, 0.0);
@@ -431,10 +335,9 @@ mod tests {
             let lat_max = PI / 6.0; // 30°
             let lon = 179.0 * PI / 180.0; // 179°
             let point = Point::new(-170.0 * PI / 180.0, 0.0); // -170°, 0°
-            let (d, _) = vertical_line_to_point(lat_min, lat_max, lon, &point);
+            let (d, _) = meridian_to_point(lat_min, lat_max, lon, &point);
 
             // Expected: distance to point (179°, 0°)
-            // TODO: Convert this to PI - DEGREE (and do same above
             let expected_point = Point::new(179.0 * PI / 180.0, 0.0);
             let expected = haversine(&point, &expected_point);
 
@@ -449,7 +352,7 @@ mod tests {
             let lat_max = 4.0 * PI / 9.0; // 80°
             let lon = 0.0; // 0°
             let point = Point::new(PI / 2.0, 7.0 * PI / 18.0); // 90°, 70°
-            let (d, _) = vertical_line_to_point(lat_min, lat_max, lon, &point);
+            let (d, _) = meridian_to_point(lat_min, lat_max, lon, &point);
 
             // Expected: distance to point (0°, 80°)
             let expected_point = Point::new(0.0, 4.0 * PI / 9.0);
@@ -466,11 +369,28 @@ mod tests {
             let lat_max = -PI / 6.0; // -30°
             let lon = -PI / 2.0; // -90°
             let point = Point::new(-2.0 * PI / 3.0, -PI / 4.0); // -120°, -45°
-            let (d, _) = vertical_line_to_point(lat_min, lat_max, lon, &point);
+            let (d, _) = meridian_to_point(lat_min, lat_max, lon, &point);
 
             // Expected: distance to point (-90°, -45°)
             let expected_point = Point::new(-PI / 2.0, -0.8571);
             let expected = haversine(&point, &expected_point);
+
+            assert_abs_diff_eq!(d, expected, epsilon = 1e-6);
+        }
+
+        // This condition gives us the case where the distance is far enough that the closest point is the south pole
+        // FIX: Think though this, it may solve the issue for the test in the newton module, but the newton case for the
+        // same thing seems to be working, so not sure what the deal is with the failure on the convergence in knn
+        #[test]
+        fn southern_hemisphere_sydney() {
+            let lat_min = -PI / 2.0;
+            let lat_max = 0.0;
+            let lon = 0.0;
+            let point = p!(2.639100, -0.591122); // approx sydney
+            let (d, _) = meridian_to_point(lat_min, lat_max, lon, &point);
+
+            let (expected, ep) = gradient_descent::merdian_to_point(lat_min, lat_max, lon, &point);
+            eprintln!("Expected: {} {:?}", expected, ep);
 
             assert_abs_diff_eq!(d, expected, epsilon = 1e-6);
         }
@@ -481,9 +401,9 @@ mod tests {
             let lat_max = 1.0;
             let lon = 0.1;
             let point = Point::new(0.11, 0.2);
-            let (d, _) = vertical_line_to_point(lat_min, lat_max, lon, &point);
+            let (d, _) = meridian_to_point(lat_min, lat_max, lon, &point);
 
-            let (expected, _) = gradient_descent_vline_pt(lat_min, lat_max, lon, &point);
+            let (expected, _) = gradient_descent::merdian_to_point(lat_min, lat_max, lon, &point);
 
             assert_abs_diff_eq!(d, expected, epsilon = 1e-6);
         }
@@ -498,7 +418,7 @@ mod tests {
             let l1 = Line::new((0.0, -0.3), (0.0, 0.3));
             let l2 = Line::new((0.0, -0.5), (0.0, 0.5));
 
-            let d = vertical_line_to_line(&l1, &l2);
+            let d = meridian_to_meridian(&l1, &l2);
             assert_abs_diff_eq!(d, 0.0, epsilon = 1e-6);
         }
 
@@ -508,24 +428,10 @@ mod tests {
             let l1 = Line::new((0.0, -1.0), (0.0, 1.0));
             let l2 = Line::new((DEGREE, -1.0), (DEGREE, 1.0));
 
-            let distance = vertical_line_to_line(&l1, &l2);
-            eprintln!("{}", distance);
+            let distance = meridian_to_meridian(&l1, &l2);
 
-            // Expected distance should be roughly the great circle distance at the equator
-            let expected = haversine(&Point::new(0.0, 0.0), &Point::new(DEGREE, 0.0));
-            assert_abs_diff_eq!(distance, expected, epsilon = 1e-6);
-        }
+            let (expected, _, _) = gradient_descent::meridian_to_meridian(&l1, &l2);
 
-        #[test]
-        fn non_overlapping_vertical_lines() {
-            // Lines at different latitudes that don't overlap (radians)
-            let l1 = Line::new((0.0, -0.2), (0.0, -0.1)); // Southern line
-            let l2 = Line::new((0.01745, 0.1), (0.01745, 0.2)); // Northern line, ~1 degree east
-
-            let distance = vertical_line_to_line(&l1, &l2);
-
-            // Should be distance between closest endpoints
-            let expected = haversine(&Point::new(0.0, -0.1), &Point::new(0.01745, 0.1));
             assert_abs_diff_eq!(distance, expected, epsilon = 1e-6);
         }
 
@@ -536,45 +442,74 @@ mod tests {
             let l1 = Line::new((PI - half, -0.1), (PI - half, 0.1)); // ~179.5° in radians
             let l2 = Line::new((-PI + half, -0.1), (-PI + half, 0.1)); // ~-179.5° in radians
 
-            let distance = vertical_line_to_line(&l1, &l2);
+            let distance = meridian_to_meridian(&l1, &l2);
 
             // The shortest distance should be across the antimeridian (~1°)
             // not the long way around (~359°)
-            let expected = haversine(&Point::new(PI - half, 0.0), &Point::new(-PI + half, 0.0));
+            let (expected, _, _) = gradient_descent::meridian_to_meridian(&l1, &l2);
             assert_abs_diff_eq!(distance, expected, epsilon = 1e-6);
 
             // Sanity check: should be much less than halfway around the world
-            assert!(distance < PI / 2.0);
+            assert!(distance < PI / 8.0);
         }
 
+        // Test offset lines with a small lon separation but a larger lat range.
         #[test]
-        fn offset_vertical_lines() {
+        fn offset_vertical_lines_1() {
             // Lines that are offset in both longitude and latitude (radians)
             let l1 = Line::new((0.0, 0.0), (0.0, 0.05));
-            let l2 = Line::new((DEGREE, 0.02), (DEGREE, 0.1));
+            let l2 = Line::new((DEGREE, -0.02), (DEGREE, 0.1));
 
-            let distance = vertical_line_to_line(&l1, &l2);
+            let distance = meridian_to_meridian(&l1, &l2);
 
             // The closest points should be somewhere in the overlapping latitude range
             // Which we add as an assert for a sanity check, but use grad desc as primary solution
-            let (expected, p1, p2) = gradient_descent_vline_vline(&l1, &l2);
-            assert_abs_diff_eq!(distance, expected, epsilon = 1e-6);
+            let (expected, p1, p2) = gradient_descent::meridian_to_meridian(&l1, &l2);
 
+            assert_abs_diff_eq!(distance, expected, epsilon = 1e-6);
             assert!(p1.y() >= 0.0 && p1.y() <= 0.05);
             assert!(p2.y() >= 0.02 && p2.y() <= 0.1);
         }
 
-        // FIX: Make this test work
+        // Test more even lon and lat spread.
+        #[test]
+        fn offset_vertical_lines_2() {
+            // Lines that are offset in both longitude and latitude (radians)
+            let l1 = Line::new((0.0, 0.0), (0.0, 0.55));
+            let l2 = Line::new((20.0 * DEGREE, -0.02), (20.0 * DEGREE, 0.2));
+
+            let distance = meridian_to_meridian(&l1, &l2);
+
+            let (expected, _, _) = gradient_descent::meridian_to_meridian(&l1, &l2);
+
+            assert_abs_diff_eq!(distance, expected, epsilon = 1e-6);
+        }
+
+        // Test small separation in a corner.
+        // TODO: Consider moving this test to point-to-line as it fits better there
+        #[test]
+        fn offset_vertical_lines_3() {
+            // Lines that are offset in both longitude and latitude (radians)
+            let l1 = Line::new((0.0, 0.0), (0.0, 0.55));
+            let l2 = Line::new((20.0 * DEGREE, 0.0), (20.0 * DEGREE, 0.6));
+
+            let distance = meridian_to_meridian(&l1, &l2);
+            // The closest points should be somewhere in the overlapping latitude range
+            let (expected, _, _) = gradient_descent::meridian_to_meridian(&l1, &l2);
+
+            assert_abs_diff_eq!(distance, expected, epsilon = 1e-6);
+        }
+
         #[test]
         fn offset_vertical_lines_northern_hemisphere() {
             // Lines offset in both longitude and latitude, away from equator and further apart
             let l1 = Line::new((0.0, 35.0 * DEGREE), (0.0, 70.0 * DEGREE)); // 0° lon, 35° to 70° lat
             let l2 = Line::new((5.0 * DEGREE, 50.0 * DEGREE), (5.0 * DEGREE, 80.0 * DEGREE)); // ~5° lon, 50° to 80° lat
 
-            let distance = vertical_line_to_line(&l1, &l2);
+            let distance = meridian_to_meridian(&l1, &l2);
+            let (expected, _, _) = gradient_descent::meridian_to_meridian(&l1, &l2);
 
             // The closest points should be in the overlapping latitude range (50° to 70°)
-            let (expected, _, _) = gradient_descent_vline_vline(&l1, &l2);
             assert_abs_diff_eq!(distance, expected, epsilon = 1e-6);
         }
     }

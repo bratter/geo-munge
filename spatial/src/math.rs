@@ -3,8 +3,8 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use geo::{
-    coord, BoundingRect, GeoFloat, GeoNum, Geometry, GeometryCollection, Line, LineString,
-    MultiLineString, MultiPoint, MultiPolygon, Point, Polygon, Rect, Triangle,
+    coord, BoundingRect, GeoNum, Geometry, GeometryCollection, Line, LineString, MultiLineString,
+    MultiPoint, MultiPolygon, Point, Polygon, Rect, Triangle,
 };
 
 /// Helper macro for making points
@@ -24,22 +24,6 @@ macro_rules! l {
             geo::coord! { x: $x2, y: $y2 },
         )
     };
-}
-
-/// Check that a value lies within the range of the others, irrespective of knowing the max/min of the others.
-#[inline]
-pub fn is_between<T: GeoFloat>(value: T, a: T, b: T) -> bool {
-    (a <= value && value <= b) || (b <= value && value <= a)
-}
-
-/// Get the closest value to two other values.
-#[inline]
-pub fn closest<T: GeoFloat>(value: T, a: T, b: T) -> T {
-    if (value - a).abs() <= (value - b).abs() {
-        a
-    } else {
-        b
-    }
 }
 
 /// Determine whether a [`Point`] in contained within or sits on the boundary of
@@ -82,7 +66,7 @@ pub fn pt_rect_postion<T: GeoNum>(rect: &Rect<T>, pt: &Point<T>) -> PtRectPostio
     let north = y > rect.max().y;
     let east = x > rect.max().x;
     let south = y < rect.min().y;
-    let west = x < rect.min().y;
+    let west = x < rect.min().x;
 
     match (north, east, south, west) {
         (false, false, false, false) => PtRectPostion::Contained,
