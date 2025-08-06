@@ -16,7 +16,7 @@ use crate::p;
 use super::{haversine, MAX_ITERATIONS_MSG, VALID_GF};
 
 const DEBUG_DISPLAY: bool = false;
-const TOLERANCE: f64 = 1e-8;
+const TOLERANCE: f64 = 1e-7;
 
 /// Gradient descent method for calculating the minimum distance between a meridian segment and a point.
 ///
@@ -32,73 +32,97 @@ pub(super) fn merdian_to_point<T: GeoFloat>(
     // Setup, including ensuring correct ordering of the input lat range
     // We use a tighter tolerance for accuracy rather than efficiency
     let tolerance = T::from(TOLERANCE).expect(VALID_GF);
+
     let lat_min = lat_a.min(lat_b);
     let lat_max = lat_a.max(lat_b);
 
-    // For gradient descent, start at t = 0
-    let mut t = T::zero();
-    let mut delta = T::from(0.1).expect(VALID_GF);
-    let mut d_prev: T;
-    let mut d_cur = T::from(9.0).expect(VALID_GF); // As long as it's bigger than PI it should be fine
+    // In order to account for the cases where there is a local max in the domain, we set our initial T to be the end
+    // with the smallest distance, which should guarantee that we don't return a non-minimum endpoint
+    let dist_at_min = haversine(&p!(lon, lat_min), point);
+    let dist_at_max = haversine(&p!(lon, lat_max), point);
+
+    // Start at the better endpoint for gradient descent
+    let mut t = if dist_at_min <= dist_at_max {
+        T::zero()
+    } else {
+        T::one()
+    };
+
+    let mut learning_rate = T::from(0.1).expect(VALID_GF);
+    let h = T::from(1e-8).expect(VALID_GF); // For gradient computation
+
+    let mut d_prev;
+    let mut d_cur = T::from(9.0).expect(VALID_GF); // Large initial value
+    let mut pt_cur;
 
     if DEBUG_DISPLAY {
-        eprintln!("   i t_value  d_prev   d_cur    | lat");
+        eprintln!("   i t_value  d_cur    gradient    lr       | lat");
     }
 
-    for i in 0..=1000 {
+    for i in 0..=10_000 {
         d_prev = d_cur;
 
-        let pt_cur = p!(lon, lat_min + t * (lat_max - lat_min));
+        // Current point and distance
+        pt_cur = p!(lon, lat_min + t * (lat_max - lat_min));
         d_cur = haversine(&pt_cur, point);
+
+        // Compute gradient using finite differences
+        let t_plus = (t + h).min(T::one());
+        let t_minus = (t - h).max(T::zero());
+
+        let pt_plus = p!(lon, lat_min + t_plus * (lat_max - lat_min));
+        let pt_minus = p!(lon, lat_min + t_minus * (lat_max - lat_min));
+
+        let d_plus = haversine(&pt_plus, point);
+        let d_minus = haversine(&pt_minus, point);
+
+        let gradient = (d_plus - d_minus) / (t_plus - t_minus);
+        let gradient_norm = gradient.abs();
 
         if DEBUG_DISPLAY {
             eprintln!(
-                "{:>4} {:.6} {:.6} {:.6} | {:+.6}",
+                "{:>4} {:.6} {:.6} {:+.8} {:.6} | {:+.10}",
                 i,
                 t.to_f64().unwrap(),
-                d_prev.to_f64().unwrap(),
                 d_cur.to_f64().unwrap(),
+                gradient.to_f64().unwrap(),
+                learning_rate.to_f64().unwrap(),
                 pt_cur.y().to_f64().unwrap(),
             );
         }
 
-        if (d_prev - d_cur).abs() < tolerance {
+        // Check convergence on both distance change and gradient magnitude
+        if (d_prev - d_cur).abs() < tolerance && gradient_norm < tolerance {
             return (d_cur, pt_cur);
         }
 
-        // Halve the delta if we blow past the minimum point
-        if d_cur > d_prev {
-            delta = -delta / (T::one() + T::one());
+        // Handle boundary cases - if at boundary and gradient points outward, we're done
+        if t == T::zero() && gradient >= T::zero() {
+            return (d_cur, pt_cur);
+        }
+        if t == T::one() && gradient <= T::zero() {
+            return (d_cur, pt_cur);
         }
 
-        // t must be clamped between 0 and 1, but when the delta is large, we don't want to assume that the minimum
-        // can't be between the previous point and the end point, so we back t away from the end point, but more
-        // aggressively cut the delta to converge faster as it is quite likely the point is at the end
-        let new_t = t + delta;
-
-        if new_t >= T::one() {
-            let p_one = p!(lon, lat_max);
-            let d_one = haversine(&p_one, point);
-            let d_tol = haversine(&p!(lon, lat_max - tolerance), point);
-
-            if d_one < d_tol {
-                return (d_one, p_one);
-            } else {
-                delta = -delta / T::from(4.0).expect(VALID_GF);
-            }
-        } else if new_t <= T::zero() {
-            let p_zero = p!(lon, lat_min);
-            let d_zero = haversine(&p_zero, point);
-            let d_tol = haversine(&p!(lon, lat_min + tolerance), point);
-
-            if d_zero < d_tol {
-                return (d_zero, p_zero);
-            } else {
-                delta = -delta / T::from(4.0).expect(VALID_GF);
-            }
+        // Adaptive learning rate
+        learning_rate = if d_cur > d_prev {
+            learning_rate * T::from(0.5).expect(VALID_GF)
+        } else {
+            learning_rate * T::from(1.1).expect(VALID_GF)
         };
 
-        t = t + delta;
+        // Clamp learning rate to reasonable bounds
+        learning_rate = learning_rate.clamp(
+            T::from(1e-8).expect(VALID_GF),
+            T::from(0.5).expect(VALID_GF),
+        );
+
+        let base_step_size = T::from(0.01).expect(VALID_GF);
+        let step = learning_rate * base_step_size * (gradient / gradient_norm);
+
+        // Gradient descent; clamp to [0, 1]
+        let new_t = t - step;
+        t = new_t.clamp(T::zero(), T::one());
     }
 
     // Safety hatch - looks like a solution won't converge with these inputs

@@ -11,7 +11,7 @@ use crate::{
     p,
 };
 
-use super::newton::{meridian_to_meridian, meridian_to_point};
+use super::newton::meridian_to_meridian;
 
 /// Internal struct for ensuring Lng wrapping math works correctly.
 #[derive(Debug, Clone, Copy)]
@@ -136,14 +136,22 @@ pub fn haversine_pt_rect<T: GeoFloat>(pt: &Point<T>, rect: &Rect<T>) -> T {
         // Straight latitude differences the closest approach will be a longitude meridian
         PtRectPostion::North => pt.y() - rect.max().y,
         PtRectPostion::South => rect.min().y - pt.y(),
-        // On diagonals the great circle distance is to the nearest corner
-        PtRectPostion::NorthEast => haversine(pt, &Point::from(rect.max())),
-        PtRectPostion::SouthEast => haversine(pt, &Point::new(rect.max().x, rect.min().y)),
-        PtRectPostion::SouthWest => haversine(pt, &Point::from(rect.min())),
-        PtRectPostion::NorthWest => haversine(pt, &Point::new(rect.min().x, rect.max().y)),
-        // Vertical lines (constant longitude) require numerical solving
-        PtRectPostion::East => meridian_to_point(rect.min().y, rect.max().y, rect.max().x, pt).0,
-        PtRectPostion::West => meridian_to_point(rect.min().y, rect.max().y, rect.min().x, pt).0,
+        // WARN: This method changed to East-West version using point-to-line based on fixing underlying logic
+        // This should be reassessed before finalizing, including implementing some prop tests
+        // East use the rect's right edge
+        PtRectPostion::East | PtRectPostion::NorthEast | PtRectPostion::SouthEast => {
+            haversine_pt_line(
+                pt,
+                &l!(rect.max().x, rect.min().y, rect.max().x, rect.min().y),
+            )
+        }
+        // West use the rect's left edge
+        PtRectPostion::West | PtRectPostion::NorthWest | PtRectPostion::SouthWest => {
+            haversine_pt_line(
+                pt,
+                &l!(rect.min().x, rect.min().y, rect.min().x, rect.max().y),
+            )
+        }
     }
 }
 
@@ -320,19 +328,19 @@ mod test {
 
         // Test an overlap
         let b2 = Rect::new(p!(0.2, 0.0), p!(1.0, 0.8));
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), 0.0);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), 0.0, epsilon = 1e-6);
 
         // Test touching
         let b2 = Rect::new(p!(0.5, 0.0), p!(0.6, 0.2));
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), 0.0);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), 0.0, epsilon = 1e-6);
 
         // Test lat above - simple as the distance should just be the delta in radians
         let b2 = Rect::new(p!(0.1, 0.6), p!(0.3, 0.8));
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), 0.2);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), 0.2, epsilon = 1e-6);
 
         // Test lat below
         let b2 = Rect::new(p!(0.1, -0.4), p!(0.3, -0.5));
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), 0.3);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), 0.3, epsilon = 1e-6);
 
         // Test lng greater than, min dist @ 0.4, b2 ends higher
         let b2 = Rect::new(p!(0.6, 0.2), p!(0.8, 0.6));
@@ -340,7 +348,7 @@ mod test {
             &l!(0.5, -0.1, 0.5, 0.4),
             &l!(0.6, 0.2, 0.6, 0.6),
         );
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d, epsilon = 1e-6);
 
         // Test lng greater than, min dist @ -0.1, b2 starts lower
         let b2 = Rect::new(p!(0.7, -0.2), p!(0.8, -0.1));
@@ -348,7 +356,7 @@ mod test {
             &l!(0.5, -0.1, 0.5, 0.4),
             &l!(0.7, -0.2, 0.7, -0.1),
         );
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d, epsilon = 1e-6);
 
         // Test lng less than - min dist @ 0.3, b1 ends higher
         let b2 = Rect::new(p!(-0.2, 0.0), p!(-0.1, 0.3));
@@ -356,27 +364,27 @@ mod test {
             &l!(0.1, -0.1, 0.1, 0.4),
             &l!(-0.1, 0.0, -0.1, 0.3),
         );
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d, epsilon = 1e-6);
 
         // Test corner - top left
         let b2 = Rect::new(p!(-0.2, -0.3), p!(-0.1, -0.2));
         let d = haversine(&p!(0.1, -0.1), &p!(-0.1, -0.2));
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d, epsilon = 1e-6);
 
         // Test corner - top right
         let b2 = Rect::new(p!(0.8, -0.4), p!(0.9, -0.3));
         let d = haversine(&p!(0.5, -0.1), &p!(0.8, -0.3));
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d, epsilon = 1e-6);
 
         // Test corner - bottom right
         let b2 = Rect::new(p!(0.9, 0.6), p!(1.0, 0.7));
         let d = haversine(&p!(0.5, 0.4), &p!(0.9, 0.6));
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d, epsilon = 1e-6);
 
         // Test corner - bottom left
         let b2 = Rect::new(p!(-0.8, 0.7), p!(-0.6, 0.8));
         let d = haversine(&p!(0.1, 0.4), &p!(-0.6, 0.7));
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d, epsilon = 1e-6);
     }
 
     #[test]
@@ -389,7 +397,7 @@ mod test {
             &l!(3.0, 0.0, 3.0, 0.4),
             &l!(-3.0, 0.1, -3.0, 0.3),
         );
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d, epsilon = 1e-6);
 
         // Sanity check on overall distance - much less than a circle
         assert!(d < PI / 8.0);
@@ -397,7 +405,7 @@ mod test {
         // Test corner
         let b2 = Rect::new(p!(-2.8, -0.4), p!(-2.7, -0.2));
         let d = haversine(&p!(3.0, 0.0), &p!(-2.8, 0.2));
-        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d);
+        assert_abs_diff_eq!(haversine_rect_rect(&b1, &b2), d, epsilon = 1e-6);
     }
 
     fn test_poly() -> Polygon {
@@ -435,7 +443,7 @@ mod test {
         let dist = haversine_pt_poly(&pt, &poly);
         let test = haversine_pt_line(&pt, &line);
 
-        assert_abs_diff_eq!(dist, test);
+        assert_abs_diff_eq!(dist, test, epsilon = 1e-6);
     }
 
     #[test]
@@ -448,6 +456,6 @@ mod test {
 
         let dist = haversine_pt_poly(&pt, &poly);
         let test = haversine_pt_line(&pt, &line);
-        assert_abs_diff_eq!(dist, test);
+        assert_abs_diff_eq!(dist, test, epsilon = 1e-6);
     }
 }

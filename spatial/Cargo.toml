@@ -3,6 +3,9 @@ name = "spatial"
 version.workspace = true
 edition.workspace = true
 
+[features]
+prop-tests = []
+
 [dependencies]
 anyhow = { workspace = true }
 geo = { workspace = true }
@@ -10,3 +13,4 @@ geo = { workspace = true }
 [dev-dependencies]
 approx = "0.5.1"
 geojson = { workspace = true }
+rand = "0.9.2"
