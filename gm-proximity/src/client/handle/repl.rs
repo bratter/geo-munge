@@ -1,13 +1,17 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     time::Duration,
 };
 
 use anyhow::{bail, Error, Result};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 
-use crate::{args::ResetArgs, message::prelude::*};
+use crate::{
+    args::{KnnArgs, ResetArgs},
+    message::prelude::*,
+};
 
 use super::{handlers, CommandHandler, ResponseHandler};
 
@@ -29,15 +33,15 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
     // TODO: Is there a more efficient way to do this without spinning up a new thread?
     loop {
         // First dispatch all the requests
-        match select_command()? {
+        let command_result = match select_command()? {
             // Stats
-            Some(0) => {
-                handler.send(Request::Stats)?;
-            }
+            Some(0) => handler.send(Request::Stats),
             // Reset
             Some(1) => {
                 if let Some(reset_args) = build_reset() {
-                    handlers::reset(handler, reset_args)?;
+                    handlers::reset(handler, reset_args)
+                } else {
+                    Ok(())
                 }
             }
             // Load
@@ -47,27 +51,44 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
                 // this case
                 // TODO: Spawn this on a thread
                 if let Some(path) = build_path() {
-                    handlers::load(handler, Some(path))?;
+                    handlers::load(handler, Some(path))
+                } else {
+                    Ok(())
                 }
             }
             // Get
             Some(3) => {
                 // For Get, we only send a single request
                 if let Some(get_req) = build_get(&mut settings) {
-                    handler.send(Request::Get(get_req))?;
+                    handler.send(Request::Get(get_req))
+                } else {
+                    Ok(())
                 }
             }
             // Delete
             Some(4) => {
                 // For Delete, we only send a single request
                 if let Some(key_set) = build_delete(&mut settings) {
-                    handler.send(Request::Delete(key_set))?;
+                    handler.send(Request::Delete(key_set))
+                } else {
+                    Ok(())
                 }
             }
             // Knn
-            Some(5) => {}
+            Some(5) => {
+                // For Knn, we want to use the handler's request sending logic
+                // TODO: Spawn this as a thread as the data volume could be large
+                if let Some(knn_args) = build_knn(&mut settings) {
+                    handlers::knn(handler, knn_args)
+                } else {
+                    Ok(())
+                }
+            }
             // Window
-            Some(6) => {}
+            Some(6) => {
+                eprintln!("Window query functionality still WIP");
+                Ok(())
+            }
             // Change settings
             Some(7) => change_settings(&mut settings),
             None => {
@@ -75,12 +96,20 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
                     // TODO: This seems to be causing a panic due to a closed channel if any work has been done
                     eprintln!("Quitting");
                     break;
+                } else {
+                    Ok(())
                 }
             }
             _ => unreachable!(),
+        };
+
+        if let Err(err) = command_result {
+            // TODO: Would like to make this a palette color, could add ;38;5;x where x is the color index, but need to
+            // find the right one; or ;31 is red, but is it the default palette red?
+            eprintln!("\x1b[1mCommand error:\x1b[0m {}", err);
         }
 
-        // Then recieve responses - we need to check timeout and outstanding count to avoid locking up
+        // Then receive responses - we need to check timeout and outstanding count to avoid locking up
         // TODO: Could interupt this loop with a confirm quit if a long time has elapsed between messages
         while handler.outstanding() > 0 {
             recv.recv_timeout(Duration::from_millis(100))
@@ -93,6 +122,7 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
 
 #[derive(Default)]
 struct Settings {
+    query_data_type: QueryDataType,
     query_key_type: QueryKeyType,
     meta_only: bool,
 }
@@ -103,6 +133,34 @@ impl Settings {
             "Uid"
         } else {
             "Custom"
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum QueryDataType {
+    #[default]
+    Key = 0,
+    Geometry = 1,
+}
+
+impl QueryDataType {
+    fn as_str(&self) -> &str {
+        match self {
+            QueryDataType::Key => "Key",
+            QueryDataType::Geometry => "Geometry",
+        }
+    }
+}
+
+impl TryFrom<usize> for QueryDataType {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Key),
+            1 => Ok(Self::Geometry),
+            _ => bail!("Invalid index for QueryDataValue"),
         }
     }
 }
@@ -168,8 +226,20 @@ fn confirm_quit() -> Result<bool> {
     Ok(conf)
 }
 
-fn change_settings(settings: &mut Settings) {
+fn change_settings(settings: &mut Settings) -> Result<()> {
     eprintln!("Changing settings used for key types and retrieval options");
+
+    let data_type = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Spatial operation type")
+        .items(&["Keys", "Geometries"])
+        .default(0)
+        .interact()
+        .map_err(Error::new)
+        .and_then(TryInto::try_into)
+        .unwrap();
+
+    settings.query_data_type = data_type;
+    eprintln!("Updated input data type: {}", data_type.as_str());
 
     let key_type: QueryKeyType = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Retrieval key type")
@@ -181,7 +251,7 @@ fn change_settings(settings: &mut Settings) {
         .unwrap();
 
     settings.query_key_type = key_type;
-    eprintln!("Updated query key type: {:?}", key_type);
+    eprintln!("Updated query key type: {}", key_type.as_str());
 
     let meta_only = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("Retrieve meta only")
@@ -191,11 +261,17 @@ fn change_settings(settings: &mut Settings) {
         .unwrap();
 
     settings.meta_only = meta_only;
+
+    Ok(())
 }
 
 // TODO: Consider a broader range of return values from here
 fn build_path() -> Option<PathBuf> {
     eprintln!("If directory attempts to FZF, if file loads it straight; . for cwd");
+    if let Ok(dir) = std::env::current_dir() {
+        eprintln!("Current working directory is {}", dir.to_string_lossy());
+    }
+
     let path: String = Input::with_theme(&ColorfulTheme::default())
         .with_prompt("Path to load")
         .interact_text()
@@ -340,7 +416,9 @@ fn key_set_loop(settings: &mut Settings) -> Option<KeySet> {
                 .interact()
                 .unwrap()
             {
-                0 => change_settings(settings),
+                0 => {
+                    _ = change_settings(settings);
+                }
                 1 => {}
                 2 => break None,
                 _ => unreachable!(),
@@ -379,7 +457,106 @@ fn build_delete(settings: &mut Settings) -> Option<KeySet> {
     key_set_loop(settings)
 }
 
-use std::process::{Command, Stdio};
+/// Build a knn argument set outside the context of clap.
+///
+/// Care must be taken to replicate clap exclusion rules, etc.
+///
+/// TODO:Consider pushing parsing the KnnArgs to the Args module and create a parsed variant here for use in the handler
+fn build_knn(settings: &mut Settings) -> Option<KnnArgs> {
+    let k: usize = loop {
+        let k_raw: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Enter k nearest neighbors to retrieve")
+            .interact_text()
+            .unwrap();
+
+        match k_raw.parse() {
+            Ok(k) => break k,
+            Err(err) => eprintln!("{}", err),
+        }
+    };
+
+    let r: Option<f64> = loop {
+        let r_raw: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Enter max search radius (blank for unbounded)")
+            .allow_empty(true)
+            .interact_text()
+            .unwrap();
+
+        if r_raw.len() == 0 {
+            break None;
+        } else {
+            match r_raw.parse() {
+                Ok(r) => break Some(r),
+                Err(err) => eprintln!("{}", err),
+            }
+        }
+    };
+
+    const ABORT_MSG: &str = "(abort to change settings)";
+    let (key_uid, key_bytes) = match (settings.query_data_type, settings.query_key_type) {
+        (QueryDataType::Geometry, _) => {
+            eprintln!("Querying with geometry {}", ABORT_MSG);
+            (false, false)
+        }
+        (QueryDataType::Key, QueryKeyType::Uid) => {
+            eprintln!(
+                "Querying with {} keys {}",
+                settings.query_key_type.as_str(),
+                ABORT_MSG
+            );
+            (true, false)
+        }
+        (QueryDataType::Key, QueryKeyType::Custom) => {
+            eprintln!(
+                "Querying with {} keys {}",
+                settings.query_key_type.as_str(),
+                ABORT_MSG
+            );
+            (false, true)
+        }
+    };
+
+    // TODO: Would like to directly use KeySet here, but doesn't work as it currently stands with the handler setup
+    eprintln!("Enter data in the appropriate format or blank to abort or choose a file");
+    let raw_data: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("Data")
+        .allow_empty(true)
+        .interact_text()
+        .unwrap();
+
+    let (data, file) = if raw_data.len() == 0 {
+        match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Abort or choose file")
+            .items(&["Abort", "Choose File"])
+            .default(0)
+            .interact()
+            .unwrap()
+        {
+            0 => return None,
+            1 => {
+                // We return if the path is None rather than injecting null into the file as this represents an error
+                // case where we have no file or data
+                let path = build_path();
+                if path.is_none() {
+                    return None;
+                }
+                (None, path)
+            }
+            _ => unreachable!(),
+        }
+    } else {
+        (Some(raw_data), None)
+    };
+
+    Some(KnnArgs {
+        k,
+        r,
+        key_uid,
+        key_bytes,
+        data,
+        file,
+    })
+}
 
 // TODO: Improve this handling, perhaps add a setting for a command
 fn run_fzf_in_dir<P: AsRef<Path>>(dir: &P) -> std::io::Result<Option<PathBuf>> {

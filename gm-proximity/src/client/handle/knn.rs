@@ -7,8 +7,7 @@ use crate::{args::KnnArgs, input_io::Input, message::prelude::*};
 use super::CommandHandler;
 
 /// Knn command handler
-/// TODO: Fix this - it is a bare minimum test version - which at least is reporting results, even if the results don't
-/// look right
+/// TODO: Fix this - it is a bare minimum test version
 /// TODO: See notes in the load handler - improvements here will be similiar
 /// TODO: After those are done, then try to simplify - e.g. abstract the 4 iterators behind an impl - we could even make
 /// a string input a bufreader and just make it work as input

@@ -152,7 +152,19 @@ impl ResponseHandler {
                     println!("{:?}", r);
                 }
             }
-            Response::KnnData(results) => println!("{} knn: {:?}", prefix, results),
+            Response::KnnData(results) => {
+                println!(
+                    "{} knn: prints each neighbor with input index, store uid, and distance in radians",
+                    prefix
+                );
+
+                for item_res in results {
+                    match item_res {
+                        Ok(item) => println!("{},{},{}", item.index, item.uid, item.distance),
+                        Err(s) => println!("Knn Error: {}", s),
+                    }
+                }
+            }
             Response::Error(msg) => println!("{} error: {}", prefix, msg),
             Response::Bench(_) => unreachable!(),
         }
