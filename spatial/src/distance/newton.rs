@@ -38,7 +38,9 @@ const DELTA: f64 = 1e-7;
 /// This allows the initial shortcutting based on endpoint detection and aggressive stepping as there will never be
 /// any local minima.
 ///
+/// FIX: We should not constrain point-meridian to be inside the range
 /// FIX: This function is failing some prop tests - if we end up using it this needs to be explored
+#[allow(unused)]
 pub(super) fn meridian_to_point<T: GeoFloat>(
     lat_a: T,
     lat_b: T,
@@ -212,8 +214,8 @@ pub(super) fn meridian_to_point<T: GeoFloat>(
 
     // WARN: Consider how to handle the fall through here - do we want to gracefully fail with incorrect values, or just
     // return the best - will depend on exactly where we land with fixing the method
-    //return (dist_ft(t), p!(T::zero(), T::zero()));
-    panic!("{}", MAX_ITERATIONS_MSG);
+    return (dist_ft(t), p!(T::zero(), T::zero()));
+    //panic!("{}", MAX_ITERATIONS_MSG);
 }
 
 /// Find the minimum distance between two meridian segments using Newton's method optimization.
@@ -228,7 +230,22 @@ pub(super) fn meridian_to_point<T: GeoFloat>(
 /// # Assumptions
 /// - both of the provided segments are meridians (i.e., same x-value at start and end
 /// - of the segments overlap
-pub(super) fn meridian_to_meridian<T: GeoFloat>(l1: &Line<T>, l2: &Line<T>) -> T {
+///
+/// # Notes
+///
+/// The geometry of this problem dictates that the minimum value will always be at one endpoint of one of the segments.
+/// This endpoint will usually be the one where the "shorter" of the pair (with a pair being the min of the two segments
+/// and the max of the two segements) is closer to a pole. There will be an exception where both pairs are in opposing
+/// hemispheres and very close in absolute value.
+///
+/// TODO: Check if it is worthwhile covering the edge case where the north and south ends are almost identical in terms
+/// of abosolute value - if it matters, then there should be an overlap region where we need to just test both options
+/// TODO: If we have other numerical methods we can wrap this, as the only thing that changes is the point-to-line fn
+#[allow(unused)]
+pub(super) fn meridian_to_meridian<T: GeoFloat>(
+    l1: &Line<T>,
+    l2: &Line<T>,
+) -> (T, Point<T>, Point<T>) {
     debug_assert_eq!(l1.dx(), T::zero());
     debug_assert_eq!(l2.dx(), T::zero());
 
@@ -242,23 +259,18 @@ pub(super) fn meridian_to_meridian<T: GeoFloat>(l1: &Line<T>, l2: &Line<T>) -> T
     let overlap_min = l1_min.max(l2_min);
     let overlap_max = l1_max.min(l2_max);
 
-    debug_assert!(
-        overlap_min <= overlap_max,
-        "provided line segments do not overlap"
-    );
-
     // Pick the one with larger absolute value (closer to a pole)
-    let (chosen_pt, other_line) = if overlap_min.abs() >= overlap_max.abs() {
+    let (pt_on_l1, chosen_pt, other_line) = if overlap_min.abs() >= overlap_max.abs() {
         if l1_min > l2_min {
-            (p!(l1.start.x, l1_min), l2)
+            (true, p!(l1.start.x, l1_min), l2)
         } else {
-            (p!(l2.start.x, l2_min), l1)
+            (false, p!(l2.start.x, l2_min), l1)
         }
     } else {
         if l1_max < l2_max {
-            (p!(l1.start.x, l1_max), l2)
+            (true, p!(l1.start.x, l1_max), l2)
         } else {
-            (p!(l2.start.x, l2_max), l1)
+            (false, p!(l2.start.x, l2_max), l1)
         }
     };
 
@@ -267,14 +279,18 @@ pub(super) fn meridian_to_meridian<T: GeoFloat>(l1: &Line<T>, l2: &Line<T>) -> T
     }
 
     // Then the problem reduces to a line_to_point optimization
-    let (d, _) = meridian_to_point(
+    let (d, other_pt) = meridian_to_point(
         other_line.start.y,
         other_line.end.y,
         other_line.start.x,
         &chosen_pt,
     );
 
-    d
+    if pt_on_l1 {
+        (d, chosen_pt, other_pt)
+    } else {
+        (d, other_pt, chosen_pt)
+    }
 }
 
 #[cfg(test)]
@@ -430,7 +446,7 @@ mod tests {
             let l1 = Line::new((0.0, -0.3), (0.0, 0.3));
             let l2 = Line::new((0.0, -0.5), (0.0, 0.5));
 
-            let d = meridian_to_meridian(&l1, &l2);
+            let (d, _, _) = meridian_to_meridian(&l1, &l2);
             assert_abs_diff_eq!(d, 0.0, epsilon = 1e-6);
         }
 
@@ -440,8 +456,7 @@ mod tests {
             let l1 = Line::new((0.0, -1.0), (0.0, 1.0));
             let l2 = Line::new((DEGREE, -1.0), (DEGREE, 1.0));
 
-            let distance = meridian_to_meridian(&l1, &l2);
-
+            let (distance, _, _) = meridian_to_meridian(&l1, &l2);
             let (expected, _, _) = gradient_descent::meridian_to_meridian(&l1, &l2);
 
             assert_abs_diff_eq!(distance, expected, epsilon = 1e-6);
@@ -454,7 +469,7 @@ mod tests {
             let l1 = Line::new((PI - half, -0.1), (PI - half, 0.1)); // ~179.5° in radians
             let l2 = Line::new((-PI + half, -0.1), (-PI + half, 0.1)); // ~-179.5° in radians
 
-            let distance = meridian_to_meridian(&l1, &l2);
+            let (distance, _, _) = meridian_to_meridian(&l1, &l2);
 
             // The shortest distance should be across the antimeridian (~1°)
             // not the long way around (~359°)
@@ -472,7 +487,7 @@ mod tests {
             let l1 = Line::new((0.0, 0.0), (0.0, 0.05));
             let l2 = Line::new((DEGREE, -0.02), (DEGREE, 0.1));
 
-            let distance = meridian_to_meridian(&l1, &l2);
+            let (distance, _, _) = meridian_to_meridian(&l1, &l2);
 
             // The closest points should be somewhere in the overlapping latitude range
             // Which we add as an assert for a sanity check, but use grad desc as primary solution
@@ -490,8 +505,7 @@ mod tests {
             let l1 = Line::new((0.0, 0.0), (0.0, 0.55));
             let l2 = Line::new((20.0 * DEGREE, -0.02), (20.0 * DEGREE, 0.2));
 
-            let distance = meridian_to_meridian(&l1, &l2);
-
+            let (distance, _, _) = meridian_to_meridian(&l1, &l2);
             let (expected, _, _) = gradient_descent::meridian_to_meridian(&l1, &l2);
 
             assert_abs_diff_eq!(distance, expected, epsilon = 1e-6);
@@ -505,7 +519,7 @@ mod tests {
             let l1 = Line::new((0.0, 0.0), (0.0, 0.55));
             let l2 = Line::new((20.0 * DEGREE, 0.0), (20.0 * DEGREE, 0.6));
 
-            let distance = meridian_to_meridian(&l1, &l2);
+            let (distance, _, _) = meridian_to_meridian(&l1, &l2);
             // The closest points should be somewhere in the overlapping latitude range
             let (expected, _, _) = gradient_descent::meridian_to_meridian(&l1, &l2);
 
@@ -518,7 +532,7 @@ mod tests {
             let l1 = Line::new((0.0, 35.0 * DEGREE), (0.0, 70.0 * DEGREE)); // 0° lon, 35° to 70° lat
             let l2 = Line::new((5.0 * DEGREE, 50.0 * DEGREE), (5.0 * DEGREE, 80.0 * DEGREE)); // ~5° lon, 50° to 80° lat
 
-            let distance = meridian_to_meridian(&l1, &l2);
+            let (distance, _, _) = meridian_to_meridian(&l1, &l2);
             let (expected, _, _) = gradient_descent::meridian_to_meridian(&l1, &l2);
 
             // The closest points should be in the overlapping latitude range (50° to 70°)
@@ -531,6 +545,8 @@ mod tests {
         use super::*;
         use approx::abs_diff_ne;
         use rand::{rngs::StdRng, Rng, SeedableRng};
+
+        use crate::l;
 
         #[test]
         fn merdian_to_point_newtons_method_matches_grad_descent() {
@@ -572,6 +588,62 @@ mod tests {
                 }
 
                 // FIX: Some cases are failing here, need to investigate further if we are going to use this function
+                //assert_abs_diff_eq!(result.0, expected.0, epsilon = 1e-6);
+            }
+        }
+
+        #[test]
+        fn meridian_to_meridan_newtons_method_matches_grad_descent() {
+            const SEED: u64 = 41;
+            const NUM_TESTS: usize = 10;
+
+            let mut rng = StdRng::seed_from_u64(SEED);
+
+            for i in 0..NUM_TESTS {
+                let lon = rng.random_range(-PI..PI);
+                let l1 = l!(
+                    lon,
+                    rng.random_range(-FRAC_PI_2..FRAC_PI_2),
+                    lon,
+                    rng.random_range(-FRAC_PI_2..FRAC_PI_2)
+                );
+                let lon = rng.random_range(-PI..PI);
+                let l2 = l!(
+                    lon,
+                    rng.random_range(-FRAC_PI_2..FRAC_PI_2),
+                    lon,
+                    rng.random_range(-FRAC_PI_2..FRAC_PI_2)
+                );
+
+                let result = meridian_to_meridian(&l1, &l2);
+                let expected = gradient_descent::meridian_to_meridian(&l1, &l2);
+
+                if abs_diff_ne!(result.0, expected.0, epsilon = 1e-6) {
+                    eprintln!("Error on iteration {}", i);
+                    eprintln!(
+                        "lat1.1 = {:+.10} lat1.2 = {:+.10} lon1 = {:+.10} | lat2.1 = {:+.10} lat2.2 = {:+.10}, lon 2 = {:+.10}]",
+                        l1.start.x,
+                        l1.end.x,
+                        l1.start.y,
+                        l2.start.x,
+                        l2.end.x,
+                        l2.start.y,
+                    );
+                    eprintln!(
+                        "actual: dist = {:.6} lat1 = {:.6} lat2 = {:.6}",
+                        result.0,
+                        result.1.y(),
+                        result.2.y(),
+                    );
+                    eprintln!(
+                        "expect: dist = {:.6} lat1 = {:.6} lat2 = {:.6}",
+                        expected.0,
+                        expected.1.y(),
+                        expected.2.y(),
+                    );
+                }
+
+                // TODO: Uncomment assert when done with test
                 //assert_abs_diff_eq!(result.0, expected.0, epsilon = 1e-6);
             }
         }

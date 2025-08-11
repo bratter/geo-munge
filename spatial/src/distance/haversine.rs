@@ -11,7 +11,8 @@ use crate::{
     p,
 };
 
-use super::newton::meridian_to_meridian;
+// FIX: Using the slower gradient descent algorithms until we fully explore a fast and accurate optimization
+use super::gradient_descent::meridian_to_meridian;
 
 /// Internal struct for ensuring Lng wrapping math works correctly.
 #[derive(Debug, Clone, Copy)]
@@ -191,7 +192,7 @@ pub fn haversine_rect_rect<T: GeoFloat>(r1: &Rect<T>, r2: &Rect<T>) -> T {
         // distance for this lat and the respective lngs
         // TODO: When optimizing it may turn out that more aggressive approximations are fine, like using the old
         // version of taking the common point with the highest abs lat
-        (false, true) => {
+        (false, _) => {
             // Easiest way to adjust for lng wrapping is to take the pair
             // with the min lng delta, because Lng::sub deals with wrapping
             let delta_xa = f64::from(Lng::from(r1.max().x) - Lng::from(r2.min().x)).abs();
@@ -209,29 +210,30 @@ pub fn haversine_rect_rect<T: GeoFloat>(r1: &Rect<T>, r2: &Rect<T>) -> T {
                 )
             };
 
-            meridian_to_meridian(&l1, &l2)
-        }
-        // When neither overlaps, take the distance from the closest
-        // corners, accounting for wrapping lngs
-        (false, false) => {
-            // Easiest way to adjust for lng wrapping is to take the pair
-            // with the min lng delta, because Lng::sub deals with wrapping
-            let delta_xa = f64::from(Lng::from(r1.max().x) - Lng::from(r2.min().x)).abs();
-            let delta_xi = f64::from(Lng::from(r1.min().x) - Lng::from(r2.max().x)).abs();
+            meridian_to_meridian(&l1, &l2).0
+        } // When neither overlaps, take the distance from the closest
+          // corners, accounting for wrapping lngs
+          // FIX: This branch eliminated due to the observation that there will be cases where nearest endpoints are not
+          // necessarily the closest
+          /*(false, false) => {
+              // Easiest way to adjust for lng wrapping is to take the pair
+              // with the min lng delta, because Lng::sub deals with wrapping
+              let delta_xa = f64::from(Lng::from(r1.max().x) - Lng::from(r2.min().x)).abs();
+              let delta_xi = f64::from(Lng::from(r1.min().x) - Lng::from(r2.max().x)).abs();
 
-            let (x1, x2) = if delta_xa < delta_xi {
-                (r1.max().x, r2.min().x)
-            } else {
-                (r1.min().x, r2.max().x)
-            };
-            let (y1, y2) = if r1.max().y < r2.min().y {
-                (r1.max().y, r2.min().y)
-            } else {
-                (r1.min().y, r2.max().y)
-            };
+              let (x1, x2) = if delta_xa < delta_xi {
+                  (r1.max().x, r2.min().x)
+              } else {
+                  (r1.min().x, r2.max().x)
+              };
+              let (y1, y2) = if r1.max().y < r2.min().y {
+                  (r1.max().y, r2.min().y)
+              } else {
+                  (r1.min().y, r2.max().y)
+              };
 
-            haversine(&p!(x1, y1), &p!(x2, y2))
-        }
+              haversine(&p!(x1, y1), &p!(x2, y2))
+          }*/
     }
 }
 

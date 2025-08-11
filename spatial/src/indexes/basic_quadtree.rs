@@ -220,6 +220,7 @@ enum WorkType<T> {
     Node(Arc<RwLock<Node<T>>>),
 }
 
+// FIX: This must be built as a custom iterator that doesn't collect then emit
 impl<T> Knn<T> for BasicQuadTree<T>
 where
     T: Deref + Clone,
@@ -339,7 +340,6 @@ mod test {
     }
 
     // Note that this was failing to converge, so checking specifically.
-    // FIX: Get this working, it seems that there are issues in the southern hemisphere
     #[test]
     fn knn_returns_self_d_equals_0_sydney() {
         let name = "Sydney";
@@ -388,7 +388,7 @@ mod test {
         assert_eq!(knn_result.len(), cities.len());
 
         // We are in the right order and right distances
-        // Tested to the neareste meter
+        // Tested to the nearest meter (approx)
         for ((test, test_d), (exp_name, exp_d)) in knn_result.iter().zip(city_dist) {
             assert_eq!(test.name, exp_name);
             assert_abs_diff_eq!(*test_d * MEAN_EARTH_RADIUS, exp_d, epsilon = 1.0);

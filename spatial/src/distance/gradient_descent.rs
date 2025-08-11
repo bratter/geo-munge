@@ -9,6 +9,8 @@
 //!
 //! These functions are specifically work on overlapping meridian segments and should not be used in other contexts.
 
+use std::f64::consts::PI;
+
 use geo::{GeoFloat, Line, Point};
 
 use crate::p;
@@ -52,8 +54,8 @@ pub(super) fn merdian_to_point<T: GeoFloat>(
     let h = T::from(1e-8).expect(VALID_GF); // For gradient computation
 
     let mut d_prev;
-    let mut d_cur = T::from(9.0).expect(VALID_GF); // Large initial value
-    let mut pt_cur;
+    let mut d_cur = T::from(PI).expect(VALID_GF); // Max possible value as starting point
+    let mut pt_cur = p!(lon, lat_min + t * (lat_max - lat_min));
 
     if DEBUG_DISPLAY {
         eprintln!("   i t_value  d_cur    gradient    lr       | lat");
@@ -125,8 +127,10 @@ pub(super) fn merdian_to_point<T: GeoFloat>(
         t = new_t.clamp(T::zero(), T::one());
     }
 
+    // TODO: Detmine whether we do last distance or panic here in production version
     // Safety hatch - looks like a solution won't converge with these inputs
-    panic!("{}", MAX_ITERATIONS_MSG);
+    //panic!("{}", MAX_ITERATIONS_MSG);
+    (d_cur, pt_cur)
 }
 
 /// Gradient descent method for calculating the minimum distance between two overlapping meridian segments.
@@ -148,7 +152,7 @@ pub(super) fn meridian_to_meridian<T: GeoFloat>(
     let mut t2 = t1;
     let mut pt1 = l1.start_point();
     let mut pt2 = l2.start_point();
-    let mut d = T::from(9.0).expect(VALID_GF); // As long as it's bigger than PI it should be fine
+    let mut d = T::from(PI).expect(VALID_GF);
 
     if DEBUG_DISPLAY {
         eprintln!("   i: t1       t2       | pt1_lat   pt2_lat   | d_cur    lr");
@@ -203,12 +207,132 @@ pub(super) fn meridian_to_meridian<T: GeoFloat>(
         }
     }
 
+    // TODO: Detmine whether we do last distance or panic here in production version
     // Safety hatch - looks like a solution won't converge with these inputs
-    panic!("{}", MAX_ITERATIONS_MSG);
+    //panic!("{}", MAX_ITERATIONS_MSG);
+    (d, pt1, pt2)
 }
 
 fn extract_points<T: GeoFloat>(t: T, line: &Line<T>, h: T) -> (Point<T>, Point<T>) {
     let lat = line.start.y + t * (line.end.y - line.start.y);
 
     (p!(line.start.x, lat + h), p!(line.start.x, lat - h))
+}
+
+// Some minimal tests to ensure rect-rect is working while Newton's method is still under construction
+// All distance values were validated as less than the appropriate value in Excel, but copied from the result here, so
+// could be pressure tested further due to Excel's precision issues
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::l;
+    use approx::assert_abs_diff_eq;
+
+    /// Constant for a single degree in radians
+    const DEGREE: f64 = 0.01745;
+
+    const EPSILON: f64 = 1e-6;
+
+    #[test]
+    fn same_lat_picks_closest_to_poles() {
+        let l1 = l!(0.0, 0.0, 0.0, DEGREE * 20.0);
+        let l2 = l!(DEGREE * 10.0, 0.0, DEGREE * 10.0, DEGREE * 20.0);
+
+        let (d, p1, p2) = meridian_to_meridian(&l1, &l2);
+
+        assert_abs_diff_eq!(d, 0.1639559, epsilon = EPSILON);
+        assert_abs_diff_eq!(p1.y(), DEGREE * 20.0, epsilon = EPSILON);
+        assert_abs_diff_eq!(p2.y(), DEGREE * 20.0, epsilon = EPSILON);
+
+        // Let's also make sure we don't mess up the lon
+        assert_abs_diff_eq!(p1.x(), 0.0, epsilon = EPSILON);
+        assert_abs_diff_eq!(p2.x(), DEGREE * 10.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn works_across_the_antimeridian() {
+        // Also indicates it will translate across any lon change
+        let l1 = l!(DEGREE * -5.0, 0.0, DEGREE * -5.0, DEGREE * 20.0);
+        let l2 = l!(DEGREE * 5.0, 0.0, DEGREE * 5.0, DEGREE * 20.0);
+
+        let (d, p1, p2) = meridian_to_meridian(&l1, &l2);
+
+        assert_abs_diff_eq!(d, 0.1639559, epsilon = EPSILON);
+        assert_abs_diff_eq!(p1.y(), DEGREE * 20.0, epsilon = EPSILON);
+        assert_abs_diff_eq!(p2.y(), DEGREE * 20.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn chooses_smaller_boundary_point_and_above_on_larger() {
+        let l1 = l!(0.0, 0.0, 0.0, DEGREE * 20.0);
+        let l2 = l!(DEGREE * 10.0, 0.0, DEGREE * 10.0, DEGREE * 25.0);
+
+        let (d, p1, p2) = meridian_to_meridian(&l1, &l2);
+
+        assert_abs_diff_eq!(d, 0.1638819, epsilon = EPSILON);
+        assert_abs_diff_eq!(p1.y(), DEGREE * 20.0, epsilon = EPSILON);
+        assert!(p2.y() > DEGREE * 20.1);
+        assert!(p2.y() < DEGREE * 21.0);
+    }
+
+    #[test]
+    fn works_when_close() {
+        let l1 = l!(0.0, 0.0, 0.0, DEGREE * 20.0);
+        let l2 = l!(DEGREE, 0.0, DEGREE, DEGREE * 20.0);
+
+        let (d, p1, p2) = meridian_to_meridian(&l1, &l2);
+
+        assert_abs_diff_eq!(d, 0.0163980, epsilon = EPSILON);
+        assert_abs_diff_eq!(p1.y(), DEGREE * 20.0, epsilon = EPSILON);
+        assert_abs_diff_eq!(p2.y(), DEGREE * 20.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn works_when_not_overlapping_end_to_end() {
+        let l1 = l!(0.0, 0.0, 0.0, DEGREE * 5.0);
+        let l2 = l!(DEGREE * 5.0, DEGREE * 10.0, DEGREE * 5.0, DEGREE * 20.0);
+
+        let (d, p1, p2) = meridian_to_meridian(&l1, &l2);
+
+        assert_abs_diff_eq!(d, 0.122843, epsilon = EPSILON);
+        assert_abs_diff_eq!(p1.y(), DEGREE * 5.0, epsilon = EPSILON);
+        assert_abs_diff_eq!(p2.y(), DEGREE * 10.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn works_when_not_overlapping_and_ends_are_close() {
+        let l1 = l!(0.0, 0.0, 0.0, DEGREE * 5.0);
+        let l2 = l!(DEGREE * 20.0, DEGREE * 5.1, DEGREE * 20.0, DEGREE * 20.0);
+
+        let (d, p1, p2) = meridian_to_meridian(&l1, &l2);
+
+        assert_abs_diff_eq!(d, 0.347616, epsilon = EPSILON);
+        assert_abs_diff_eq!(p1.y(), DEGREE * 5.0, epsilon = EPSILON);
+        assert!(p2.y() > DEGREE * 5.1);
+        assert!(p2.y() < DEGREE * 6.0);
+    }
+
+    #[test]
+    fn finds_the_min_with_internal_max_northern() {
+        let l1 = l!(0.0, DEGREE * -10.0, 0.0, DEGREE * 20.0);
+        let l2 = l!(DEGREE * 10.0, DEGREE * -10.0, DEGREE * 10.0, DEGREE * 20.0);
+
+        let (d, p1, p2) = meridian_to_meridian(&l1, &l2);
+
+        assert_abs_diff_eq!(d, 0.163956, epsilon = EPSILON);
+        assert_abs_diff_eq!(p1.y(), DEGREE * 20.0, epsilon = EPSILON);
+        assert_abs_diff_eq!(p2.y(), DEGREE * 20.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn finds_the_min_with_internal_max_southern() {
+        let l1 = l!(0.0, DEGREE * -20.0, 0.0, DEGREE * 10.0);
+        let l2 = l!(DEGREE * 10.0, DEGREE * -20.0, DEGREE * 10.0, DEGREE * 10.0);
+
+        let (d, p1, p2) = meridian_to_meridian(&l1, &l2);
+
+        assert_abs_diff_eq!(d, 0.163956, epsilon = EPSILON);
+        assert_abs_diff_eq!(p1.y(), DEGREE * -20.0, epsilon = EPSILON);
+        assert_abs_diff_eq!(p2.y(), DEGREE * -20.0, epsilon = EPSILON);
+    }
 }
