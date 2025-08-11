@@ -16,7 +16,6 @@ use spatial::{BasicQuadTree, BboxSearch, Knn, SpatialIndex};
 use crate::message::{prelude::Bbox, CustomKey, NodeId};
 
 /// Base record containing the actual data.
-/// FIX: Have to properly manage radian conversion, maybe on insert is best
 pub struct GeoRecordInner {
     pub id: NodeId,
     pub geometry: Geometry<f64>,

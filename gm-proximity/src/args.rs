@@ -122,15 +122,15 @@ pub struct KnnArgs {
     #[clap(short)]
     pub r: Option<f64>,
 
-    /// Flag to determine whether we are trying to test keys instead of geometries.
+    /// Flag to determine whether we are trying to test uid keys instead of geometries.
     ///
     /// When testing with keys, this indicates to the server that the test geometry is already in the quadtree with the
     /// given set of keys. This flag governs the type of data expected as data, as the file, or on stdin.
-    #[clap(short = 'k', long = "keys")]
+    #[clap(short = 'u', long)]
     pub key_uid: bool,
 
     /// Flag to determine whether to use custom byte keys instead of geometries.
-    #[clap(short = 'y', long, conflicts_with = "test_keys")]
+    #[clap(short = 'y', long, conflicts_with = "key_uid")]
     pub key_bytes: bool,
 
     /// Manually passed data to test.

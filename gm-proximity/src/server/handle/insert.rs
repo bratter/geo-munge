@@ -2,16 +2,21 @@ use std::sync::{atomic::Ordering, Arc};
 
 use anyhow::{anyhow, Result};
 use arc_swap::Guard;
-use geo::Geometry;
+use geo::{Geometry, ToRadians};
 use geojson::JsonValue;
 
 use crate::message::prelude::*;
 
 use super::{handle::KeyGenerator, Context};
 
-/// Insert records from the [`DataStream`] into the store.
+/// Insert records from the incoming data stream into the store.
 ///
 /// Generates an iterator for insertion based on incoming features, leaving it up to the store to batch as appropriate.
+///
+/// This insert method will convert all incoming geometries to radians. Therefore all incoming [`Feature`]'s must be in
+/// decimal degrees (which they should be if they are valid geojson).
+///
+/// TODO: Is this the best place for radian conversion? Should it be done with types?
 pub fn insert(handler: Context, insert: Vec<Feature>) {
     let mut error_count: usize = 0;
 
@@ -50,7 +55,9 @@ fn prepare_insert(
         KeyGenerator::MetaPointer(id_gen, _) => id_gen.fetch_add(1, Ordering::Relaxed),
     };
 
-    let geom = Geometry::<f64>::try_from(feature)?;
+    // NOTE: We ensure conversion to radians on insert
+    let mut geom = Geometry::<f64>::try_from(feature)?;
+    geom.to_radians_in_place();
 
     Ok((uid, geom, meta))
 }

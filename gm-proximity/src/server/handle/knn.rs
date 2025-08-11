@@ -1,13 +1,23 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use geo::Geometry;
+use geo::{Geometry, ToRadians};
 use spatial::Knn as KnnTrait;
 
 use crate::{message::prelude::*, server::geo_store::GeoStore};
 
 use super::Context;
 
+/// Run a knn with the provided [`KnnReq`].
+///
+/// When the incoming data type is geojson Features we do a radians conversion before passing to knn. This therefore
+/// assumes that incoming geojson is in decimal degrees as it should be according to the spec.
+///
+/// FIX: The output data type here needs to include some notion of what the input data was
+/// FIX: The index impls need to have fully lazy iterators to do filtering or it won't work as the filtering needs to
+/// take k and can't allocate a Vec in the knn method
+/// TODO: This is where filtering should be implemented as a first pass, but could push down to the geostore on a
+/// specific method if we have a filter
 pub fn knn(handler: Context, knn: KnnReq) {
     // TODO: Handle custom key format for the find
     let response = match knn.data {
@@ -36,36 +46,49 @@ fn process_geom_stream(
     k: usize,
     r: Option<f64>,
     geoms: impl Iterator<Item = Feature>,
-) -> Vec<Result<(u32, f64), String>> {
+) -> Vec<Result<KnnItem, String>> {
     geoms
-        .flat_map(|geom| exec_knn_on_feature(&handler.store.load(), k, r, geom))
+        .enumerate()
+        .flat_map(|(i, geom)| exec_knn_on_feature(&handler.store.load(), i, k, r, geom))
         .collect()
 }
 
-// TODO: Knn should only return the usize id and the distance - needs to be mapped here
 // TODO: Need to eliminate as much intermediate collection as we can here and in key stream - Impl Iter return?
 #[inline(always)]
 fn exec_knn_on_feature<'a>(
-    qt: &'a Arc<GeoStore>,
+    store: &'a Arc<GeoStore>,
+    i: usize,
     k: usize,
     r: Option<f64>,
     feature: Feature,
-) -> Vec<Result<(u32, f64), String>> {
+) -> Vec<Result<KnnItem, String>> {
     match Geometry::try_from(feature.0) {
-        Ok(geom) => exec_knn(qt, k, r, &geom).collect(),
+        Ok(mut geom) => {
+            // NOTE: Convert incoming feature geometries to radians
+            geom.to_radians_in_place();
+            exec_knn(store, i, k, r, &geom).collect()
+        }
         Err(err) => vec![Err(err.to_string())],
     }
 }
 
 #[inline(always)]
 fn exec_knn<'a>(
-    qt: &'a Arc<GeoStore>,
+    store: &'a Arc<GeoStore>,
+    i: usize,
     k: usize,
     r: Option<f64>,
     geom: &Geometry,
-) -> impl Iterator<Item = Result<(u32, f64), String>> {
-    qt.knn_r(geom, k, r.unwrap_or(std::f64::INFINITY))
-        .map(|res| Ok((res.0.id, res.1)))
+) -> impl Iterator<Item = Result<KnnItem, String>> {
+    store
+        .knn_r(geom, k, r.unwrap_or(std::f64::INFINITY))
+        .map(move |res| {
+            Ok(KnnItem {
+                index: i,
+                uid: res.0.id,
+                distance: res.1,
+            })
+        })
 }
 
 fn process_key_stream(
@@ -73,22 +96,33 @@ fn process_key_stream(
     k: usize,
     r: Option<f64>,
     keys: &KeySet,
-) -> Vec<Result<(u32, f64), String>> {
+) -> Vec<Result<KnnItem, String>> {
     let store = handler.store.load();
     let mut results = Vec::new();
 
+    // TODO: Revist self-exclusion logic when the knn method is fixed, likely just eliminate the +1
     match keys {
         KeySet::Uid(keys) => {
-            for key in keys {
+            for (i, key) in keys.iter().enumerate() {
                 if let Some(gr) = store.get(key) {
-                    results.extend(exec_knn(&store, k, r, &gr.geometry));
+                    results.extend(
+                        exec_knn(&store, i, k + 1, r, &gr.geometry)
+                            .filter(|res| res.as_ref().map(|item| &item.uid != key).unwrap_or(true))
+                            .take(k),
+                    );
                 }
             }
         }
         KeySet::Custom(keys) => {
-            for key in keys {
+            for (i, key) in keys.iter().enumerate() {
                 if let Some(gr) = store.get_with_custom_key(key) {
-                    results.extend(exec_knn(&store, k, r, &gr.geometry));
+                    results.extend(
+                        exec_knn(&store, i, k + 1, r, &gr.geometry)
+                            .filter(|res| {
+                                res.as_ref().map(|item| item.uid != gr.id).unwrap_or(true)
+                            })
+                            .take(k),
+                    );
                 }
             }
         }

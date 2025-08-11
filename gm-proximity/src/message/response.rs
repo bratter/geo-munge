@@ -47,7 +47,7 @@ pub enum Response {
     ///
     /// Contains a vector of results from a Knn calculation, wrapped in a result for failed rows.
     /// TODO: Response type without errors, better response type overall
-    KnnData(Vec<Result<(NodeId, f64), String>>),
+    KnnData(Vec<Result<KnnItem, String>>),
 
     /// An error response.
     ///
@@ -75,6 +75,20 @@ pub struct Stats {
     pub qt_size: usize,
     pub bytes_sent: usize,
     pub bytes_recv: usize,
+}
+
+#[derive(Debug, Encode, Decode)]
+pub struct KnnItem {
+    /// The element index from the incoming request.
+    pub index: usize,
+
+    /// The unique identifier of the retrieved node from the store.
+    ///
+    /// This allows full information retrieval.
+    pub uid: NodeId,
+
+    /// The distance in radians between the request geometry and this item.
+    pub distance: f64,
 }
 
 #[derive(Encode, Decode)]
