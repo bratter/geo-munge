@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use geo::{Geometry, ToRadians};
-use spatial::Knn as KnnTrait;
+use spatial::ProximitySearch;
 
 use crate::{message::prelude::*, server::geo_store::GeoStore};
 
@@ -66,22 +66,21 @@ fn exec_knn_on_feature<'a>(
         Ok(mut geom) => {
             // NOTE: Convert incoming feature geometries to radians
             geom.to_radians_in_place();
-            exec_knn(store, i, k, r, &geom).collect()
+            exec_neighbor_search(store, i, r, &geom).take(k).collect()
         }
         Err(err) => vec![Err(err.to_string())],
     }
 }
 
 #[inline(always)]
-fn exec_knn<'a>(
+fn exec_neighbor_search<'a>(
     store: &'a Arc<GeoStore>,
     i: usize,
-    k: usize,
     r: Option<f64>,
     geom: &Geometry,
 ) -> impl Iterator<Item = Result<KnnItem, String>> {
     store
-        .knn_r(geom, k, r.unwrap_or(std::f64::INFINITY))
+        .within_radius(geom, r.unwrap_or(std::f64::INFINITY))
         .map(move |res| {
             Ok(KnnItem {
                 index: i,
@@ -100,13 +99,12 @@ fn process_key_stream(
     let store = handler.store.load();
     let mut results = Vec::new();
 
-    // TODO: Revist self-exclusion logic when the knn method is fixed, likely just eliminate the +1
     match keys {
         KeySet::Uid(keys) => {
             for (i, key) in keys.iter().enumerate() {
                 if let Some(gr) = store.get(key) {
                     results.extend(
-                        exec_knn(&store, i, k + 1, r, &gr.geometry)
+                        exec_neighbor_search(&store, i, r, &gr.geometry)
                             .filter(|res| res.as_ref().map(|item| &item.uid != key).unwrap_or(true))
                             .take(k),
                     );
@@ -117,7 +115,7 @@ fn process_key_stream(
             for (i, key) in keys.iter().enumerate() {
                 if let Some(gr) = store.get_with_custom_key(key) {
                     results.extend(
-                        exec_knn(&store, i, k + 1, r, &gr.geometry)
+                        exec_neighbor_search(&store, i, r, &gr.geometry)
                             .filter(|res| {
                                 res.as_ref().map(|item| item.uid != gr.id).unwrap_or(true)
                             })

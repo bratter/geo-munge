@@ -36,10 +36,18 @@ pub fn read_cities() -> impl Iterator<Item = (String, Point)> {
         })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TestRecord {
     pub name: String,
     pub point: geo::Geometry,
+}
+
+impl std::ops::Deref for TestRecord {
+    type Target = Self;
+
+    fn deref(&self) -> &Self::Target {
+        self
+    }
 }
 
 impl AsRef<geo::Geometry> for TestRecord {

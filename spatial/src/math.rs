@@ -11,7 +11,7 @@ use geo::{
 #[macro_export]
 macro_rules! p {
     ($x:expr, $y:expr) => {
-        Point::new($x, $y)
+        geo::Point::new($x, $y)
     };
 }
 

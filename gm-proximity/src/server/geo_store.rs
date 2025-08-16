@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use geo::{Geometry, Rect};
 use geojson::JsonValue;
-use spatial::{BasicQuadTree, BboxSearch, Knn, SpatialIndex};
+use spatial::{BasicQuadTree, ProximitySearch, RegionQuery, SpatialIndex};
 
 // TODO: Move Bbox?
 use crate::message::{prelude::Bbox, CustomKey, NodeId};
@@ -257,16 +257,24 @@ impl Default for GeoStore {
     }
 }
 
-impl Knn<GeoRecord> for GeoStore {
-    fn knn_r(&self, cmp: &Geometry, k: usize, r: f64) -> impl Iterator<Item = (GeoRecord, f64)> {
-        self.spatial_index.knn_r(cmp, k, r)
+impl ProximitySearch<GeoRecord> for GeoStore {
+    fn within_radius(&self, cmp: &Geometry, r: f64) -> impl Iterator<Item = (GeoRecord, f64)> {
+        self.spatial_index
+            .within_radius(cmp, r)
+            .filter(|r| !r.0.is_deleted.load(Ordering::Acquire))
     }
 }
 
-impl BboxSearch<'_, GeoRecord> for GeoStore {
-    fn get_bbox(&self, bbox: &Rect) -> impl Iterator<Item = &GeoRecord> {
+impl RegionQuery<'_, GeoRecord> for GeoStore {
+    fn contained_by(&self, bbox: &Rect) -> impl Iterator<Item = &GeoRecord> {
         self.spatial_index
-            .get_bbox(bbox)
+            .contained_by(bbox)
+            .filter(|r| !r.is_deleted.load(Ordering::Acquire))
+    }
+
+    fn intersecting(&self, bbox: &Rect) -> impl Iterator<Item = &GeoRecord> {
+        self.spatial_index
+            .intersecting(bbox)
             .filter(|r| !r.is_deleted.load(Ordering::Acquire))
     }
 }

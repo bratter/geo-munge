@@ -8,7 +8,7 @@ use std::{
 use anyhow::{anyhow, bail, Result};
 use geo::{Geometry, Rect};
 
-use super::{BboxSearch, Knn, SpatialIndex};
+use super::{ProximitySearch, RegionQuery, SpatialIndex};
 
 use crate::{
     math::{rect_in_rect, Bbox},
@@ -21,6 +21,15 @@ use crate::{
 /// amortize the cost of unbalanced trees.
 const MAX_CHILDREN: usize = 8;
 
+/// Maximum subdivision depth to prevent infinite recursion with duplicate geometries.
+///
+/// When geometries have identical bounding boxes, subdivision will repeatedly place them in the same
+/// quadrant. This depth limit ensures we eventually stop subdividing and store duplicates as stuck_children.
+///
+/// TODO: Always bottoming out the max depth rather than stopping at a higher level may lead to unecessary work in many
+/// cases, but as this is likely going to be used as a reference implementation, likely just leave it.
+const MAX_DEPTH: usize = 20;
+
 /// Expect message for a poisoned lock.
 const POISON: &str = "Lock poisoned";
 
@@ -32,7 +41,7 @@ pub struct BasicQuadTree<T> {
 impl<T> BasicQuadTree<T> {
     pub fn new(bbox: Rect) -> Self {
         Self {
-            root: Arc::new(RwLock::new(Node::new(bbox))),
+            root: Arc::new(RwLock::new(Node::new(bbox, 0))),
         }
     }
 
@@ -69,7 +78,7 @@ where
         Ok(())
     }
 
-    // TODO: Change this implementation to something more efficienct
+    // TODO: Change this implementation to something more efficient
     // This is currently O(n), but possibly no need to change if the whole implementation here is just going to be used
     // as a reference impl.
     fn remove<K>(&self, id: &K) -> Option<T>
@@ -89,20 +98,41 @@ where
         }
         None
     }
+
+    // TODO: See note above regarding O(n) implementation
+    fn contains<K>(&self, id: &K) -> bool
+    where
+        T::Target: PartialEq<K>,
+    {
+        for node_lock in self.iter_nodes() {
+            let node = node_lock.read().expect(POISON);
+
+            if node.stuck_children.iter().any(|c| c.deref() == id) {
+                return true;
+            }
+            if node.children.iter().any(|c| c.deref() == id) {
+                return true;
+            }
+        }
+
+        false
+    }
 }
 
 #[derive(Debug)]
 struct Node<T> {
     bbox: Rect,
+    depth: usize,
     nodes: Option<[Arc<RwLock<Node<T>>>; 4]>,
     children: Vec<T>,
     stuck_children: Vec<T>,
 }
 
 impl<T> Node<T> {
-    fn new(bbox: Rect) -> Self {
+    fn new(bbox: Rect, depth: usize) -> Self {
         Self {
             bbox,
+            depth,
             nodes: None,
             children: Vec::new(),
             stuck_children: Vec::new(),
@@ -133,8 +163,8 @@ where
                 drop(sub_node);
                 self.nodes = Some(nodes);
             }
-            // When the children array is filled, we subdivide the node
-            None if self.children.len() >= MAX_CHILDREN => {
+            // When the children array is filled, we subdivide the node (unless we've reached max depth)
+            None if self.children.len() >= MAX_CHILDREN && self.depth < MAX_DEPTH => {
                 self.subdivide();
 
                 // Recurse to re-insert the child nodes. Could do inline here, but recursion overhead will be minimal
@@ -155,12 +185,13 @@ where
         let [l, r] = self.bbox.split_x();
         let [tl, bl] = l.split_y();
         let [tr, br] = r.split_y();
+        let child_depth = self.depth + 1;
 
         self.nodes = Some([
-            Arc::new(RwLock::new(Self::new(tl))),
-            Arc::new(RwLock::new(Self::new(tr))),
-            Arc::new(RwLock::new(Self::new(br))),
-            Arc::new(RwLock::new(Self::new(bl))),
+            Arc::new(RwLock::new(Self::new(tl, child_depth))),
+            Arc::new(RwLock::new(Self::new(tr, child_depth))),
+            Arc::new(RwLock::new(Self::new(br, child_depth))),
+            Arc::new(RwLock::new(Self::new(bl, child_depth))),
         ]);
     }
 
@@ -220,88 +251,107 @@ enum WorkType<T> {
     Node(Arc<RwLock<Node<T>>>),
 }
 
-// FIX: This must be built as a custom iterator that doesn't collect then emit
-impl<T> Knn<T> for BasicQuadTree<T>
+/// Iterator for nearest neighbor search with radius constraint.
+pub struct NearestIterator<'a, T> {
+    cmp: &'a Geometry,
+    r: f64,
+    work: Vec<(WorkType<T>, f64)>,
+}
+
+impl<'a, T> NearestIterator<'a, T>
 where
     T: Deref + Clone,
     T::Target: AsRef<Geometry>,
 {
-    fn knn_r(&self, cmp: &Geometry, k: usize, r: f64) -> impl Iterator<Item = (T, f64)> {
-        // Start by seeding the work stack with the root node
-        let root = Arc::clone(&self.root);
+    fn new(root: Arc<RwLock<Node<T>>>, cmp: &'a Geometry, r: f64) -> Self {
         let d_root = root.read().expect(POISON).bbox.distance(cmp);
+        let work = vec![(WorkType::Node(root), d_root)];
 
-        let mut work: Vec<(WorkType<T>, f64)> = vec![(WorkType::Node(root), d_root)];
-        let mut results = Vec::new();
+        Self { cmp, r, work }
+    }
+}
 
-        // Traverse the work stack in distance sorted order
+impl<'a, T> Iterator for NearestIterator<'a, T>
+where
+    T: Deref + Clone,
+    T::Target: AsRef<Geometry>,
+{
+    type Item = (T, f64);
+
+    fn next(&mut self) -> Option<Self::Item> {
         loop {
-            // Sort the elements in the work stack as we need to operate on the closest elements first
-            // Pop must get the closest element, so need to sort descending
-            work.sort_by(|(_, d1), (_, d2)| {
+            // Sort the work stack to process closest elements first
+            self.work.sort_by(|(_, d1), (_, d2)| {
                 d2.partial_cmp(d1)
                     .expect("Invalid distance already removed")
             });
 
-            // Iterate through all children in an inner loop - avoid unnecessary re-sorting when nothing additional has
-            // been added
-            while let Some(&(WorkType::Child(ref child), d)) = work.last() {
-                // As soon as our distance exceeds the threshold, we are done
-                if d > r {
-                    return results.into_iter();
+            // Process children first (they're actual results)
+            while let Some(&(WorkType::Child(ref child), d)) = self.work.last() {
+                // Stop if distance exceeds radius
+                if d > self.r {
+                    return None;
                 }
 
-                // Now push the results until we reach k results
-                results.push((child.clone(), d));
-
-                // Pop inside the while loop as we need to iterate before popping, but we don't need the pop result
-                work.pop();
-
-                if results.len() >= k {
-                    return results.into_iter();
-                }
+                let result = (child.clone(), d);
+                self.work.pop();
+                return Some(result);
             }
 
-            // When a node is within radius, push its children and sub-nodes onto the work stack
-            // Radius comparison doesn't happen on insertion, only when checked
-            if let Some((WorkType::Node(node), d)) = work.pop() {
-                if d > r {
-                    return results.into_iter();
+            // Process nodes (expand them into children and sub-nodes)
+            if let Some((WorkType::Node(node), d)) = self.work.pop() {
+                // Stop if distance exceeds radius
+                if d > self.r {
+                    return None;
                 }
 
                 let node = node.read().expect(POISON);
 
+                // Add all children to work stack
                 for child in node.stuck_children.iter().chain(&node.children) {
-                    let d: f64 = cmp.distance(child.as_ref());
+                    let d: f64 = self.cmp.distance(child.as_ref());
 
-                    // Only add children where the distance is not NaN or infinite
                     if d.is_finite() {
-                        work.push((WorkType::Child(child.clone()), d));
+                        self.work.push((WorkType::Child(child.clone()), d));
                     }
                 }
 
+                // Add sub-nodes to work stack
                 if let Some(nodes) = &node.nodes {
                     for sub_node in nodes {
                         let bbox = sub_node.read().expect(POISON).bbox;
-                        let d: f64 = bbox.distance(cmp);
+                        let d: f64 = bbox.distance(self.cmp);
 
-                        // Only push sub nodes where the distance is not NaN or infinite
-                        // Note that this should never occur, but leaving the check just in case
                         if d.is_finite() {
-                            work.push((WorkType::Node(Arc::clone(&sub_node)), d));
+                            self.work.push((WorkType::Node(Arc::clone(&sub_node)), d));
                         }
                     }
                 }
             } else {
-                return results.into_iter();
+                // No more work to do
+                return None;
             }
         }
     }
 }
 
+impl<T> ProximitySearch<T> for BasicQuadTree<T>
+where
+    T: Deref + Clone,
+    T::Target: AsRef<Geometry>,
+{
+    fn within_radius(&self, cmp: &Geometry, radius: f64) -> impl Iterator<Item = (T, f64)> {
+        NearestIterator::new(Arc::clone(&self.root), cmp, radius)
+    }
+}
+
 // WARN: Placeholder implementation only
-impl<'a, T: 'a> BboxSearch<'a, T> for BasicQuadTree<T> {
-    fn get_bbox(&self, _bbox: &Rect) -> impl Iterator<Item = &T> {
+impl<'a, T: 'a> RegionQuery<'a, T> for BasicQuadTree<T> {
+    fn contained_by(&'a self, _bbox: &Rect) -> impl Iterator<Item = &'a T> {
+        std::iter::empty()
+    }
+
+    fn intersecting(&'a self, _bbox: &Rect) -> impl Iterator<Item = &'a T> {
         std::iter::empty()
     }
 }
@@ -313,9 +363,9 @@ mod test {
     use super::*;
 
     use crate::{
-        harness::{read_cities_as_record, read_city_pairs},
+        harness::{read_cities_as_record, read_city_pairs, TestRecord},
         math::get_earth_bbox,
-        MEAN_EARTH_RADIUS,
+        p, MEAN_EARTH_RADIUS,
     };
 
     #[test]
@@ -334,7 +384,7 @@ mod test {
             qt.insert(city).unwrap();
         }
 
-        let (record, d) = qt.knn(&cmp, 1).next().unwrap();
+        let (record, d) = qt.closest(&cmp).unwrap();
         assert_eq!(record.name, name);
         assert_eq!(d, 0.0);
     }
@@ -356,7 +406,7 @@ mod test {
             qt.insert(city).unwrap();
         }
 
-        let (record, d) = qt.knn(&cmp, 1).next().unwrap();
+        let (record, d) = qt.closest(&cmp).unwrap();
         assert_eq!(record.name, name);
         assert_eq!(d, 0.0);
     }
@@ -382,7 +432,7 @@ mod test {
             qt.insert(city).unwrap();
         }
 
-        let knn_result = qt.knn(&cmp, usize::MAX).collect::<Vec<_>>();
+        let knn_result = qt.neighbors(&cmp).collect::<Vec<_>>();
 
         // We return all records
         assert_eq!(knn_result.len(), cities.len());
@@ -393,5 +443,29 @@ mod test {
             assert_eq!(test.name, exp_name);
             assert_abs_diff_eq!(*test_d * MEAN_EARTH_RADIUS, exp_d, epsilon = 1.0);
         }
+    }
+
+    // Ensure that the data structure doesn't overlfow the stack when adding mulitple points at the same location by
+    // infinitely recursing during subdivision
+    // We also check that we return only k matches, even though more exist at the same point
+    #[test]
+    fn does_not_overflow_with_points_at_same_location() {
+        let qt = BasicQuadTree::new(get_earth_bbox());
+        let point = p!(0.1, 0.2);
+
+        for i in 0..20 {
+            let record = TestRecord {
+                name: i.to_string(),
+                point: geo::Geometry::Point(point.clone()),
+            };
+            qt.insert(record).unwrap();
+        }
+
+        let test = geo::Geometry::Point(p!(0.0, 0.0));
+        let res: Vec<_> = qt.nearest(&test, 3).collect();
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0].0.point, res[1].0.point);
+        assert_eq!(res[0].0.point, res[2].0.point);
     }
 }
