@@ -41,13 +41,19 @@ pub enum ClientCommand {
     /// Remove entries from the store by id.
     Delete(DeleteArgs),
 
-    /// Conduct a Knn search on the quadtree.
+    /// Conduct a Knn search on the spatial index.
     ///
     /// Will return at most k matches, potentially fewer if less matching the filters are in the quadtree or within the
     /// radius defined by the `r` parameter.
     ///
     /// It's possible to set k=1 for this, but to avoid setting k, use find to get the single nearest neighbor.
     Knn(KnnArgs),
+
+    /// Run a windowing bounding box query on the spatial index.
+    ///
+    /// Will return all items that either intersect with or are contained by the provided bounding box, depending on the
+    /// mode parameter.
+    Window(WindowArgs),
 
     /// Start a REPL loop.
     Repl,
@@ -140,6 +146,17 @@ pub struct KnnArgs {
     /// An optional file input containing items to test.
     #[clap(conflicts_with = "data")]
     pub file: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+pub struct WindowArgs {
+    /// The bounding box to query.
+    pub bbox: Bbox,
+
+    /// The default mode is contains, where it will return only items completely contained by the bbox, but passing
+    /// this flag sets intersects mode, where anything that intersects the bbox is returned.
+    #[clap(long, short)]
+    pub intersects: bool,
 }
 
 #[derive(Debug, Parser)]

@@ -7,6 +7,7 @@ mod load;
 mod repl;
 mod reset;
 mod tracker;
+mod window;
 
 mod handlers {
     pub use super::bench::bench;
@@ -16,6 +17,7 @@ mod handlers {
     pub use super::load::load;
     pub use super::repl::repl;
     pub use super::reset::reset;
+    pub use super::window::window;
 }
 
 pub use handle::{CommandHandler, ResponseHandler};

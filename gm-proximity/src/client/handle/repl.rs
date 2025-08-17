@@ -86,8 +86,12 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
             }
             // Window
             Some(6) => {
-                eprintln!("Window query functionality still WIP");
-                Ok(())
+                // For window we can just send a single request
+                if let Some(window_req) = build_window() {
+                    handler.send(Request::Window(window_req))
+                } else {
+                    Ok(())
+                }
             }
             // Change settings
             Some(7) => change_settings(&mut settings),
@@ -556,6 +560,39 @@ fn build_knn(settings: &mut Settings) -> Option<KnnArgs> {
         data,
         file,
     })
+}
+
+fn build_window() -> Option<WindowReq> {
+    let join = match Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Choose selection mode")
+        .items(&["Contains", "Intersects"])
+        .default(0)
+        .interact()
+        .unwrap()
+    {
+        0 => JoinType::Contains,
+        1 => JoinType::Intersects,
+        _ => unreachable!(),
+    };
+
+    let bbox = loop {
+        let bbox_raw: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Enter bounding box (blank to abort window query)")
+            .allow_empty(true)
+            .interact_text()
+            .unwrap();
+
+        if bbox_raw.len() == 0 {
+            return None;
+        } else {
+            match bbox_raw.parse::<Bbox>() {
+                Ok(bbox) => break bbox,
+                Err(err) => eprintln!("{}", err),
+            }
+        }
+    };
+
+    Some(WindowReq { bbox, join })
 }
 
 // TODO: Improve this handling, perhaps add a setting for a command

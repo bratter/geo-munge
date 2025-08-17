@@ -75,11 +75,11 @@ pub trait ProximitySearch<T> {
 /// Region-based query functions for spatial indexes.
 ///
 /// While this trait doesn't require the structure to also implement [`SpatialIndex`] it usually will.
-pub trait RegionQuery<'a, T: 'a> {
+pub trait RegionQuery<T> {
     /// Find all geometries that are completely contained within the provided bounding box.
-    fn contained_by(&'a self, bbox: &Rect) -> impl Iterator<Item = &'a T>;
+    fn contained_by(&self, bbox: &Rect) -> impl Iterator<Item = T>;
 
     /// Find all geometries that intersect with the provided bounding box.
     /// This includes geometries that touch, overlap with, or are contained by the bbox.
-    fn intersecting(&'a self, bbox: &Rect) -> impl Iterator<Item = &'a T>;
+    fn intersecting(&self, bbox: &Rect) -> impl Iterator<Item = T>;
 }

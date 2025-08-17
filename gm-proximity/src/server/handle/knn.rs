@@ -14,8 +14,6 @@ use super::Context;
 /// assumes that incoming geojson is in decimal degrees as it should be according to the spec.
 ///
 /// FIX: The output data type here needs to include some notion of what the input data was
-/// FIX: The index impls need to have fully lazy iterators to do filtering or it won't work as the filtering needs to
-/// take k and can't allocate a Vec in the knn method
 /// TODO: This is where filtering should be implemented as a first pass, but could push down to the geostore on a
 /// specific method if we have a filter
 pub fn knn(handler: Context, knn: KnnReq) {
@@ -72,6 +70,7 @@ fn exec_knn_on_feature<'a>(
     }
 }
 
+// TODO: This doesn't have to be a result as we are not able to fail here
 #[inline(always)]
 fn exec_neighbor_search<'a>(
     store: &'a Arc<GeoStore>,

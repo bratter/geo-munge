@@ -265,14 +265,14 @@ impl ProximitySearch<GeoRecord> for GeoStore {
     }
 }
 
-impl RegionQuery<'_, GeoRecord> for GeoStore {
-    fn contained_by(&self, bbox: &Rect) -> impl Iterator<Item = &GeoRecord> {
+impl RegionQuery<GeoRecord> for GeoStore {
+    fn contained_by(&self, bbox: &Rect) -> impl Iterator<Item = GeoRecord> {
         self.spatial_index
             .contained_by(bbox)
             .filter(|r| !r.is_deleted.load(Ordering::Acquire))
     }
 
-    fn intersecting(&self, bbox: &Rect) -> impl Iterator<Item = &GeoRecord> {
+    fn intersecting(&self, bbox: &Rect) -> impl Iterator<Item = GeoRecord> {
         self.spatial_index
             .intersecting(bbox)
             .filter(|r| !r.is_deleted.load(Ordering::Acquire))

@@ -50,12 +50,10 @@ impl Handler {
             Request::Stats => handlers::stats(context, traffic),
             Request::Reset(r) => handlers::reset(context, r),
             Request::Insert(i) => handlers::insert(context, i),
+            Request::Get(get_req) => handlers::get(context, get_req),
             Request::Delete(key_set) => handlers::delete(context, key_set),
             Request::Knn(knn_data) => handlers::knn(context, knn_data),
-            Request::Get(get_req) => handlers::get(context, get_req),
-            Request::Window => {
-                context.send(Response::Error("Window queries not implemented".into()))
-            }
+            Request::Window(window_data) => handlers::window(context, window_data),
             Request::Bench(bench_data) => handlers::bench(context, bench_data),
         }
     }

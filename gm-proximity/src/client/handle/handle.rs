@@ -38,9 +38,10 @@ impl CommandHandler {
             }
             ClientCommand::Reset(r) => handlers::reset(self, r),
             ClientCommand::Load { file } => handlers::load(self, file),
-            ClientCommand::Knn(knn_args) => handlers::knn(self, knn_args),
             ClientCommand::Get(get_args) => handlers::get(self, get_args),
             ClientCommand::Delete(delete_args) => handlers::delete(self, delete_args),
+            ClientCommand::Knn(knn_args) => handlers::knn(self, knn_args),
+            ClientCommand::Window(window_args) => handlers::window(self, window_args),
             ClientCommand::Repl => handlers::repl(self),
             ClientCommand::Bench(bench_args) => handlers::bench(self, bench_args),
         };

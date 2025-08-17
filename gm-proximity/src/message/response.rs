@@ -47,6 +47,7 @@ pub enum Response {
     ///
     /// Contains a vector of results from a Knn calculation, wrapped in a result for failed rows.
     /// TODO: Response type without errors, better response type overall
+    /// TODO: Different response type for window queries, have option in req to return just the ids or meta/geom also
     KnnData(Vec<Result<KnnItem, String>>),
 
     /// An error response.

@@ -56,8 +56,8 @@ pub enum Request {
     ///
     /// Can take a set of metadata filters.
     ///
-    /// TODO: Support grouping for close together items
-    Window,
+    /// TODO: Also do filters like Knn
+    Window(WindowReq),
 
     /// A benchmarking request to the server.
     Bench(BenchReq),
@@ -78,7 +78,7 @@ impl Request {
             Request::Insert(_) => true,
             Request::Delete(_) => true,
             Request::Knn(_) => false,
-            Request::Window => false,
+            Request::Window(_) => false,
             Request::Get(_) => false,
             Request::Bench(_) => false,
         }
@@ -117,6 +117,8 @@ pub enum KeyMode {
 /// Bounding box request data.
 ///
 /// Can be used in a [`Request::Bbox`], but more likely to be used in [`Request::Reset`].
+///
+/// FIX: Needs to be radians aware, need to harmonize with the get_earth_bbox function in math, probably needs to move
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct Bbox {
     x1: f64,
@@ -194,6 +196,18 @@ pub struct KnnReq {
     pub r: Option<f64>,
     pub data: FindData,
     // TODO: Add filters
+}
+
+#[derive(Debug, Encode, Decode)]
+pub struct WindowReq {
+    pub bbox: Bbox,
+    pub join: JoinType,
+}
+
+#[derive(Debug, Encode, Decode)]
+pub enum JoinType {
+    Intersects,
+    Contains,
 }
 
 #[derive(Debug, Encode, Decode)]

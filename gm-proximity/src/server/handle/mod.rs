@@ -8,6 +8,7 @@ mod insert;
 mod knn;
 mod reset;
 mod stats;
+mod window;
 
 pub mod handlers {
     pub use super::bench::bench;
@@ -17,6 +18,7 @@ pub mod handlers {
     pub use super::knn::knn;
     pub use super::reset::reset;
     pub use super::stats::stats;
+    pub use super::window::window;
 }
 
 pub use handle::{Context, Handler};

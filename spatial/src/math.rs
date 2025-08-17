@@ -3,8 +3,8 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use geo::{
-    coord, BoundingRect, GeoNum, Geometry, GeometryCollection, Line, LineString, MultiLineString,
-    MultiPoint, MultiPolygon, Point, Polygon, Rect, Triangle,
+    coord, BoundingRect, GeoNum, Geometry, GeometryCollection, Intersects, Line, LineString,
+    MultiLineString, MultiPoint, MultiPolygon, Point, Polygon, Rect, Triangle,
 };
 
 /// Helper macro for making points
@@ -92,6 +92,32 @@ pub fn rect_in_rect<T: GeoNum>(r1: &Rect<T>, r2: &Rect<T>) -> bool {
         && r1.max().x >= r2.max().x
         && r1.min().y <= r2.min().y
         && r1.max().y >= r2.max().y
+}
+
+/// Determine whether two rectangles intersect (including touching at boundaries).
+///
+/// Returns true if the rectangles overlap, touch, or one contains the other.
+pub fn rect_intersects_rect<T: GeoNum>(r1: &Rect<T>, r2: &Rect<T>) -> bool {
+    r1.intersects(r2)
+}
+
+/// Determine whether a geometry is completely contained within a bounding box.
+///
+/// This checks if the geometry's bounding box is contained within the query bbox.
+/// Since a geometry cannot extend beyond its bounding box, this is a complete implementation.
+pub fn geometry_contained_by_rect<T: GeoNum>(geom: &Geometry<T>, bbox: &Rect<T>) -> bool {
+    if let Some(geom_bbox) = geom.bounding_rect() {
+        rect_in_rect(bbox, &geom_bbox)
+    } else {
+        false
+    }
+}
+
+/// Determine whether a geometry intersects with a bounding box.
+///
+/// This includes geometries that touch, overlap with, or are contained by the bbox.
+pub fn geometry_intersects_rect<T: GeoNum>(geom: &Geometry<T>, bbox: &Rect<T>) -> bool {
+    geom.intersects(bbox)
 }
 
 pub fn get_earth_bbox<T: GeoNum>() -> Rect<T> {

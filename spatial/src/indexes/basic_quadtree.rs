@@ -11,7 +11,10 @@ use geo::{Geometry, Rect};
 use super::{ProximitySearch, RegionQuery, SpatialIndex};
 
 use crate::{
-    math::{rect_in_rect, Bbox},
+    math::{
+        geometry_contained_by_rect, geometry_intersects_rect, rect_in_rect, rect_intersects_rect,
+        Bbox,
+    },
     Distance,
 };
 
@@ -246,7 +249,7 @@ impl<T> Iterator for NodeIter<T> {
     }
 }
 
-enum WorkType<T> {
+enum NearestWorkType<T> {
     Child(T),
     Node(Arc<RwLock<Node<T>>>),
 }
@@ -255,7 +258,7 @@ enum WorkType<T> {
 pub struct NearestIterator<'a, T> {
     cmp: &'a Geometry,
     r: f64,
-    work: Vec<(WorkType<T>, f64)>,
+    work: Vec<(NearestWorkType<T>, f64)>,
 }
 
 impl<'a, T> NearestIterator<'a, T>
@@ -265,7 +268,7 @@ where
 {
     fn new(root: Arc<RwLock<Node<T>>>, cmp: &'a Geometry, r: f64) -> Self {
         let d_root = root.read().expect(POISON).bbox.distance(cmp);
-        let work = vec![(WorkType::Node(root), d_root)];
+        let work = vec![(NearestWorkType::Node(root), d_root)];
 
         Self { cmp, r, work }
     }
@@ -287,7 +290,7 @@ where
             });
 
             // Process children first (they're actual results)
-            while let Some(&(WorkType::Child(ref child), d)) = self.work.last() {
+            while let Some(&(NearestWorkType::Child(ref child), d)) = self.work.last() {
                 // Stop if distance exceeds radius
                 if d > self.r {
                     return None;
@@ -299,7 +302,7 @@ where
             }
 
             // Process nodes (expand them into children and sub-nodes)
-            if let Some((WorkType::Node(node), d)) = self.work.pop() {
+            if let Some((NearestWorkType::Node(node), d)) = self.work.pop() {
                 // Stop if distance exceeds radius
                 if d > self.r {
                     return None;
@@ -312,7 +315,7 @@ where
                     let d: f64 = self.cmp.distance(child.as_ref());
 
                     if d.is_finite() {
-                        self.work.push((WorkType::Child(child.clone()), d));
+                        self.work.push((NearestWorkType::Child(child.clone()), d));
                     }
                 }
 
@@ -323,7 +326,8 @@ where
                         let d: f64 = bbox.distance(self.cmp);
 
                         if d.is_finite() {
-                            self.work.push((WorkType::Node(Arc::clone(&sub_node)), d));
+                            self.work
+                                .push((NearestWorkType::Node(Arc::clone(&sub_node)), d));
                         }
                     }
                 }
@@ -345,14 +349,138 @@ where
     }
 }
 
-// WARN: Placeholder implementation only
-impl<'a, T: 'a> RegionQuery<'a, T> for BasicQuadTree<T> {
-    fn contained_by(&'a self, _bbox: &Rect) -> impl Iterator<Item = &'a T> {
-        std::iter::empty()
+/// Query type for region-based searches.
+#[derive(Clone, Copy)]
+enum RegionQueryType {
+    ContainedBy,
+    Intersecting,
+}
+
+/// Work item for region iterator.
+enum RegionWorkType<T> {
+    /// Node where bbox is contained - include all children without testing
+    Contained(Arc<RwLock<Node<T>>>),
+
+    /// Node where bbox intersects - test children individually  
+    Intersecting(Arc<RwLock<Node<T>>>),
+
+    /// Individual child that needs to be returned
+    Child(T),
+}
+
+/// Iterator for region-based queries on a quadtree.
+pub struct RegionIterator<T> {
+    query_bbox: Rect,
+    query_type: RegionQueryType,
+    work: Vec<RegionWorkType<T>>,
+}
+
+impl<T> RegionIterator<T>
+where
+    T: Deref + Clone,
+    T::Target: AsRef<Geometry>,
+{
+    fn new_contained_by(root: Arc<RwLock<Node<T>>>, query_bbox: &Rect) -> Self {
+        Self {
+            query_bbox: *query_bbox,
+            query_type: RegionQueryType::ContainedBy,
+            work: vec![RegionWorkType::Intersecting(root)],
+        }
     }
 
-    fn intersecting(&'a self, _bbox: &Rect) -> impl Iterator<Item = &'a T> {
-        std::iter::empty()
+    fn new_intersecting(root: Arc<RwLock<Node<T>>>, query_bbox: &Rect) -> Self {
+        Self {
+            query_bbox: *query_bbox,
+            query_type: RegionQueryType::Intersecting,
+            work: vec![RegionWorkType::Intersecting(root)],
+        }
+    }
+
+    fn should_include_geometry(&self, geom: &Geometry) -> bool {
+        match self.query_type {
+            RegionQueryType::ContainedBy => geometry_contained_by_rect(geom, &self.query_bbox),
+            RegionQueryType::Intersecting => geometry_intersects_rect(geom, &self.query_bbox),
+        }
+    }
+}
+
+impl<T> Iterator for RegionIterator<T>
+where
+    T: Deref + Clone,
+    T::Target: AsRef<Geometry>,
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(work_item) = self.work.pop() {
+            match work_item {
+                RegionWorkType::Child(child) => {
+                    return Some(child);
+                }
+
+                RegionWorkType::Contained(node_arc) => {
+                    let node = node_arc.read().expect(POISON);
+
+                    // Add all children - no need to test, they're all included
+                    for child in node.stuck_children.iter().chain(&node.children) {
+                        self.work.push(RegionWorkType::Child(child.clone()));
+                    }
+
+                    // Add all sub-nodes as fully contained
+                    if let Some(nodes) = &node.nodes {
+                        for sub_node in nodes {
+                            self.work
+                                .push(RegionWorkType::Contained(Arc::clone(sub_node)));
+                        }
+                    }
+                }
+
+                RegionWorkType::Intersecting(node_arc) => {
+                    let node = node_arc.read().expect(POISON);
+
+                    // Add children after individual testing
+                    for child in node.stuck_children.iter().chain(&node.children) {
+                        if self.should_include_geometry(child.as_ref()) {
+                            self.work.push(RegionWorkType::Child(child.clone()));
+                        }
+                    }
+
+                    // Process sub-nodes
+                    if let Some(nodes) = &node.nodes {
+                        for sub_node in nodes {
+                            let sub_node_bbox = sub_node.read().expect(POISON).bbox;
+
+                            if rect_in_rect(&self.query_bbox, &sub_node_bbox) {
+                                // Sub-node is fully contained - add as fully contained
+                                self.work
+                                    .push(RegionWorkType::Contained(Arc::clone(sub_node)));
+                            } else if rect_intersects_rect(&sub_node_bbox, &self.query_bbox) {
+                                // Sub-node intersects - add for partial processing
+                                self.work
+                                    .push(RegionWorkType::Intersecting(Arc::clone(sub_node)));
+                            }
+                            // If neither contained nor intersecting, skip entirely
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+}
+
+impl<T> RegionQuery<T> for BasicQuadTree<T>
+where
+    T: Deref + Clone,
+    T::Target: AsRef<Geometry>,
+{
+    fn contained_by(&self, bbox: &Rect) -> impl Iterator<Item = T> {
+        RegionIterator::new_contained_by(Arc::clone(&self.root), bbox)
+    }
+
+    fn intersecting(&self, bbox: &Rect) -> impl Iterator<Item = T> {
+        RegionIterator::new_intersecting(Arc::clone(&self.root), bbox)
     }
 }
 
@@ -467,5 +595,79 @@ mod test {
         assert_eq!(res.len(), 3);
         assert_eq!(res[0].0.point, res[1].0.point);
         assert_eq!(res[0].0.point, res[2].0.point);
+    }
+
+    // Some basic tests with points only - would be more telling if we added some other geometries
+    #[test]
+    fn region_query_basic_functionality() {
+        let qt = BasicQuadTree::new(get_earth_bbox());
+
+        // Add some test points at known locations (lon, lat in radians)
+        // Note: Earth bbox is roughly [-π, -π/2] to [π, π/2]
+        let records = vec![
+            TestRecord {
+                name: "equator_prime".to_string(),
+                point: geo::Geometry::Point(p!(0.0, 0.0)), // 0°N 0°E
+            },
+            TestRecord {
+                name: "london_ish".to_string(),
+                point: geo::Geometry::Point(p!(0.0, 0.9)), // ~51°N 0°E (0.9 rad ≈ 51°)
+            },
+            TestRecord {
+                name: "sydney_ish".to_string(),
+                point: geo::Geometry::Point(p!(2.6, -0.6)), // ~151°E 34°S
+            },
+            TestRecord {
+                name: "new_york_ish".to_string(),
+                point: geo::Geometry::Point(p!(-1.3, 0.7)), // ~74°W 40°N
+            },
+        ];
+
+        for record in &records {
+            qt.insert(record).unwrap();
+        }
+
+        // Test contained_by query - small bbox around equator/prime meridian
+        let query_bbox = geo::Rect::new(
+            geo::coord! { x: -0.2, y: -0.2 },
+            geo::coord! { x: 0.2, y: 0.2 },
+        );
+        let contained: Vec<_> = qt.contained_by(&query_bbox).collect();
+        assert_eq!(contained.len(), 1);
+        assert_eq!(contained[0].name, "equator_prime");
+
+        // Test intersecting query - bbox covering Europe/Africa region
+        let query_bbox = geo::Rect::new(
+            geo::coord! { x: -0.5, y: -0.2 },
+            geo::coord! { x: 0.5, y: 1.0 },
+        );
+        let mut intersecting: Vec<_> = qt.intersecting(&query_bbox).collect();
+        intersecting.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(intersecting.len(), 2);
+        assert_eq!(intersecting[0].name, "equator_prime");
+        assert_eq!(intersecting[1].name, "london_ish");
+    }
+
+    #[test]
+    fn region_query_empty_results() {
+        let qt = BasicQuadTree::new(get_earth_bbox());
+
+        // Add a point in Europe
+        let record = TestRecord {
+            name: "berlin_ish".to_string(),
+            point: geo::Geometry::Point(p!(0.23, 0.91)), // ~13°E 52°N
+        };
+        qt.insert(&record).unwrap();
+
+        // Query a bbox in the Pacific Ocean (far from the point)
+        let query_bbox = geo::Rect::new(
+            geo::coord! { x: -3.0, y: -0.5 },
+            geo::coord! { x: -2.8, y: -0.3 },
+        );
+        let contained: Vec<_> = qt.contained_by(&query_bbox).collect();
+        assert_eq!(contained.len(), 0);
+
+        let intersecting: Vec<_> = qt.intersecting(&query_bbox).collect();
+        assert_eq!(intersecting.len(), 0);
     }
 }
