@@ -77,6 +77,7 @@ mod test {
         let insert_val = Input::try_new(Some(path))
             .unwrap()
             .into_feature_iter()
+            .filter_map(|f| if let Ok((_, r)) = f { Some(r) } else { None })
             .collect();
         let ctx = Context::make_store();
         let (rx, handler) = Context::test_new(&ctx, MsgToken::new(0, 0));
@@ -100,6 +101,7 @@ mod test {
         let insert_val = Input::try_new(Some(path))
             .unwrap()
             .into_feature_iter()
+            .filter_map(|f| if let Ok((_, r)) = f { Some(r) } else { None })
             .collect();
         let ctx = Context::make_store();
         let (rx, handler) = Context::test_new(&ctx, MsgToken::new(0, 0));

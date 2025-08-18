@@ -155,6 +155,10 @@ impl QueryDataType {
             QueryDataType::Geometry => "Geometry",
         }
     }
+
+    fn list() -> [&'static str; 2] {
+        [QueryKeyType::Uid.as_str(), QueryKeyType::Custom.as_str()]
+    }
 }
 
 impl TryFrom<usize> for QueryDataType {
@@ -209,7 +213,7 @@ impl TryFrom<usize> for QueryKeyType {
     }
 }
 
-// TODO: Enable fuzzy select here?
+// TODO: Enable fuzzy select feature for use here?
 fn select_command() -> Result<Option<usize>> {
     let items = [
         "Stats", "Reset", "Load", "Get", "Delete", "Knn", "Window", "Settings",
@@ -231,121 +235,70 @@ fn confirm_quit() -> Result<bool> {
 }
 
 fn change_settings(settings: &mut Settings) -> Result<()> {
-    eprintln!("Changing settings used for key types and retrieval options");
+    eprintln!("Select a setting to change, note that even when cancelled with <esc>, previous selections are changed");
 
-    let data_type = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Spatial operation type")
-        .items(&["Keys", "Geometries"])
-        .default(0)
-        .interact()
-        .map_err(Error::new)
-        .and_then(TryInto::try_into)
-        .unwrap();
+    loop {
+        let setting = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select a setting to change (esc/q for main menu)")
+            .items(&[
+                "Spatial operation (use keys or geoms for neighbor queries)",
+                "Key type (use Uids or Custom keys for id-based queries)",
+                // FIX: Update this to use the consistent data presentation throughout all query types
+                "<placeholder meta only>",
+                "Done changing settings (also, esc/q)",
+            ])
+            .interact_opt()
+            .unwrap();
 
-    settings.query_data_type = data_type;
-    eprintln!("Updated input data type: {}", data_type.as_str());
+        match setting {
+            Some(0) => {
+                let data_type = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Spatial operation type")
+                    .items(&QueryDataType::list())
+                    .default(settings.query_data_type as usize)
+                    .interact()
+                    .map_err(Error::new)
+                    .and_then(TryInto::try_into)
+                    .unwrap();
 
-    let key_type: QueryKeyType = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Retrieval key type")
-        .items(&QueryKeyType::list())
-        .default(settings.query_key_type as usize)
-        .interact()
-        .map_err(Error::new)
-        .and_then(TryInto::try_into)
-        .unwrap();
+                settings.query_data_type = data_type;
+                eprintln!("Updated input data type: {}", data_type.as_str());
+            }
+            Some(1) => {
+                // TODO: Should we not allow this setting when there is no custom key on the server
+                let key_type: QueryKeyType = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Retrieval key type")
+                    .items(&QueryKeyType::list())
+                    .default(settings.query_key_type as usize)
+                    .interact()
+                    .map_err(Error::new)
+                    .and_then(TryInto::try_into)
+                    .unwrap();
 
-    settings.query_key_type = key_type;
-    eprintln!("Updated query key type: {}", key_type.as_str());
+                settings.query_key_type = key_type;
+                eprintln!("Updated query key type: {}", key_type.as_str());
+            }
+            Some(2) => {
+                let meta_only = Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Retrieve meta only")
+                    .default(settings.meta_only)
+                    .wait_for_newline(true)
+                    .interact()
+                    .unwrap();
 
-    let meta_only = Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("Retrieve meta only")
-        .default(settings.meta_only)
-        .wait_for_newline(true)
-        .interact()
-        .unwrap();
-
-    settings.meta_only = meta_only;
+                settings.meta_only = meta_only;
+            }
+            Some(3) | None => break,
+            _ => unreachable!(),
+        };
+    }
 
     Ok(())
 }
 
-// TODO: Consider a broader range of return values from here
-fn build_path() -> Option<PathBuf> {
-    eprintln!("If directory attempts to FZF, if file loads it straight; . for cwd");
-    if let Ok(dir) = std::env::current_dir() {
-        eprintln!("Current working directory is {}", dir.to_string_lossy());
-    }
-
-    let path: String = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt("Path to load")
-        .interact_text()
-        .unwrap();
-    let path = Path::new(&path);
-
-    match path.try_exists() {
-        // continue
-        Ok(true) => {}
-        Ok(false) => {
-            eprintln!("Path doesn't exist, aborting");
-            return None;
-        }
-        Err(err) => {
-            eprintln!("{}", err);
-            return None;
-        }
-    }
-
-    if path.is_dir() {
-        let canonical = match fs::canonicalize(path) {
-            Ok(path) => path,
-            Err(err) => {
-                eprintln!("{}", err);
-                return None;
-            }
-        };
-
-        match run_fzf_in_dir(&canonical) {
-            Ok(Some(path)) => {
-                eprintln!("Load {}", path.to_string_lossy());
-                match Confirm::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Confirm")
-                    .default(true)
-                    .interact()
-                    .unwrap()
-                {
-                    true => Some(path),
-                    false => None,
-                }
-            }
-            Ok(None) => None,
-            Err(err) => {
-                eprintln!("FZF/find not available or other io error: {}", err);
-                eprintln!(
-                    "Check if fzf and find are on the system, if not you must enter a file only"
-                );
-                None
-            }
-        }
-    } else if path.is_file() {
-        eprintln!("Load {}", path.to_string_lossy());
-        match Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt("Confirm")
-            .default(true)
-            .interact()
-            .unwrap()
-        {
-            true => Some(PathBuf::from(path)),
-            false => None,
-        }
-    } else {
-        eprintln!("Provided path was neither a directory or a file");
-        None
-    }
-}
-
 fn build_reset() -> Option<ResetArgs> {
     let key_type = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("What key type (esc to cancel)?")
+        .with_prompt("What key type (esc/q to cancel)?")
         .items(&["Auto", "Custom Increment", "Custom Value"])
         .default(0)
         .interact_opt()
@@ -400,39 +353,6 @@ fn build_reset() -> Option<ResetArgs> {
     } else {
         eprintln!("Reset aborted");
         None
-    }
-}
-
-/// Utility to build a [`KeySet`] while also enable setting changes.
-fn key_set_loop(settings: &mut Settings) -> Option<KeySet> {
-    loop {
-        let key: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("Choose keys")
-            .allow_empty(true)
-            .interact_text()
-            .unwrap();
-
-        if key.len() == 0 {
-            match Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Select action")
-                .items(&["Change Settings", "Return", "Abort"])
-                .default(0)
-                .interact()
-                .unwrap()
-            {
-                0 => {
-                    _ = change_settings(settings);
-                }
-                1 => {}
-                2 => break None,
-                _ => unreachable!(),
-            }
-        } else {
-            match KeySet::parse_with_type(&key, settings.query_key_type.is_bytes()) {
-                Ok(ks) => break Some(ks),
-                Err(err) => eprintln!("{}", err),
-            }
-        }
     }
 }
 
@@ -595,7 +515,114 @@ fn build_window() -> Option<WindowReq> {
     Some(WindowReq { bbox, join })
 }
 
-// TODO: Improve this handling, perhaps add a setting for a command
+// TODO: Consider a broader range of return values from here
+fn build_path() -> Option<PathBuf> {
+    eprintln!("If directory attempts to FZF, if file loads it straight; . for cwd");
+    if let Ok(dir) = std::env::current_dir() {
+        eprintln!("Current working directory is {}", dir.to_string_lossy());
+    }
+
+    let path: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("Path to load")
+        .interact_text()
+        .unwrap();
+    let path = Path::new(&path);
+
+    match path.try_exists() {
+        // continue
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("Path doesn't exist, aborting");
+            return None;
+        }
+        Err(err) => {
+            eprintln!("{}", err);
+            return None;
+        }
+    }
+
+    if path.is_dir() {
+        let canonical = match fs::canonicalize(path) {
+            Ok(path) => path,
+            Err(err) => {
+                eprintln!("{}", err);
+                return None;
+            }
+        };
+
+        match run_fzf_in_dir(&canonical) {
+            Ok(Some(path)) => {
+                eprintln!("Load {}", path.to_string_lossy());
+                match Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Confirm")
+                    .default(true)
+                    .interact()
+                    .unwrap()
+                {
+                    true => Some(path),
+                    false => None,
+                }
+            }
+            Ok(None) => None,
+            Err(err) => {
+                eprintln!("FZF/find not available or other io error: {}", err);
+                eprintln!(
+                    "Check if fzf and find are on the system, if not you must enter a file only"
+                );
+                None
+            }
+        }
+    } else if path.is_file() {
+        eprintln!("Load {}", path.to_string_lossy());
+        match Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Confirm")
+            .default(true)
+            .interact()
+            .unwrap()
+        {
+            true => Some(PathBuf::from(path)),
+            false => None,
+        }
+    } else {
+        eprintln!("Provided path was neither a directory or a file");
+        None
+    }
+}
+
+/// Utility to build a [`KeySet`] while also enable setting changes.
+fn key_set_loop(settings: &mut Settings) -> Option<KeySet> {
+    loop {
+        let key: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Choose keys")
+            .allow_empty(true)
+            .interact_text()
+            .unwrap();
+
+        if key.len() == 0 {
+            match Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Select action")
+                .items(&["Change Settings", "Return", "Abort"])
+                .default(0)
+                .interact()
+                .unwrap()
+            {
+                0 => {
+                    _ = change_settings(settings);
+                }
+                1 => {}
+                2 => break None,
+                _ => unreachable!(),
+            }
+        } else {
+            match KeySet::parse_with_type(&key, settings.query_key_type.is_bytes()) {
+                Ok(ks) => break Some(ks),
+                Err(err) => eprintln!("{}", err),
+            }
+        }
+    }
+}
+
+// TODO: Improve this handling, perhaps add a setting for a command, also need to make work in windows
 fn run_fzf_in_dir<P: AsRef<Path>>(dir: &P) -> std::io::Result<Option<PathBuf>> {
     let find = Command::new("find")
         .arg(".")

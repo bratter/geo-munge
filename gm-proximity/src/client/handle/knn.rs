@@ -67,14 +67,19 @@ pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
             }
         } else {
             // TODO: Here we are just doing one feature per request... batch this
-            for f in input.into_feature_iter() {
-                // Handling error through inspection-based reporting
-                let knn_req = KnnReq {
-                    k: knn_args.k,
-                    r: knn_args.r,
-                    data: FindData::Features(vec![f]),
-                };
-                handler.send(Request::Knn(knn_req))?;
+            for feature_result in input.into_feature_iter() {
+                match feature_result {
+                    Ok((_, f)) => {
+                        let knn_req = KnnReq {
+                            k: knn_args.k,
+                            r: knn_args.r,
+                            data: FindData::Features(vec![f]),
+                        };
+                        handler.send(Request::Knn(knn_req))?;
+                    }
+                    // TODO: Harmonize interim error reporting, and decide if this is the best way
+                    Err(err) => eprintln!("{}", err),
+                }
             }
         }
     }

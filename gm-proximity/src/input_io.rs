@@ -1,17 +1,19 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader, Lines, Read, Stdin},
+    iter::Enumerate,
     path::Path,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
+use encoding_rs_io::{DecodeReaderBytes, DecodeReaderBytesBuilder};
 
 use crate::message::prelude::*;
 
 /// An abstraction layer over file or stdin input streams, useful for abstracting over input types in the client CLI.
 pub enum Input {
-    File(BufReader<File>),
-    Stdin(BufReader<Stdin>),
+    File(BufReader<DecodeReaderBytes<File, Vec<u8>>>),
+    Stdin(BufReader<DecodeReaderBytes<Stdin, Vec<u8>>>),
 }
 
 impl Input {
@@ -30,7 +32,12 @@ impl Input {
     /// Directly attempt to make an input abstraction from stdin. Will fail if stdin is a tty.
     pub fn stdin() -> Result<Self> {
         if atty::isnt(atty::Stream::Stdin) {
-            Ok(Self::Stdin(BufReader::new(std::io::stdin())))
+            let stdin = std::io::stdin();
+            let decoder = DecodeReaderBytesBuilder::new()
+                .bom_sniffing(true)
+                .strip_bom(true)
+                .build(stdin);
+            Ok(Self::Stdin(BufReader::new(decoder)))
         } else {
             bail!("Attempted to pipe from stdin, but it is not a pipe.")
         }
@@ -46,7 +53,12 @@ impl TryFrom<&Path> for Input {
     type Error = std::io::Error;
 
     fn try_from(value: &Path) -> std::result::Result<Self, Self::Error> {
-        let reader = BufReader::new(File::open(value)?);
+        let file = File::open(value)?;
+        let decoder = DecodeReaderBytesBuilder::new()
+            .bom_sniffing(true)
+            .strip_bom(true)
+            .build(file);
+        let reader = BufReader::new(decoder);
         Ok(Input::File(reader))
     }
 }
@@ -77,43 +89,90 @@ impl BufRead for Input {
 }
 
 pub struct FeatureIterator {
-    inner: Lines<Input>,
-    count: usize,
+    inner: Enumerate<Lines<Input>>,
 }
 
 impl FeatureIterator {
     pub fn new(input: Input) -> Self {
         Self {
-            inner: input.lines(),
-            count: 0,
+            inner: input.lines().enumerate(),
         }
     }
 }
 
 impl Iterator for FeatureIterator {
-    type Item = Feature;
+    type Item = Result<(usize, Feature)>;
 
-    // The next method silently filters blank lines and reports errors on all other parse failures
+    // Reports all errors, including blank lines
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(line_result) = self.inner.next() {
+        if let Some((line_number, line_result)) = self.inner.next() {
             match line_result {
-                Ok(s) if s.len() == 0 => {}
+                // TODO: Are these really errors? Perhaps just in case, but should then have own error type
+                Ok(s) if s.len() == 0 => Some(Err(anyhow!("Warning: Empty line {}", line_number))),
                 Ok(s) => match s.parse::<Feature>() {
-                    Ok(f) => {
-                        self.count += 1;
-                        return Some(f);
-                    }
-                    Err(err) => {
-                        eprintln!("Could not read line {}: {}", self.count, err);
-                        self.count += 1;
-                    }
+                    Ok(f) => Some(Ok((line_number, f))),
+                    Err(err) => Some(Err(anyhow!(
+                        "Warning: Could not parse line {}: {}",
+                        line_number,
+                        err
+                    ))),
                 },
-                Err(err) => {
-                    eprintln!("Could not read line {}: {}", self.count, err);
-                    self.count += 1;
-                }
+                Err(err) => Some(Err(anyhow!(
+                    "Warning: Could not read line {}: {}",
+                    line_number,
+                    err
+                ))),
             }
+        } else {
+            None
         }
-        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    static MANIFEST: &str = env!("CARGO_MANIFEST_DIR");
+
+    fn get_name<'a>((_, f): &'a (usize, Feature)) -> &'a str {
+        f.0.properties.as_ref().unwrap()["name"].as_str().unwrap()
+    }
+
+    #[test]
+    fn test_utf8_multiline_file() {
+        let path = Path::new(MANIFEST).join("../data/io_test/utf8_multiline.json");
+        let input = Input::try_from(path.as_path()).unwrap();
+        let features: Result<Vec<_>> = input.into_feature_iter().collect();
+        let features = features.unwrap();
+
+        assert_eq!(features.len(), 4);
+        assert_eq!(get_name(&features[0]), "San Francisco");
+        assert_eq!(get_name(&features[1]), "New York");
+        assert_eq!(get_name(&features[2]), "Paris");
+        assert_eq!(get_name(&features[3]), "Tokyo");
+    }
+
+    #[test]
+    fn test_utf8_with_bom_file() {
+        let path = Path::new(MANIFEST).join("../data/io_test/utf8_with_bom.json");
+        let input = Input::try_from(path.as_path()).unwrap();
+        let features: Result<Vec<_>> = input.into_feature_iter().collect();
+        let features = features.unwrap();
+
+        assert_eq!(features.len(), 1);
+        assert_eq!(get_name(&features[0]), "San Francisco");
+    }
+
+    #[test]
+    fn test_utf16le_file() {
+        let path = Path::new(MANIFEST).join("../data/io_test/utf16le_with_bom.json");
+        let input = Input::try_from(path.as_path()).unwrap();
+        let features: Result<Vec<_>> = input.into_feature_iter().collect();
+        let features = features.unwrap();
+
+        assert_eq!(features.len(), 1);
+        assert_eq!(get_name(&features[0]), "Test UTF-16");
     }
 }

@@ -20,16 +20,25 @@ pub fn load(handler: &mut CommandHandler, file: Option<PathBuf>) -> Result<()> {
     let mut batch_count = 0;
 
     // TODO: After doing all the data structure work, revist this to see if we can make the whole IPC pipeline more
-    // effcienct, specifically less copying and conversion
+    // effcient, specifically less copying and conversion
     for feature in Input::try_new(file)?.into_feature_iter() {
-        if batch_count >= MAX_BATCH_COUNT {
-            let batch = std::mem::replace(&mut feature_stream, Vec::with_capacity(MAX_BATCH_COUNT));
-            handler.send(Request::Insert(batch))?;
-            batch_count = 0;
-        }
+        match feature {
+            // TODO: Consider introducing a __gmLineNumber member in the feature's properties when an appropriate
+            // setting is provided on load, or some other way of using line numbers as keys explicitly
+            Ok((_, feature)) => {
+                if batch_count >= MAX_BATCH_COUNT {
+                    let batch =
+                        std::mem::replace(&mut feature_stream, Vec::with_capacity(MAX_BATCH_COUNT));
+                    handler.send(Request::Insert(batch))?;
+                    batch_count = 0;
+                }
 
-        feature_stream.push(feature);
-        batch_count += 1;
+                feature_stream.push(feature);
+                batch_count += 1;
+            }
+            // TODO: Harmonize interim error reporting, and decide if this is the best way
+            Err(err) => eprintln!("{}", err),
+        }
     }
 
     // Do a final flush
