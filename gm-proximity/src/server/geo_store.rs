@@ -28,6 +28,12 @@ pub struct GeoRecordInner {
 /// Shared record type used throughout the system.
 pub type GeoRecord = Arc<GeoRecordInner>;
 
+impl From<&GeoRecordInner> for geojson::Geometry {
+    fn from(value: &GeoRecordInner) -> Self {
+        geojson::Geometry::from(&value.geometry)
+    }
+}
+
 impl From<&GeoRecordInner> for geojson::Feature {
     fn from(value: &GeoRecordInner) -> Self {
         let mut feature: geojson::Feature = geojson::Geometry::from(&value.geometry).into();
@@ -39,6 +45,12 @@ impl From<&GeoRecordInner> for geojson::Feature {
         };
 
         feature
+    }
+}
+
+impl From<&GeoRecordInner> for JsonValue {
+    fn from(value: &GeoRecordInner) -> Self {
+        value.metadata.clone().unwrap_or_default()
     }
 }
 

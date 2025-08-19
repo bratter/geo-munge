@@ -2,11 +2,13 @@
 
 use std::{fmt::Debug, num::ParseIntError, str::FromStr};
 
-use anyhow::{bail, Error, Ok, Result};
+use anyhow::{anyhow, bail, Error, Ok, Result};
 use bincode::{Decode, Encode};
 use geo::{Point, Rect};
 
-use super::{encode::IoCodec, CustomKey, Feature, NodeId};
+use crate::server::geo_store::GeoRecord;
+
+use super::{encode::IoCodec, response::ContentType, CustomKey, Feature, NodeId};
 
 #[derive(Debug, Encode, Decode)]
 #[non_exhaustive]
@@ -194,6 +196,7 @@ impl FromStr for Bbox {
 pub struct KnnReq {
     pub k: usize,
     pub r: Option<f64>,
+    pub content_mode: ContentMode,
     pub data: FindData,
     // TODO: Add filters
 }
@@ -202,6 +205,7 @@ pub struct KnnReq {
 pub struct WindowReq {
     pub bbox: Bbox,
     pub join: JoinType,
+    pub content_mode: ContentMode,
 }
 
 #[derive(Debug, Encode, Decode)]
@@ -222,7 +226,7 @@ pub enum FindData {
 #[derive(Debug, Encode, Decode)]
 pub struct GetReq {
     pub keys: KeySet,
-    pub meta_only: bool,
+    pub content_mode: ContentMode,
 }
 
 #[derive(Debug, Encode, Decode)]
@@ -298,5 +302,89 @@ impl Debug for BenchReq {
             .field("size", &self.size)
             .field("ratio", &self.ratio)
             .finish_non_exhaustive()
+    }
+}
+
+/// Content mode for query response output.
+#[derive(Debug, Clone, Copy, Default, Encode, Decode)]
+pub enum ContentMode {
+    /// Return no additional content, IDs only.
+    #[default]
+    None,
+
+    /// Return full GeoJSON features with properties and geometry.
+    Full,
+
+    /// Return GeoJSON geometry only, without properties.
+    Geometry,
+
+    /// Return properties only as JSON.
+    Properties,
+}
+
+impl ContentMode {
+    /// Convert a [`GeoRecord`] to the correct [`ContentType`] for responses based on this mode.
+    pub fn with_record(&self, record: &GeoRecord) -> ContentType {
+        match self {
+            Self::None => ContentType::None,
+            Self::Full => ContentType::FullFeature(geojson::Feature::from(record.as_ref()).into()),
+            Self::Geometry => {
+                let geom: geojson::Feature = geojson::Geometry::from(record.as_ref()).into();
+                ContentType::GeometryOnly(geom.into())
+            }
+            Self::Properties => {
+                ContentType::PropertiesOnly(geojson::JsonValue::from(record.as_ref()).into())
+            }
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            Self::None => "None",
+            Self::Full => "Full Feature",
+            Self::Geometry => "Geometry",
+            Self::Properties => "Properties",
+        }
+    }
+
+    pub fn list() -> [&'static str; 4] {
+        [
+            Self::None.as_str(),
+            Self::Full.as_str(),
+            Self::Geometry.as_str(),
+            Self::Properties.as_str(),
+        ]
+    }
+}
+
+impl FromStr for ContentMode {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "none" | "id" | "ids" => Ok(ContentMode::None),
+            "full" | "feature" => Ok(ContentMode::Full),
+            "geometry" | "geom" => Ok(ContentMode::Geometry),
+            "properties" | "props" | "meta" => Ok(ContentMode::Properties),
+            _ => Err(anyhow!(
+                "Invalid content mode '{}'. Valid options: full, geometry, properties, none",
+                s
+            )),
+        }
+    }
+}
+
+// TODO: Should these be moved into a newtype in the repl module, or should the setting types all be moved into a common mod
+impl TryFrom<usize> for ContentMode {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::None),
+            1 => Ok(Self::Full),
+            2 => Ok(Self::Geometry),
+            3 => Ok(Self::Properties),
+            _ => bail!("Invalid index for ContentMode"),
+        }
     }
 }

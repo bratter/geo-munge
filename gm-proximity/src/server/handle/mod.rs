@@ -21,4 +21,4 @@ pub mod handlers {
     pub use super::window::window;
 }
 
-pub use handle::{Context, Handler};
+pub use handle::{record_to_basic_result, Context, Handler};

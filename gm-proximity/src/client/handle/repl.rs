@@ -87,7 +87,7 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
             // Window
             Some(6) => {
                 // For window we can just send a single request
-                if let Some(window_req) = build_window() {
+                if let Some(window_req) = build_window(&settings) {
                     handler.send(Request::Window(window_req))
                 } else {
                     Ok(())
@@ -128,7 +128,7 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
 struct Settings {
     query_data_type: QueryDataType,
     query_key_type: QueryKeyType,
-    meta_only: bool,
+    content_mode: ContentMode,
 }
 
 impl Settings {
@@ -243,8 +243,7 @@ fn change_settings(settings: &mut Settings) -> Result<()> {
             .items(&[
                 "Spatial operation (use keys or geoms for neighbor queries)",
                 "Key type (use Uids or Custom keys for id-based queries)",
-                // FIX: Update this to use the consistent data presentation throughout all query types
-                "<placeholder meta only>",
+                "Content mode (the geojson data to return from queries)",
                 "Done changing settings (also, esc/q)",
             ])
             .interact_opt()
@@ -279,14 +278,16 @@ fn change_settings(settings: &mut Settings) -> Result<()> {
                 eprintln!("Updated query key type: {}", key_type.as_str());
             }
             Some(2) => {
-                let meta_only = Confirm::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Retrieve meta only")
-                    .default(settings.meta_only)
-                    .wait_for_newline(true)
+                let content_mode: ContentMode = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Content response mode for KNN and Window queries")
+                    .items(&ContentMode::list())
+                    .default(settings.content_mode as usize)
                     .interact()
+                    .map_err(Error::new)
+                    .and_then(TryInto::try_into)
                     .unwrap();
 
-                settings.meta_only = meta_only;
+                settings.content_mode = content_mode;
             }
             Some(3) | None => break,
             _ => unreachable!(),
@@ -356,6 +357,7 @@ fn build_reset() -> Option<ResetArgs> {
     }
 }
 
+// TODO: Because the purpose of get is to retrieve the item, should we decouple this from the setting?
 fn build_get(settings: &mut Settings) -> Option<GetReq> {
     eprintln!(
         "Enter key ({}) to get, blank to change settings or abort",
@@ -365,7 +367,7 @@ fn build_get(settings: &mut Settings) -> Option<GetReq> {
     if let Some(keys) = key_set_loop(settings) {
         Some(GetReq {
             keys,
-            meta_only: settings.meta_only,
+            content_mode: settings.content_mode,
         })
     } else {
         None
@@ -479,10 +481,11 @@ fn build_knn(settings: &mut Settings) -> Option<KnnArgs> {
         key_bytes,
         data,
         file,
+        content: settings.content_mode,
     })
 }
 
-fn build_window() -> Option<WindowReq> {
+fn build_window(settings: &Settings) -> Option<WindowReq> {
     let join = match Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Choose selection mode")
         .items(&["Contains", "Intersects"])
@@ -512,7 +515,11 @@ fn build_window() -> Option<WindowReq> {
         }
     };
 
-    Some(WindowReq { bbox, join })
+    Some(WindowReq {
+        bbox,
+        join,
+        content_mode: settings.content_mode,
+    })
 }
 
 // TODO: Consider a broader range of return values from here

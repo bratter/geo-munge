@@ -123,6 +123,7 @@ impl ResponseHandler {
     }
 
     // TODO: Temporary print function - remove or refactor when handling improves
+    // Print will likely remain the main output interface, but we could consider direct push to file or something else
     fn print(id: u32, duration: Option<Duration>, res: &Response) {
         // TODO: This is very inefficient, assume it will be removed... if not fix
         let mut prefix = format!("[req {}", id);
@@ -132,42 +133,60 @@ impl ResponseHandler {
         prefix.push_str("]");
 
         match res {
-            Response::Success(Some(msg)) => println!("{} {}", prefix, msg),
-            Response::Success(None) => println!("{} success", prefix),
+            Response::Success(Some(msg)) => eprintln!("{} {}", prefix, msg),
+            Response::Success(None) => eprintln!("{} success", prefix),
             // TODO: When handling done should cross-check number of responses
-            Response::Done(n) => println!("{} done with {} responses", prefix, n),
-            Response::Stats(n) => println!(
+            Response::Done(n) => eprintln!("{} done with {} responses", prefix, n),
+            Response::Stats(n) => eprintln!(
                 "{} QT size={}; key: {:?}; bytes sent={}; bytes recv={}",
                 prefix, n.qt_size, n.key_mode, n.bytes_sent, n.bytes_recv
             ),
             Response::ResultCounts { success, fail } => {
-                println!("{} succeed {}, failed {}", prefix, success, fail)
+                eprintln!("{} succeed {}, failed {}", prefix, success, fail)
             }
-            Response::FeatureData(results) => {
-                for r in results {
-                    println!("{:?}", r);
-                }
-            }
-            Response::MetaData(results) => {
-                for r in results {
-                    println!("{:?}", r);
-                }
-            }
-            Response::KnnData(results) => {
-                println!(
-                    "{} knn: prints each neighbor with input index, store uid, and distance in radians",
-                    prefix
-                );
-
-                for item_res in results {
-                    match item_res {
-                        Ok(item) => println!("{},{},{}", item.index, item.uid, item.distance),
-                        Err(s) => println!("Knn Error: {}", s),
+            Response::BasicResults(results) => {
+                for result in results {
+                    match result {
+                        Ok(basic_result) => {
+                            let content_json = format_content(&basic_result.content);
+                            println!("{},{}", basic_result.id, content_json);
+                        }
+                        Err(err) => eprintln!("Error: {}", err),
                     }
                 }
             }
-            Response::Error(msg) => println!("{} error: {}", prefix, msg),
+            Response::ProximityResults(results) => {
+                for result in results {
+                    match result {
+                        Ok(proximity_result) => {
+                            let content_json = format_content(&proximity_result.content);
+                            println!(
+                                "{},{},{},{}",
+                                proximity_result.input_index,
+                                proximity_result.id,
+                                proximity_result.distance,
+                                content_json
+                            );
+                        }
+                        Err(err) => eprintln!("Error: {}", err),
+                    }
+                }
+            }
+            Response::Error(msg) => eprintln!("{} error: {}", prefix, msg),
             Response::Bench(_) => unreachable!(),
         }
     }
+}
+
+fn format_content(content: &ContentType) -> String {
+    let json_str = match content {
+        ContentType::FullFeature(feature) => feature.to_string(),
+        ContentType::GeometryOnly(geometry) => geometry.to_string(),
+        ContentType::PropertiesOnly(json_value) => json_value.to_string(),
+        ContentType::None => return String::new(),
+    };
+
+    // Ensure that the json strings are properly escaped in csv
+    // TODO: Is this really what we want? Do we at least want some form of possible formatting options
+    format!("\"{}\"", json_str.replace('"', "\"\""))
 }

@@ -4,7 +4,7 @@
 //! structure of inner message types.
 
 use std::{
-    fmt::{Debug, LowerHex},
+    fmt::{Debug, Display, LowerHex},
     str::FromStr,
 };
 
@@ -20,7 +20,6 @@ pub mod prelude {
     pub use super::request::*;
     pub use super::response::*;
     pub use super::Feature;
-    pub use super::JsonValue;
     pub use super::NodeId;
 }
 
@@ -96,6 +95,12 @@ impl From<Feature> for geojson::Feature {
     }
 }
 
+impl Display for Feature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
 impl FromStr for Feature {
     type Err = geojson::Error;
 
@@ -156,6 +161,12 @@ impl FromStr for JsonValue {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(s.parse::<geojson::JsonValue>().map(JsonValue)?)
+    }
+}
+
+impl Display for JsonValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
     }
 }
 

@@ -102,10 +102,9 @@ pub struct GetArgs {
     #[clap(long, short = 'y')]
     pub key_bytes: bool,
 
-    /// Whether to only return the JSON metadata and not the GeoJSON feature.
-    /// TODO: Option to exclude meta?
-    #[clap(long, short = 'm')]
-    pub meta_only: bool,
+    /// Content mode for output data. Defaults to full for get (unlike other queries).
+    #[clap(long, short = 'c', default_value = "full")]
+    pub content: ContentMode,
 }
 
 #[derive(Debug, Parser)]
@@ -132,12 +131,16 @@ pub struct KnnArgs {
     ///
     /// When testing with keys, this indicates to the server that the test geometry is already in the quadtree with the
     /// given set of keys. This flag governs the type of data expected as data, as the file, or on stdin.
-    #[clap(short = 'u', long)]
+    #[clap(long, short = 'u')]
     pub key_uid: bool,
 
     /// Flag to determine whether to use custom byte keys instead of geometries.
-    #[clap(short = 'y', long, conflicts_with = "key_uid")]
+    #[clap(long, short = 'y', conflicts_with = "key_uid")]
     pub key_bytes: bool,
+
+    /// Content mode for output data.
+    #[clap(long, short = 'c', default_value = "none")]
+    pub content: ContentMode,
 
     /// Manually passed data to test.
     #[clap(long, short)]
@@ -157,6 +160,10 @@ pub struct WindowArgs {
     /// this flag sets intersects mode, where anything that intersects the bbox is returned.
     #[clap(long, short)]
     pub intersects: bool,
+
+    /// Content mode for output data.
+    #[clap(long, short = 'c', default_value = "none")]
+    pub content: ContentMode,
 }
 
 #[derive(Debug, Parser)]

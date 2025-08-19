@@ -6,7 +6,7 @@ use crossbeam::channel::Sender;
 
 use crate::connection::{MsgToken, Traffic};
 use crate::message::prelude::*;
-use crate::server::geo_store::GeoStore;
+use crate::server::geo_store::{GeoRecord, GeoStore};
 
 use super::handlers;
 
@@ -117,6 +117,16 @@ impl From<&KeyGenerator> for KeyMode {
 impl Default for KeyGenerator {
     fn default() -> Self {
         Self::AutoIncrement(0.into())
+    }
+}
+
+#[inline]
+pub fn record_to_basic_result(content_mode: ContentMode, record: &GeoRecord) -> BasicResult {
+    let content = content_mode.with_record(record);
+
+    BasicResult {
+        id: record.id,
+        content,
     }
 }
 

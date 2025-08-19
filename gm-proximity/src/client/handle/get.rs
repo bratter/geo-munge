@@ -12,7 +12,7 @@ pub fn get(handler: &mut CommandHandler, get_args: GetArgs) -> Result<()> {
 
     handler.send(Request::Get(GetReq {
         keys,
-        meta_only: get_args.meta_only,
+        content_mode: get_args.content,
     }))?;
 
     Ok(())

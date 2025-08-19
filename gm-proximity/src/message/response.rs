@@ -33,22 +33,15 @@ pub enum Response {
     /// TODO: Upgrade to contain failure details?
     ResultCounts { success: usize, fail: usize },
 
-    /// Feature data as a response.
+    /// Basic query results without distance information.
     ///
-    /// Contains a vector of results of GeoJson Features.
-    FeatureData(Vec<Result<Feature, String>>),
+    /// Used for Get and Window commands that don't involve proximity calculations.
+    BasicResults(Vec<Result<BasicResult, String>>),
 
-    /// Metadata as a response.
+    /// Proximity query results with distance information.
     ///
-    /// Contains a vector of results of NodeIds and JsonValues.
-    MetaData(Vec<Result<(NodeId, JsonValue), String>>),
-
-    /// Knn result data.
-    ///
-    /// Contains a vector of results from a Knn calculation, wrapped in a result for failed rows.
-    /// TODO: Response type without errors, better response type overall
-    /// TODO: Different response type for window queries, have option in req to return just the ids or meta/geom also
-    KnnData(Vec<Result<KnnItem, String>>),
+    /// Used for KNN commands that involve distance calculations.
+    ProximityResults(Vec<Result<ProximityResult, String>>),
 
     /// An error response.
     ///
@@ -78,18 +71,47 @@ pub struct Stats {
     pub bytes_recv: usize,
 }
 
+/// Content type for query results - determines what additional data is returned with the ID.
+/// TODO: Move these common things out into a different file
 #[derive(Debug, Encode, Decode)]
-pub struct KnnItem {
-    /// The element index from the incoming request.
-    pub index: usize,
+pub enum ContentType {
+    /// Full GeoJSON feature with properties and geometry.
+    FullFeature(Feature),
 
-    /// The unique identifier of the retrieved node from the store.
-    ///
-    /// This allows full information retrieval.
-    pub uid: NodeId,
+    /// GeoJSON geometry only, without properties.
+    GeometryOnly(Feature),
 
-    /// The distance in radians between the request geometry and this item.
+    /// Properties only as JSON value.
+    PropertiesOnly(JsonValue),
+
+    /// No additional content, ID only.
+    None,
+}
+
+/// Basic query result without distance information.
+#[derive(Debug, Encode, Decode)]
+pub struct BasicResult {
+    /// The unique identifier of the node.
+    pub id: NodeId,
+
+    /// The content to return with this result.
+    pub content: ContentType,
+}
+
+/// Proximity query result with distance information.
+#[derive(Debug, Encode, Decode)]
+pub struct ProximityResult {
+    /// The input index from the original query request.
+    pub input_index: usize,
+
+    /// The unique identifier of the node.
+    pub id: NodeId,
+
+    /// The distance from the query point.
     pub distance: f64,
+
+    /// The content to return with this result.
+    pub content: ContentType,
 }
 
 #[derive(Encode, Decode)]

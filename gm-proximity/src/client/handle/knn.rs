@@ -31,6 +31,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
         let knn = KnnReq {
             k: knn_args.k,
             r: knn_args.r,
+            content_mode: knn_args.content,
             data: find_data,
         };
 
@@ -61,6 +62,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
                 let knn_req = KnnReq {
                     k: knn_args.k,
                     r: knn_args.r,
+                    content_mode: knn_args.content,
                     data: FindData::Keys(ks),
                 };
                 handler.send(Request::Knn(knn_req))?;
@@ -73,6 +75,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
                         let knn_req = KnnReq {
                             k: knn_args.k,
                             r: knn_args.r,
+                            content_mode: knn_args.content,
                             data: FindData::Features(vec![f]),
                         };
                         handler.send(Request::Knn(knn_req))?;
