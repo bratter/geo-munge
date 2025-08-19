@@ -1,74 +1,99 @@
-use std::io::BufRead;
-
 use anyhow::Result;
 
 use crate::{args::KnnArgs, input_io::Input, message::prelude::*};
 
 use super::CommandHandler;
 
-/// Knn command handler
-/// TODO: Fix this - it is a bare minimum test version
-/// TODO: See notes in the load handler - improvements here will be similiar
-/// TODO: After those are done, then try to simplify - e.g. abstract the 4 iterators behind an impl - we could even make
-/// a string input a bufreader and just make it work as input
+/// Knn command handler.
 pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
-    let use_keys = knn_args.key_uid || knn_args.key_bytes;
-
-    if let Some(data) = knn_args.data {
-        // Here we have CLI data - do this separately as we are just dispatching this as a batch
-        let find_data = if use_keys {
-            let keys = KeySet::parse_with_type(&data, knn_args.key_bytes)?;
-            FindData::Keys(keys)
-        } else {
-            // TODO: This needs to be fixed with better batching and reporting
-            let features = data
-                .lines()
-                .filter_map(|l| l.parse::<Feature>().ok())
-                .collect();
-            FindData::Features(features)
+    if let Some(raw_data) = knn_args.data {
+        // Handle CLI data - batch processing with fail-fast error handling
+        let find_data = match handle_cli_data(raw_data, knn_args.key_uid, knn_args.key_bytes) {
+            Ok(find_data) => find_data,
+            Err(err) => {
+                eprintln!("Warning: Could not parse data: {}", err);
+                return Ok(());
+            }
         };
 
-        let knn = KnnReq {
+        let knn_req = KnnReq {
             k: knn_args.k,
             r: knn_args.r,
             content_mode: knn_args.content,
             data: find_data,
         };
 
-        handler.send(Request::Knn(knn))?;
+        handler.send(Request::Knn(knn_req))?;
     } else {
-        // Here we have IO
-        let input = Input::try_new(knn_args.file)?;
+        // Handle IO data - per-line processing with individual error reporting
+        handle_io_data(handler, &knn_args)?;
+    }
 
-        if use_keys {
-            // TODO: We are now assuming that we have lines of comma-separated keys
-            // Is this the best assumption, should this be batched better?
-            // TODO: Is this enumerate version good enough for error reporting? Should this differ by io vs. cli?
-            // TODO: Maybe do something akin to the into_feature_iter for keys for this also
-            let key_lines = input.lines().enumerate().filter_map(|(n, l)| {
-                match l
-                    .map_err(Into::<anyhow::Error>::into)
-                    .and_then(|s| KeySet::parse_with_type(&s, knn_args.key_bytes))
-                {
-                    Ok(ks) => Some(ks),
-                    Err(err) => {
-                        eprintln!("Could not read line {}: {}", n, err);
-                        None
+    Ok(())
+}
+
+fn handle_cli_data(data: String, key_uid: bool, key_bytes: bool) -> Result<FindData> {
+    let use_keys = key_uid || key_bytes;
+
+    if use_keys {
+        let keys = KeySet::parse_with_type(&data, key_bytes);
+        Ok(FindData::Keys(keys?))
+    } else {
+        let features: Result<Vec<_>, _> = data.lines().map(|l| l.parse::<Feature>()).collect();
+        Ok(FindData::Features(features?))
+    }
+}
+
+// TODO: Batching
+fn handle_io_data(handler: &mut CommandHandler, knn_args: &KnnArgs) -> Result<()> {
+    let input = match Input::try_new(knn_args.file.as_ref()) {
+        Ok(input) => input,
+        Err(err) => {
+            eprintln!("Could not read input: {}", err);
+            return Ok(());
+        }
+    };
+
+    match (knn_args.key_uid, knn_args.key_bytes) {
+        (true, true) => unreachable!("key_uid and key_bytes are mutually exclusive"),
+        (true, false) => {
+            // Process UIDs - one per line
+            for key_result in input.into_uid_iter() {
+                match key_result {
+                    Ok(uid) => {
+                        let keyset = KeySet::Uid(vec![uid]);
+                        let knn_req = KnnReq {
+                            k: knn_args.k,
+                            r: knn_args.r,
+                            content_mode: knn_args.content,
+                            data: FindData::Keys(keyset),
+                        };
+                        handler.send(Request::Knn(knn_req))?;
                     }
+                    Err(err) => eprintln!("Warning: Could not parse line: {}", err),
                 }
-            });
-
-            for ks in key_lines {
-                let knn_req = KnnReq {
-                    k: knn_args.k,
-                    r: knn_args.r,
-                    content_mode: knn_args.content,
-                    data: FindData::Keys(ks),
-                };
-                handler.send(Request::Knn(knn_req))?;
             }
-        } else {
-            // TODO: Here we are just doing one feature per request... batch this
+        }
+        (false, true) => {
+            // Process custom keys - one per line
+            for key_result in input.into_custom_key_iter() {
+                match key_result {
+                    Ok(key) => {
+                        let keyset = KeySet::Custom(vec![key]);
+                        let knn_req = KnnReq {
+                            k: knn_args.k,
+                            r: knn_args.r,
+                            content_mode: knn_args.content,
+                            data: FindData::Keys(keyset),
+                        };
+                        handler.send(Request::Knn(knn_req))?;
+                    }
+                    Err(err) => eprintln!("Warning: Could not parse line: {}", err),
+                }
+            }
+        }
+        (false, false) => {
+            // Process features - one per line
             for feature_result in input.into_feature_iter() {
                 match feature_result {
                     Ok((_, f)) => {
@@ -80,8 +105,7 @@ pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
                         };
                         handler.send(Request::Knn(knn_req))?;
                     }
-                    // TODO: Harmonize interim error reporting, and decide if this is the best way
-                    Err(err) => eprintln!("{}", err),
+                    Err(err) => eprintln!("Warning: Could not parse line: {}", err),
                 }
             }
         }

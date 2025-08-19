@@ -8,7 +8,7 @@ use std::{
 use anyhow::{anyhow, bail, Result};
 use encoding_rs_io::{DecodeReaderBytes, DecodeReaderBytesBuilder};
 
-use crate::message::prelude::*;
+use crate::message::{prelude::*, CustomKey};
 
 /// An abstraction layer over file or stdin input streams, useful for abstracting over input types in the client CLI.
 pub enum Input {
@@ -46,6 +46,26 @@ impl Input {
     /// Convert the Input into an iterator of line-oriented [`Feature`] types.
     pub fn into_feature_iter(self) -> FeatureIterator {
         FeatureIterator::new(self)
+    }
+
+    /// Convert the Input into an iterator of line-oriented [`NodeId`] types.
+    pub fn into_uid_iter(self) -> impl Iterator<Item = Result<NodeId>> {
+        self.lines().map(|line_result| {
+            line_result
+                .map_err(Into::into)
+                .and_then(|line| line.parse::<NodeId>().map_err(Into::into))
+        })
+    }
+
+    /// Convert the Input into an iterator of line-oriented [`CustomKey`] types.
+    /// TODO: Consider improving this as byte keys are always 16 bytes and may contain \n - perhaps the format here
+    /// should just be 16 byte chunks (i.e., not line oriented at all)
+    pub fn into_custom_key_iter(self) -> impl Iterator<Item = Result<CustomKey>> {
+        self.lines().map(|line_result| {
+            line_result
+                .map_err(Into::into)
+                .and_then(|line| CustomKey::try_from(line.as_bytes()).map_err(Into::into))
+        })
     }
 }
 

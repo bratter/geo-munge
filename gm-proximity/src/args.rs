@@ -93,11 +93,9 @@ pub struct ResetArgs {
 ///
 /// Results will be pushed to stdout, errors to stderr. Use the meta only flag to only return the associated metadata
 /// and not the full feature.
+/// TODO: Fix all these descriptions, this currently doesn't give you ndjson unlike what the description indicates
 #[derive(Debug, Parser)]
 pub struct GetArgs {
-    /// Comma separated list of keys to return entries for.
-    pub keys: String,
-
     /// Whether the passed keys are custom byte keys.
     #[clap(long, short = 'y')]
     pub key_bytes: bool,
@@ -105,16 +103,27 @@ pub struct GetArgs {
     /// Content mode for output data. Defaults to full for get (unlike other queries).
     #[clap(long, short = 'c', default_value = "full")]
     pub content: ContentMode,
+
+    /// Manually passed comma-separated keys to get.
+    #[clap(long, short, conflicts_with = "file")]
+    pub data: Option<String>,
+
+    /// An optional file input containing keys to get.
+    pub file: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
 pub struct DeleteArgs {
-    /// Comma separated list of keys to remove from the store.
-    pub keys: String,
-
     /// Whether the passed keys are custom byte keys.
     #[clap(long, short = 'y')]
     pub key_bytes: bool,
+
+    /// Manually passed comma-separated keys to remove.
+    #[clap(long, short, conflicts_with = "file")]
+    pub data: Option<String>,
+
+    /// An optional file input containing keys to remove.
+    pub file: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -143,11 +152,10 @@ pub struct KnnArgs {
     pub content: ContentMode,
 
     /// Manually passed data to test.
-    #[clap(long, short)]
+    #[clap(long, short, conflicts_with = "file")]
     pub data: Option<String>,
 
     /// An optional file input containing items to test.
-    #[clap(conflicts_with = "data")]
     pub file: Option<PathBuf>,
 }
 

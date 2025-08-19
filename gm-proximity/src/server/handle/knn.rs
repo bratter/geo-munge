@@ -31,9 +31,6 @@ pub fn knn(handler: Context, req: KnnReq) {
 }
 
 // TODO: If there are more settings, bundle them into a QtSettings struct
-// TODO: We need to think what metadata to return from the matched geom. At least the id, but possibly the rest as a setting.
-// Same applies to the stored shape - don't want the overhead of returning it unless required by the client as the
-// client should already know or could query afterwards
 // TODO: Push the results directly into the output message and send (probably one result per knn input row)
 // TODO: Do we want to return some form of error code rather than a string to keep the size down?
 fn process_geom_stream(

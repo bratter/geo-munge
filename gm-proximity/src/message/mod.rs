@@ -41,7 +41,7 @@ impl TryFrom<&[u8]> for CustomKey {
             bytes[0..value.len()].copy_from_slice(value);
             Ok(CustomKey(bytes))
         } else {
-            bail!("Key should be 16 characters or less");
+            bail!("Key should be 16 bytes or less");
         }
     }
 }
