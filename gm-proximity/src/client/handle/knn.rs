@@ -1,8 +1,14 @@
 use anyhow::Result;
 
-use crate::{args::KnnArgs, input_io::Input, message::prelude::*};
+use crate::{
+    args::KnnArgs,
+    input_io::Input,
+    message::{dispatch_counted_batches, prelude::*},
+};
 
-use super::CommandHandler;
+use super::{
+    print_and_filter_err, CommandHandler, MAX_BATCH_BYTES, MAX_FEATURE_COUNT, MAX_ID_BATCH_SIZE,
+};
 
 /// Knn command handler.
 pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
@@ -44,7 +50,6 @@ fn handle_cli_data(data: String, key_uid: bool, key_bytes: bool) -> Result<FindD
     }
 }
 
-// TODO: Batching
 fn handle_io_data(handler: &mut CommandHandler, knn_args: &KnnArgs) -> Result<()> {
     let input = match Input::try_new(knn_args.file.as_ref()) {
         Ok(input) => input,
@@ -57,59 +62,62 @@ fn handle_io_data(handler: &mut CommandHandler, knn_args: &KnnArgs) -> Result<()
     match (knn_args.key_uid, knn_args.key_bytes) {
         (true, true) => unreachable!("key_uid and key_bytes are mutually exclusive"),
         (true, false) => {
-            // Process UIDs - one per line
-            for key_result in input.into_uid_iter() {
-                match key_result {
-                    Ok(uid) => {
-                        let keyset = KeySet::Uid(vec![uid]);
-                        let knn_req = KnnReq {
-                            k: knn_args.k,
-                            r: knn_args.r,
-                            content_mode: knn_args.content,
-                            data: FindData::Keys(keyset),
-                        };
-                        handler.send(Request::Knn(knn_req))?;
-                    }
-                    Err(err) => eprintln!("Warning: Could not parse line: {}", err),
-                }
-            }
+            // Process UIDs using batching
+            let _ = dispatch_counted_batches(
+                input.into_uid_iter().filter_map(print_and_filter_err),
+                MAX_ID_BATCH_SIZE,
+                |batch| send_knn_req(handler, knn_args, FindData::Keys(KeySet::Uid(batch))),
+            )?;
         }
         (false, true) => {
-            // Process custom keys - one per line
-            for key_result in input.into_custom_key_iter() {
-                match key_result {
-                    Ok(key) => {
-                        let keyset = KeySet::Custom(vec![key]);
-                        let knn_req = KnnReq {
-                            k: knn_args.k,
-                            r: knn_args.r,
-                            content_mode: knn_args.content,
-                            data: FindData::Keys(keyset),
-                        };
-                        handler.send(Request::Knn(knn_req))?;
-                    }
-                    Err(err) => eprintln!("Warning: Could not parse line: {}", err),
-                }
-            }
+            // Process custom keys using batching
+            let _ = dispatch_counted_batches(
+                input
+                    .into_custom_key_iter()
+                    .filter_map(print_and_filter_err),
+                MAX_ID_BATCH_SIZE,
+                |batch| send_knn_req(handler, knn_args, FindData::Keys(KeySet::Custom(batch))),
+            )?;
         }
         (false, false) => {
-            // Process features - one per line
-            for feature_result in input.into_feature_iter() {
-                match feature_result {
-                    Ok((_, f)) => {
-                        let knn_req = KnnReq {
-                            k: knn_args.k,
-                            r: knn_args.r,
-                            content_mode: knn_args.content,
-                            data: FindData::Features(vec![f]),
-                        };
-                        handler.send(Request::Knn(knn_req))?;
-                    }
-                    Err(err) => eprintln!("Warning: Could not parse line: {}", err),
+            // Process features using batching
+            // Note the description of the batching logic in the constant's docs and the load handler
+            let mut feature_buffer = Vec::with_capacity(MAX_FEATURE_COUNT);
+            let mut batch_bytes = 0;
+
+            for (text_bytes, feature) in input.into_feature_iter().filter_map(print_and_filter_err)
+            {
+                batch_bytes += text_bytes;
+                // is_empty condition required to ensure that we don't send empty buffers
+                // Because we unconditionally push we won't skip individual items, which is what we want
+                if batch_bytes >= MAX_BATCH_BYTES && !feature_buffer.is_empty() {
+                    let batch = std::mem::replace(
+                        &mut feature_buffer,
+                        Vec::with_capacity(MAX_FEATURE_COUNT),
+                    );
+                    send_knn_req(handler, knn_args, FindData::Features(batch))?;
+                    batch_bytes = 0;
                 }
+                feature_buffer.push(feature);
+            }
+
+            // Final flush
+            if feature_buffer.len() > 0 {
+                send_knn_req(handler, knn_args, FindData::Features(feature_buffer))?;
             }
         }
     }
 
     Ok(())
+}
+
+fn send_knn_req(handler: &mut CommandHandler, knn_args: &KnnArgs, data: FindData) -> Result<()> {
+    let knn_req = KnnReq {
+        k: knn_args.k,
+        r: knn_args.r,
+        content_mode: knn_args.content,
+        data,
+    };
+
+    handler.send(Request::Knn(knn_req))
 }

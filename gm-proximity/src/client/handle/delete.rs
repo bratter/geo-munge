@@ -1,8 +1,12 @@
-use crate::{args::DeleteArgs, input_io::Input, message::prelude::*};
+use crate::{
+    args::DeleteArgs,
+    input_io::Input,
+    message::{dispatch_counted_batches, prelude::*},
+};
 
 use anyhow::Result;
 
-use super::CommandHandler;
+use super::{print_and_filter_err, CommandHandler, MAX_ID_BATCH_SIZE};
 
 /// Delete command handler.
 ///
@@ -30,29 +34,21 @@ pub fn delete(handler: &mut CommandHandler, del_args: DeleteArgs) -> Result<()> 
         };
 
         if del_args.key_bytes {
-            // Process custom keys - one per line
-            for key_result in input.into_custom_key_iter() {
-                match key_result {
-                    Ok(key) => {
-                        let keyset = KeySet::Custom(vec![key]);
-                        // TODO: Batching
-                        handler.send(Request::Delete(keyset))?;
-                    }
-                    Err(err) => eprintln!("Warning: Could not parse line: {}", err),
-                }
-            }
+            // Process custom keys with batching
+            let _ = dispatch_counted_batches(
+                input
+                    .into_custom_key_iter()
+                    .filter_map(print_and_filter_err),
+                MAX_ID_BATCH_SIZE,
+                |batch| handler.send(Request::Delete(KeySet::Custom(batch))),
+            )?;
         } else {
-            // Process UIDs - one per line
-            for key_result in input.into_uid_iter() {
-                match key_result {
-                    Ok(uid) => {
-                        let keyset = KeySet::Uid(vec![uid]);
-                        // TODO: Batching
-                        handler.send(Request::Delete(keyset))?;
-                    }
-                    Err(err) => eprintln!("Warning: Could not parse line: {}", err),
-                }
-            }
+            // Process UIDs with batching
+            let _ = dispatch_counted_batches(
+                input.into_uid_iter().filter_map(print_and_filter_err),
+                MAX_ID_BATCH_SIZE,
+                |batch| handler.send(Request::Delete(KeySet::Uid(batch))),
+            )?;
         }
     }
 

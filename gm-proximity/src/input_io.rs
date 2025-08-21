@@ -44,7 +44,11 @@ impl Input {
     }
 
     /// Convert the Input into an iterator of line-oriented [`Feature`] types.
-    pub fn into_feature_iter(self) -> FeatureIterator {
+    ///
+    /// Due to the highly variable size of a feature, we also return the length of the geojson string being processed to
+    /// help as a proxy for batching. The geojson string will be longer than the binary encoding so will be a decent
+    /// proxy for how large a request should be.
+    pub fn into_feature_iter(self) -> impl Iterator<Item = Result<(usize, Feature)>> {
         FeatureIterator::new(self)
     }
 
@@ -60,6 +64,7 @@ impl Input {
     /// Convert the Input into an iterator of line-oriented [`CustomKey`] types.
     /// TODO: Consider improving this as byte keys are always 16 bytes and may contain \n - perhaps the format here
     /// should just be 16 byte chunks (i.e., not line oriented at all)
+    /// TODO: Could also implement more consistent error messages, similar to the FeatureIterator, on both of these
     pub fn into_custom_key_iter(self) -> impl Iterator<Item = Result<CustomKey>> {
         self.lines().map(|line_result| {
             line_result
@@ -108,7 +113,7 @@ impl BufRead for Input {
     }
 }
 
-pub struct FeatureIterator {
+struct FeatureIterator {
     inner: Enumerate<Lines<Input>>,
 }
 
@@ -130,7 +135,7 @@ impl Iterator for FeatureIterator {
                 // TODO: Are these really errors? Perhaps just in case, but should then have own error type
                 Ok(s) if s.len() == 0 => Some(Err(anyhow!("Warning: Empty line {}", line_number))),
                 Ok(s) => match s.parse::<Feature>() {
-                    Ok(f) => Some(Ok((line_number, f))),
+                    Ok(f) => Some(Ok((s.len(), f))),
                     Err(err) => Some(Err(anyhow!(
                         "Warning: Could not parse line {}: {}",
                         line_number,

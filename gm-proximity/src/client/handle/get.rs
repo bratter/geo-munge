@@ -1,8 +1,12 @@
-use crate::{args::GetArgs, input_io::Input, message::prelude::*};
+use crate::{
+    args::GetArgs,
+    input_io::Input,
+    message::{dispatch_counted_batches, prelude::*},
+};
 
 use anyhow::Result;
 
-use super::CommandHandler;
+use super::{print_and_filter_err, CommandHandler, MAX_ID_BATCH_SIZE};
 
 /// Get command handler.
 ///
@@ -37,36 +41,32 @@ pub fn get(handler: &mut CommandHandler, get_args: GetArgs) -> Result<()> {
 
         if get_args.key_bytes {
             // Process custom keys - one per line
-            for key_result in input.into_custom_key_iter() {
-                match key_result {
-                    Ok(key) => {
-                        let keyset = KeySet::Custom(vec![key]);
-                        let get_req = GetReq {
-                            keys: keyset,
-                            content_mode: get_args.content,
-                        };
-                        // TODO: Batching
-                        handler.send(Request::Get(get_req))?;
-                    }
-                    Err(err) => eprintln!("Warning: Could not parse line: {}", err),
-                }
-            }
+            let _ = dispatch_counted_batches(
+                input
+                    .into_custom_key_iter()
+                    .filter_map(print_and_filter_err),
+                MAX_ID_BATCH_SIZE,
+                |batch| {
+                    let get_req = GetReq {
+                        keys: KeySet::Custom(batch),
+                        content_mode: get_args.content,
+                    };
+                    handler.send(Request::Get(get_req))
+                },
+            )?;
         } else {
             // Process UIDs - one per line
-            for key_result in input.into_uid_iter() {
-                match key_result {
-                    Ok(uid) => {
-                        let keyset = KeySet::Uid(vec![uid]);
-                        let get_req = GetReq {
-                            keys: keyset,
-                            content_mode: get_args.content,
-                        };
-                        // TODO: Batching
-                        handler.send(Request::Get(get_req))?;
-                    }
-                    Err(err) => eprintln!("Warning: Could not parse line: {}", err),
-                }
-            }
+            let _ = dispatch_counted_batches(
+                input.into_uid_iter().filter_map(print_and_filter_err),
+                MAX_ID_BATCH_SIZE,
+                |batch| {
+                    let get_req = GetReq {
+                        keys: KeySet::Uid(batch),
+                        content_mode: get_args.content,
+                    };
+                    handler.send(Request::Get(get_req))
+                },
+            )?;
         }
     }
 

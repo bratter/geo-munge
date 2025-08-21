@@ -11,9 +11,11 @@ use std::{
 use anyhow::{anyhow, bail};
 use bincode::{BorrowDecode, Decode, Encode};
 
+mod batch;
 mod encode;
 mod request;
 mod response;
+pub use batch::dispatch_counted_batches;
 
 pub mod prelude {
     pub use super::encode::IoCodec;
