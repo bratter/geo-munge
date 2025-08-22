@@ -74,7 +74,7 @@ pub fn run(cmd: ClientCommand, context: Context<Config>) -> Result<()> {
         channel::bounded::<(MsgToken, Response)>(config.response_capacity);
     let traffic: &_ = Box::leak(Box::new(Traffic::default()));
     let mut tracker = Tracker::default();
-    let (mut cmd_handler, done) = CommandHandler::new(request_tx, tracker.clone());
+    let (cmd_handler, done) = CommandHandler::new(request_tx, tracker.clone());
 
     let r = context.running.clone();
     let io_run_span = run_span.clone();

@@ -1,4 +1,10 @@
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
 
 use anyhow::Result;
 use crossbeam::channel::{self, Receiver, Sender};
@@ -9,46 +15,54 @@ use super::{handlers, Tracker};
 
 /// Client command handler. Translates client commands into requests.
 pub struct CommandHandler {
-    pub reponse_handler: ResponseHandler,
+    pub response_handler: Arc<Mutex<ResponseHandler>>,
     request_tx: Sender<(u32, Request)>,
     tracker: Tracker,
     done_send: Sender<()>,
-    next_req_id: u32,
+    next_req_id: AtomicU32,
 }
 
 impl CommandHandler {
     pub fn new(request_tx: Sender<(u32, Request)>, tracker: Tracker) -> (Self, Receiver<()>) {
         let (done_send, done_recv) = channel::bounded::<()>(1);
         let handler = Self {
-            reponse_handler: ResponseHandler::None,
+            response_handler: Arc::new(Mutex::new(ResponseHandler::default())),
             request_tx,
             tracker,
             done_send,
-            next_req_id: 0,
+            next_req_id: AtomicU32::new(0),
         };
 
         (handler, done_recv)
     }
 
-    pub fn handle(&mut self, req: ClientCommand) -> Result<()> {
+    /// Handle the incoming request.
+    ///
+    /// This handler is a "one and done" so handle operates like a build.
+    ///
+    /// Because the client only runs a single command when invoked, the handle function here can take ownership of the
+    /// CommandHandler. This affords us the flexibility to spawn threads in the handlers.
+    pub fn handle(self, req: ClientCommand) -> Result<()> {
+        let handler = Arc::new(self);
+
         let res = match req {
             ClientCommand::Stats => {
-                self.send(Request::Stats)?;
+                handler.send(Request::Stats)?;
                 Ok(())
             }
-            ClientCommand::Reset(r) => handlers::reset(self, r),
-            ClientCommand::Load { file } => handlers::load(self, file),
-            ClientCommand::Get(get_args) => handlers::get(self, get_args),
-            ClientCommand::Delete(delete_args) => handlers::delete(self, delete_args),
-            ClientCommand::Knn(knn_args) => handlers::knn(self, knn_args),
-            ClientCommand::Window(window_args) => handlers::window(self, window_args),
-            ClientCommand::Repl => handlers::repl(self),
-            ClientCommand::Bench(bench_args) => handlers::bench(self, bench_args),
+            ClientCommand::Reset(r) => handlers::reset(&handler, r),
+            ClientCommand::Load { file } => handlers::load(&handler, file),
+            ClientCommand::Get(get_args) => handlers::get(&handler, get_args),
+            ClientCommand::Delete(delete_args) => handlers::delete(&handler, delete_args),
+            ClientCommand::Knn(knn_args) => handlers::knn(&handler, knn_args),
+            ClientCommand::Window(window_args) => handlers::window(&handler, window_args),
+            ClientCommand::Repl => handlers::repl(Arc::clone(&handler)),
+            ClientCommand::Bench(bench_args) => handlers::bench(Arc::clone(&handler), bench_args),
         };
 
         // As this is a oneshot and shouldn't be called anywhere else, we don't care about the result
         tracing::info!("Request done, sending done notification");
-        _ = self.done_send.try_send(());
+        _ = handler.done_send.try_send(());
 
         res
     }
@@ -56,14 +70,18 @@ impl CommandHandler {
     /// Send a request for dispatch.
     ///
     /// Will block until the request channel has capacity.
-    pub fn send(&mut self, req: Request) -> Result<()> {
+    #[tracing::instrument(skip_all)]
+    pub fn send(&self, req: Request) -> Result<()> {
+        tracing::debug!("Sent request: {:?}", req);
+
         // Get an id and bump to the next one
-        let id = self.next_req_id;
-        self.next_req_id += 1;
+        // We are just using this as an id so we can safely use Relaxed ordering here
+        let id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
+        let response_handler = self.response_handler.lock().expect("Lock poisoned").clone();
 
         // Track the request before sending so we know when we have received responses
         // TODO: Unwind the tracking if this fails?
-        let _ = self.tracker.track(id, &req, self.reponse_handler.clone());
+        let _ = self.tracker.track(id, &req, response_handler);
         self.request_tx.send((id, req))?;
 
         Ok(())
@@ -77,37 +95,37 @@ impl CommandHandler {
 
 // TODO: These can be things like print or file output that handle multiple request types, or ones that are specific
 // to the request
-// TODO: Currently just cloning these to avoid holding the lock for too long. If they get big, consider not bothering
-// (responses are single threaded anyway, and blocking requests is unlikely to be an issue) use RWLock (unlikely to
-// help), wrapping the TrackerData in an Arc and using that to clone, or something else.
-// TODO: We can't clone if we want to mutate anyway
 #[derive(Default, Clone)]
 pub enum ResponseHandler {
     #[default]
-    None,
+    Print,
     Repl(Sender<()>),
     Bench(Option<Duration>),
 }
 
 impl ResponseHandler {
     // TODO: Better flow with duration
+    #[tracing::instrument(skip_all)]
     pub fn handle(&self, id: u32, done: Option<Duration>, res: &Response) {
-        // TODO: Remove when stable or a non-clone solution found
         // Checking that the response handler doesn't get too big to clone
-        debug_assert!(std::mem::size_of::<ResponseHandler>() <= 32);
+        // If this gets thrown, consider converting to Arc
+        debug_assert!(std::mem::size_of::<Self>() <= 64);
+
+        tracing::debug!("Handling response: {:?}", res);
 
         match self {
-            // TODO: As a placeholder, print responses until we have better handling
-            ResponseHandler::None => Self::print(id, done, res),
-            // TODO: Perhaps some more sophisticated repl handling here
-            ResponseHandler::Repl(sender) => {
+            // TODO: As a placeholder, print responses until we have better handling - would ideally also allow
+            // outputting to a file, but this is basically the same as print but with an outfile - it should do the same
+            // thing as redirecting stdout, so maybe could just overload print with an optional filename
+            Self::Print => Self::print(id, done, res),
+            Self::Repl(sender) => {
                 // Signal that the request is complete when the last response has been recieved
                 Self::print(id, done, res);
                 if done.is_some() {
                     sender.send(()).expect("channel disconnected");
                 }
             }
-            ResponseHandler::Bench(receive_delay) => {
+            Self::Bench(receive_delay) => {
                 match res {
                     // The response just contains empty data that we ignore, but we delay to simulate io lag
                     Response::Bench(_) => {
@@ -125,24 +143,30 @@ impl ResponseHandler {
     // TODO: Temporary print function - remove or refactor when handling improves
     // Print will likely remain the main output interface, but we could consider direct push to file or something else
     fn print(id: u32, duration: Option<Duration>, res: &Response) {
-        // TODO: This is very inefficient, assume it will be removed... if not fix
-        let mut prefix = format!("[req {}", id);
-        if let Some(duration) = duration {
-            prefix.push_str(&format!("; {}ms", duration.as_millis()));
-        }
-        prefix.push_str("]");
+        use std::io::{stderr, Write};
 
-        match res {
-            Response::Success(Some(msg)) => eprintln!("{} {}", prefix, msg),
-            Response::Success(None) => eprintln!("{} success", prefix),
+        let mut stderr = stderr().lock();
+
+        // Write prefix
+        let _ = write!(stderr, "[req {}", id);
+        if let Some(duration) = duration {
+            let _ = write!(stderr, "; {}ms", duration.as_millis());
+        }
+        let _ = write!(stderr, "] ");
+
+        // Ignore write errors like eprintln! does
+        let _ = match res {
+            Response::Success(Some(msg)) => writeln!(stderr, "{}", msg),
+            Response::Success(None) => writeln!(stderr, "success"),
             // TODO: When handling done should cross-check number of responses
-            Response::Done(n) => eprintln!("{} done with {} responses", prefix, n),
-            Response::Stats(n) => eprintln!(
-                "{} QT size={}; key: {:?}; bytes sent={}; bytes recv={}",
-                prefix, n.qt_size, n.key_mode, n.bytes_sent, n.bytes_recv
+            Response::Done(n) => writeln!(stderr, "done with {} responses", n),
+            Response::Stats(n) => writeln!(
+                stderr,
+                "QT size={}; key: {:?}; bytes sent={}; bytes recv={}",
+                n.qt_size, n.key_mode, n.bytes_sent, n.bytes_recv
             ),
             Response::ResultCounts { success, fail } => {
-                eprintln!("{} succeed {}, failed {}", prefix, success, fail)
+                writeln!(stderr, "succeed {}, failed {}", success, fail)
             }
             Response::BasicResults(results) => {
                 for result in results {
@@ -151,9 +175,12 @@ impl ResponseHandler {
                             let content_json = format_content(&basic_result.content);
                             println!("{},{}", basic_result.id, content_json);
                         }
-                        Err(err) => eprintln!("Error: {}", err),
+                        Err(err) => {
+                            let _ = writeln!(stderr, "Error: {}", err);
+                        }
                     }
                 }
+                Ok(())
             }
             Response::ProximityResults(results) => {
                 for result in results {
@@ -168,13 +195,16 @@ impl ResponseHandler {
                                 content_json
                             );
                         }
-                        Err(err) => eprintln!("Error: {}", err),
+                        Err(err) => {
+                            let _ = writeln!(stderr, "Error: {}", err);
+                        }
                     }
                 }
+                Ok(())
             }
-            Response::Error(msg) => eprintln!("{} error: {}", prefix, msg),
+            Response::Error(msg) => writeln!(stderr, "error: {}", msg),
             Response::Bench(_) => unreachable!(),
-        }
+        };
     }
 }
 

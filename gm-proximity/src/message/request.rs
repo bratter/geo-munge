@@ -10,7 +10,7 @@ use crate::server::geo_store::GeoRecord;
 
 use super::{encode::IoCodec, response::ContentType, CustomKey, Feature, NodeId};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Encode, Decode)]
 #[non_exhaustive]
 pub enum Request {
     /// Request basic quadtree statistics from the current server.
@@ -89,6 +89,24 @@ impl Request {
 
 // Use default encode and decode impls
 impl IoCodec for Request {}
+
+impl Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stats => write!(f, "Stats"),
+            Self::Reset(r) => f.debug_tuple("Reset").field(r).finish(),
+            Self::Insert(features) => f
+                .debug_tuple("Insert")
+                .field(&format_args!("Vec<Feature>({})", features.len()))
+                .finish(),
+            Self::Get(r) => f.debug_tuple("Get").field(r).finish(),
+            Self::Delete(r) => f.debug_tuple("Delete").field(r).finish(),
+            Self::Knn(r) => f.debug_tuple("Knn").field(r).finish(),
+            Self::Window(r) => f.debug_tuple("Window").field(r).finish(),
+            Self::Bench(r) => f.debug_tuple("Bench").field(r).finish(),
+        }
+    }
+}
 
 /// Reset request type.
 ///
@@ -214,7 +232,7 @@ pub enum JoinType {
     Contains,
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Encode, Decode)]
 pub enum FindData {
     /// Run the find for the stream of passed features.
     Features(Vec<Feature>),
@@ -223,13 +241,25 @@ pub enum FindData {
     Keys(KeySet),
 }
 
+impl Debug for FindData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Features(features) => f
+                .debug_tuple("Features")
+                .field(&format_args!("Vec<Feature>({})", features.len()))
+                .finish(),
+            Self::Keys(keys) => f.debug_tuple("Keys").field(keys).finish(),
+        }
+    }
+}
+
 #[derive(Debug, Encode, Decode)]
 pub struct GetReq {
     pub keys: KeySet,
     pub content_mode: ContentMode,
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Encode, Decode)]
 pub enum KeySet {
     Uid(Vec<NodeId>),
     Custom(Vec<CustomKey>),
@@ -277,6 +307,21 @@ impl From<Vec<NodeId>> for KeySet {
 impl From<Vec<CustomKey>> for KeySet {
     fn from(value: Vec<CustomKey>) -> Self {
         KeySet::Custom(value)
+    }
+}
+
+impl Debug for KeySet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uid(uids) => f
+                .debug_tuple("Uid")
+                .field(&format_args!("Vec<NodeId>({})", uids.len()))
+                .finish(),
+            Self::Custom(keys) => f
+                .debug_tuple("Custom")
+                .field(&format_args!("Vec<CustomKey>({})", keys.len()))
+                .finish(),
+        }
     }
 }
 

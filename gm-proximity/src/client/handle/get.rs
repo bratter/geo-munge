@@ -12,7 +12,7 @@ use super::{print_and_filter_err, CommandHandler, MAX_ID_BATCH_SIZE};
 ///
 /// Gets store entries using their primary or custom key. Sends all as a single batch for CLI data,
 /// or per-line for IO data with individual error reporting.
-pub fn get(handler: &mut CommandHandler, get_args: GetArgs) -> Result<()> {
+pub fn get(handler: &CommandHandler, get_args: GetArgs) -> Result<()> {
     if let Some(data) = get_args.data {
         // Handle CLI data - batch processing with fail-fast error handling
         let keys = match KeySet::parse_with_type(&data, get_args.key_bytes) {

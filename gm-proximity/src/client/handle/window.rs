@@ -5,7 +5,7 @@ use crate::{args::WindowArgs, message::prelude::*};
 use super::CommandHandler;
 
 /// Window command handler
-pub fn window(handler: &mut CommandHandler, window_args: WindowArgs) -> Result<()> {
+pub fn window(handler: &CommandHandler, window_args: WindowArgs) -> Result<()> {
     let join = if window_args.intersects {
         JoinType::Intersects
     } else {

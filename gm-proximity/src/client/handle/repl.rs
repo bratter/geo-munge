@@ -2,6 +2,10 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -18,20 +22,29 @@ use super::{handlers, CommandHandler, ResponseHandler};
 /// REPL command handler.
 ///
 /// Start an interactive prompt for the client.
-pub fn repl(handler: &mut CommandHandler) -> Result<()> {
+#[tracing::instrument(skip_all)]
+pub fn repl(handler: Arc<CommandHandler>) -> Result<()> {
     // Set the special repl response handler
     let (send, recv) = crossbeam::channel::bounded(0);
-    handler.reponse_handler = ResponseHandler::Repl(send);
+    *handler.response_handler.lock().expect("Lock poisoned") = ResponseHandler::Repl(send);
 
     // Set standard get/delete settings
     let mut settings = Settings::default();
+
+    // Set up the running state flag for use with spawned tasks
+    // This will be set to false here, then in spawned threads, we set true, run the task, then reset to false
+    let waiting = Arc::new(AtomicBool::new(false));
 
     // Our REPL loop has to push dispatch onto a separate task/thread as we otherwise cannot recieve while sending
     // In general this won't matter, but it is theoretically possible that the buffers all fill with outgoing messages
     // before the sending is done, which will effectively deadlock the repl if we can't process receipts
     // We only need to do this when the potential data volume is large
-    // TODO: Is there a more efficient way to do this without spinning up a new thread?
     loop {
+        tracing::debug!("Next REPL loop");
+
+        // Beacuse of the spawn requirements we need a join handle
+        let mut join_handle = None;
+
         // First dispatch all the requests
         let command_result = match select_command()? {
             // Stats
@@ -39,7 +52,7 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
             // Reset
             Some(1) => {
                 if let Some(reset_args) = build_reset() {
-                    handlers::reset(handler, reset_args)
+                    handlers::reset(&handler, reset_args)
                 } else {
                     Ok(())
                 }
@@ -49,12 +62,18 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
             Some(2) => {
                 // We still wrap this in if-let because the handler treats None as stdin but we don't want to do that in
                 // this case
-                // TODO: Spawn this on a thread
                 if let Some(path) = build_path() {
-                    handlers::load(handler, Some(path))
-                } else {
-                    Ok(())
+                    let th = Arc::clone(&handler);
+                    let w = Arc::clone(&waiting);
+                    waiting.store(true, Ordering::Release);
+                    join_handle = Some(std::thread::spawn(move || {
+                        let handle_result = handlers::load(&th, Some(path));
+                        w.store(false, Ordering::Release);
+
+                        handle_result
+                    }));
                 }
+                Ok(())
             }
             // Get
             Some(3) => {
@@ -76,13 +95,20 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
             }
             // Knn
             Some(5) => {
-                // For Knn, we want to use the handler's request sending logic
-                // TODO: Spawn this as a thread as the data volume could be large
+                // For Knn, we want to use the handler's request sending logic and also spawn on a thread as the data
+                // flow could be large if we use file input
                 if let Some(knn_args) = build_knn(&mut settings) {
-                    handlers::knn(handler, knn_args)
-                } else {
-                    Ok(())
+                    let th = Arc::clone(&handler);
+                    let w = Arc::clone(&waiting);
+                    waiting.store(true, Ordering::Release);
+                    join_handle = Some(std::thread::spawn(move || {
+                        let handle_result = handlers::knn(&th, knn_args);
+                        w.store(false, Ordering::Release);
+
+                        handle_result
+                    }));
                 }
+                Ok(())
             }
             // Window
             Some(6) => {
@@ -115,9 +141,24 @@ pub fn repl(handler: &mut CommandHandler) -> Result<()> {
 
         // Then receive responses - we need to check timeout and outstanding count to avoid locking up
         // TODO: Could interupt this loop with a confirm quit if a long time has elapsed between messages
-        while handler.outstanding() > 0 {
+        tracing::debug!(
+            "Entering response loop with {} outstanding with wait status {}",
+            handler.outstanding(),
+            waiting.load(Ordering::Acquire),
+        );
+        while handler.outstanding() > 0 || waiting.load(Ordering::Acquire) {
             recv.recv_timeout(Duration::from_millis(100))
                 .expect("channel disconnected");
+        }
+        tracing::debug!("Received all responses");
+
+        // Close out the join handle if we reach the bottom of the loop. This shouldn't block as the waiting flag will
+        // be the last thing run before the closure returns
+        if let Some(handle) = join_handle {
+            if let Err(err) = handle.join().expect("Couldn't join thread") {
+                eprintln!("\x1b[1mCommand error:\x1b[0m {}", err);
+            }
+            tracing::debug!("Joined handle from spawned task thread");
         }
     }
 

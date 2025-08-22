@@ -7,7 +7,7 @@ use bincode::{Decode, Encode};
 
 use super::{encode::IoCodec, request::KeyMode, Feature, JsonValue, NodeId};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Encode, Decode)]
 #[non_exhaustive]
 pub enum Response {
     /// Success response.
@@ -60,6 +60,37 @@ impl IoCodec for Response {}
 impl From<anyhow::Error> for Response {
     fn from(err: anyhow::Error) -> Self {
         Response::Error(err.to_string().into())
+    }
+}
+
+impl Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Success(msg) => f.debug_tuple("Success").field(msg).finish(),
+            Self::Done(count) => f.debug_tuple("Done").field(count).finish(),
+            Self::Stats(stats) => f.debug_tuple("Stats").field(stats).finish(),
+            Self::ResultCounts { success, fail } => f
+                .debug_struct("ResultCounts")
+                .field("success", success)
+                .field("fail", fail)
+                .finish(),
+            Self::BasicResults(results) => f
+                .debug_tuple("BasicResults")
+                .field(&format_args!(
+                    "Vec<Result<BasicResult, String>>({})",
+                    results.len()
+                ))
+                .finish(),
+            Self::ProximityResults(results) => f
+                .debug_tuple("ProximityResults")
+                .field(&format_args!(
+                    "Vec<Result<ProximityResult, String>>({})",
+                    results.len()
+                ))
+                .finish(),
+            Self::Error(msg) => f.debug_tuple("Error").field(msg).finish(),
+            Self::Bench(bench_res) => f.debug_tuple("Bench").field(bench_res).finish(),
+        }
     }
 }
 

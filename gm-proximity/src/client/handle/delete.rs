@@ -11,7 +11,7 @@ use super::{print_and_filter_err, CommandHandler, MAX_ID_BATCH_SIZE};
 /// Delete command handler.
 ///
 /// Removes items from the server based on their primary or custom key.
-pub fn delete(handler: &mut CommandHandler, del_args: DeleteArgs) -> Result<()> {
+pub fn delete(handler: &CommandHandler, del_args: DeleteArgs) -> Result<()> {
     if let Some(data) = del_args.data {
         let keys = match KeySet::parse_with_type(&data, del_args.key_bytes) {
             Ok(keys) => keys,

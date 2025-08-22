@@ -11,7 +11,7 @@ use super::{
 };
 
 /// Knn command handler.
-pub fn knn(handler: &mut CommandHandler, knn_args: KnnArgs) -> Result<()> {
+pub fn knn(handler: &CommandHandler, knn_args: KnnArgs) -> Result<()> {
     if let Some(raw_data) = knn_args.data {
         // Handle CLI data - batch processing with fail-fast error handling
         let find_data = match handle_cli_data(raw_data, knn_args.key_uid, knn_args.key_bytes) {
@@ -50,7 +50,7 @@ fn handle_cli_data(data: String, key_uid: bool, key_bytes: bool) -> Result<FindD
     }
 }
 
-fn handle_io_data(handler: &mut CommandHandler, knn_args: &KnnArgs) -> Result<()> {
+fn handle_io_data(handler: &CommandHandler, knn_args: &KnnArgs) -> Result<()> {
     let input = match Input::try_new(knn_args.file.as_ref()) {
         Ok(input) => input,
         Err(err) => {
@@ -111,7 +111,7 @@ fn handle_io_data(handler: &mut CommandHandler, knn_args: &KnnArgs) -> Result<()
     Ok(())
 }
 
-fn send_knn_req(handler: &mut CommandHandler, knn_args: &KnnArgs, data: FindData) -> Result<()> {
+fn send_knn_req(handler: &CommandHandler, knn_args: &KnnArgs, data: FindData) -> Result<()> {
     let knn_req = KnnReq {
         k: knn_args.k,
         r: knn_args.r,

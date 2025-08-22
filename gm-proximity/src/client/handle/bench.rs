@@ -1,5 +1,6 @@
 //! Benchmarking and load testing client handler.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
@@ -11,11 +12,12 @@ use crate::message::prelude::*;
 use super::CommandHandler;
 
 /// Benchmarking command handler
-pub fn bench(handler: &mut CommandHandler, bench: BenchClient) -> Result<()> {
+pub fn bench(handler: Arc<CommandHandler>, bench: BenchClient) -> Result<()> {
     // Set delays ands build the response handler
     let receive_delay = bench.receive_delay.map(Duration::from_millis);
     let delay = bench.send_delay.map(Duration::from_millis);
-    handler.reponse_handler = ResponseHandler::Bench(receive_delay);
+    *handler.response_handler.lock().expect("Lock poisoned") =
+        ResponseHandler::Bench(receive_delay);
 
     // Determine the total data and the amount shipped per request
     // This is a duplicate of what we do in the wrapper

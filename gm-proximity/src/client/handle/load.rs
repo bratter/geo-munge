@@ -10,7 +10,7 @@ use super::{CommandHandler, MAX_BATCH_BYTES, MAX_FEATURE_COUNT};
 ///
 /// Breaks when a send fails as these will be terminal errors, but WARN only on individual line errors as these could be
 /// recoverable.
-pub fn load(handler: &mut CommandHandler, file: Option<PathBuf>) -> Result<()> {
+pub fn load(handler: &CommandHandler, file: Option<PathBuf>) -> Result<()> {
     let mut feature_buffer = Vec::with_capacity(MAX_FEATURE_COUNT);
     let mut batch_bytes = 0;
 
