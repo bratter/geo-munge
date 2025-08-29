@@ -20,10 +20,15 @@ mod handlers {
     pub use super::window::window;
 }
 
+use std::sync::{Arc, Mutex};
+
 use anyhow::Result;
 
 pub use handle::{CommandHandler, ResponseHandler};
 pub use tracker::Tracker;
+
+/// Convenience type wrapper for response handlers.
+type Res = Arc<Mutex<ResponseHandler>>;
 
 /// The maximum number of data bytes available for use in a single batch.
 ///

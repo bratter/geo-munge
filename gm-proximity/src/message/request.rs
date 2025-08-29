@@ -285,7 +285,10 @@ impl KeySet {
     }
 
     pub fn custom_from_str(s: &str) -> Result<Self> {
-        let ks = match s.parse::<geojson::JsonValue>()? {
+        let ks = match s
+            .parse::<geojson::JsonValue>()
+            .map_err(|err| anyhow!("{} - this must be a valid JSON array or value when attempting to parse a custom key from a string", err))?
+        {
             geojson::JsonValue::Array(arr) => arr
                 .iter()
                 .map(CustomKey::try_from)

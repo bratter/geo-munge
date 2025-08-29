@@ -7,11 +7,12 @@ use crate::{
 };
 
 use super::{
-    print_and_filter_err, CommandHandler, MAX_BATCH_BYTES, MAX_FEATURE_COUNT, MAX_ID_BATCH_SIZE,
+    print_and_filter_err, CommandHandler, Res, MAX_BATCH_BYTES, MAX_FEATURE_COUNT,
+    MAX_ID_BATCH_SIZE,
 };
 
 /// Knn command handler.
-pub fn knn(handler: &CommandHandler, knn_args: KnnArgs) -> Result<()> {
+pub fn knn(handler: &CommandHandler, res: &Res, knn_args: KnnArgs) -> Result<()> {
     if let Some(raw_data) = knn_args.data {
         // Handle CLI data - batch processing with fail-fast error handling
         let find_data = match handle_cli_data(raw_data, knn_args.key_uid, knn_args.key_bytes) {
@@ -29,10 +30,10 @@ pub fn knn(handler: &CommandHandler, knn_args: KnnArgs) -> Result<()> {
             data: find_data,
         };
 
-        handler.send(Request::Knn(knn_req))?;
+        handler.send(Request::Knn(knn_req), &res)?;
     } else {
         // Handle IO data - per-line processing with individual error reporting
-        handle_io_data(handler, &knn_args)?;
+        handle_io_data(handler, &res, &knn_args)?;
     }
 
     Ok(())
@@ -50,8 +51,8 @@ fn handle_cli_data(data: String, key_uid: bool, key_bytes: bool) -> Result<FindD
     }
 }
 
-fn handle_io_data(handler: &CommandHandler, knn_args: &KnnArgs) -> Result<()> {
-    let input = match Input::try_new(knn_args.file.as_ref()) {
+fn handle_io_data(handler: &CommandHandler, res: &Res, knn_args: &KnnArgs) -> Result<()> {
+    let input = match Input::try_new(knn_args.input.as_ref()) {
         Ok(input) => input,
         Err(err) => {
             eprintln!("Could not read input: {}", err);
@@ -66,7 +67,7 @@ fn handle_io_data(handler: &CommandHandler, knn_args: &KnnArgs) -> Result<()> {
             let _ = dispatch_counted_batches(
                 input.into_uid_iter().filter_map(print_and_filter_err),
                 MAX_ID_BATCH_SIZE,
-                |batch| send_knn_req(handler, knn_args, FindData::Keys(KeySet::Uid(batch))),
+                |batch| send_knn_req(handler, res, knn_args, FindData::Keys(KeySet::Uid(batch))),
             )?;
         }
         (false, true) => {
@@ -76,7 +77,14 @@ fn handle_io_data(handler: &CommandHandler, knn_args: &KnnArgs) -> Result<()> {
                     .into_custom_key_iter()
                     .filter_map(print_and_filter_err),
                 MAX_ID_BATCH_SIZE,
-                |batch| send_knn_req(handler, knn_args, FindData::Keys(KeySet::Custom(batch))),
+                |batch| {
+                    send_knn_req(
+                        handler,
+                        res,
+                        knn_args,
+                        FindData::Keys(KeySet::Custom(batch)),
+                    )
+                },
             )?;
         }
         (false, false) => {
@@ -95,7 +103,7 @@ fn handle_io_data(handler: &CommandHandler, knn_args: &KnnArgs) -> Result<()> {
                         &mut feature_buffer,
                         Vec::with_capacity(MAX_FEATURE_COUNT),
                     );
-                    send_knn_req(handler, knn_args, FindData::Features(batch))?;
+                    send_knn_req(handler, res, knn_args, FindData::Features(batch))?;
                     batch_bytes = 0;
                 }
                 feature_buffer.push(feature);
@@ -103,7 +111,7 @@ fn handle_io_data(handler: &CommandHandler, knn_args: &KnnArgs) -> Result<()> {
 
             // Final flush
             if feature_buffer.len() > 0 {
-                send_knn_req(handler, knn_args, FindData::Features(feature_buffer))?;
+                send_knn_req(handler, res, knn_args, FindData::Features(feature_buffer))?;
             }
         }
     }
@@ -111,7 +119,12 @@ fn handle_io_data(handler: &CommandHandler, knn_args: &KnnArgs) -> Result<()> {
     Ok(())
 }
 
-fn send_knn_req(handler: &CommandHandler, knn_args: &KnnArgs, data: FindData) -> Result<()> {
+fn send_knn_req(
+    handler: &CommandHandler,
+    res: &Res,
+    knn_args: &KnnArgs,
+    data: FindData,
+) -> Result<()> {
     let knn_req = KnnReq {
         k: knn_args.k,
         r: knn_args.r,
@@ -119,5 +132,5 @@ fn send_knn_req(handler: &CommandHandler, knn_args: &KnnArgs, data: FindData) ->
         data,
     };
 
-    handler.send(Request::Knn(knn_req))
+    handler.send(Request::Knn(knn_req), res)
 }

@@ -1,6 +1,6 @@
 //! Benchmarking and load testing client handler.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Result};
@@ -14,10 +14,9 @@ use super::CommandHandler;
 /// Benchmarking command handler
 pub fn bench(handler: Arc<CommandHandler>, bench: BenchClient) -> Result<()> {
     // Set delays ands build the response handler
-    let receive_delay = bench.receive_delay.map(Duration::from_millis);
-    let delay = bench.send_delay.map(Duration::from_millis);
-    *handler.response_handler.lock().expect("Lock poisoned") =
-        ResponseHandler::Bench(receive_delay);
+    let tx_delay = bench.send_delay.map(Duration::from_millis);
+    let rx_delay = bench.receive_delay.map(Duration::from_millis);
+    let res = Arc::new(Mutex::new(ResponseHandler::Bench(rx_delay)));
 
     // Determine the total data and the amount shipped per request
     // This is a duplicate of what we do in the wrapper
@@ -32,7 +31,7 @@ pub fn bench(handler: Arc<CommandHandler>, bench: BenchClient) -> Result<()> {
     }
 
     for _ in 0..request_count {
-        if let Some(t) = delay {
+        if let Some(t) = tx_delay {
             std::thread::sleep(t);
         }
 
@@ -45,7 +44,7 @@ pub fn bench(handler: Arc<CommandHandler>, bench: BenchClient) -> Result<()> {
             data,
         };
 
-        handler.send(Request::Bench(bench_req))?;
+        handler.send(Request::Bench(bench_req), &res)?;
     }
 
     Ok(())

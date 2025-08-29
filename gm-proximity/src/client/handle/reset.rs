@@ -3,10 +3,10 @@ use dialoguer::Confirm;
 
 use crate::{args::ResetArgs, message::prelude::*};
 
-use super::CommandHandler;
+use super::{CommandHandler, Res};
 
 /// Reset command handler
-pub fn reset(handler: &CommandHandler, reset: ResetArgs) -> Result<()> {
+pub fn reset(handler: &CommandHandler, res: &Res, reset: ResetArgs) -> Result<()> {
     // Short circuit will avoid confirm if force is true
     if reset.force
         || Confirm::new()
@@ -23,7 +23,7 @@ pub fn reset(handler: &CommandHandler, reset: ResetArgs) -> Result<()> {
             KeyMode::AutoIncrement
         };
 
-        handler.send(Request::Reset(ResetReq::new(key_mode, reset.bbox)))?;
+        handler.send(Request::Reset(ResetReq::new(key_mode, reset.bbox)), res)?;
         Ok(())
     } else {
         bail!("Reset aborted")

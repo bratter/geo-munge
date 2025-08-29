@@ -6,13 +6,13 @@ use crate::{
 
 use anyhow::Result;
 
-use super::{print_and_filter_err, CommandHandler, MAX_ID_BATCH_SIZE};
+use super::{print_and_filter_err, CommandHandler, Res, MAX_ID_BATCH_SIZE};
 
 /// Get command handler.
 ///
 /// Gets store entries using their primary or custom key. Sends all as a single batch for CLI data,
 /// or per-line for IO data with individual error reporting.
-pub fn get(handler: &CommandHandler, get_args: GetArgs) -> Result<()> {
+pub fn get(handler: &CommandHandler, res: &Res, get_args: GetArgs) -> Result<()> {
     if let Some(data) = get_args.data {
         // Handle CLI data - batch processing with fail-fast error handling
         let keys = match KeySet::parse_with_type(&data, get_args.key_bytes) {
@@ -23,15 +23,16 @@ pub fn get(handler: &CommandHandler, get_args: GetArgs) -> Result<()> {
             }
         };
 
-        handler.send(Request::Get(GetReq {
+        let req = Request::Get(GetReq {
             keys,
             content_mode: get_args.content,
-        }))?;
+        });
+        handler.send(req, &res)?;
     } else {
         // Handle IO data - per-line processing with individual error reporting
         // Note that with input will try and use stdio if the path is None, therefore covering the case where both the
         // data and file are None
-        let input = match Input::try_new(get_args.file.as_ref()) {
+        let input = match Input::try_new(get_args.input.as_ref()) {
             Ok(input) => input,
             Err(err) => {
                 eprintln!("Could not read input: {}", err);
@@ -51,7 +52,7 @@ pub fn get(handler: &CommandHandler, get_args: GetArgs) -> Result<()> {
                         keys: KeySet::Custom(batch),
                         content_mode: get_args.content,
                     };
-                    handler.send(Request::Get(get_req))
+                    handler.send(Request::Get(get_req), &res)
                 },
             )?;
         } else {
@@ -64,7 +65,7 @@ pub fn get(handler: &CommandHandler, get_args: GetArgs) -> Result<()> {
                         keys: KeySet::Uid(batch),
                         content_mode: get_args.content,
                     };
-                    handler.send(Request::Get(get_req))
+                    handler.send(Request::Get(get_req), &res)
                 },
             )?;
         }

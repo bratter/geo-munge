@@ -67,8 +67,18 @@ impl TryFrom<&geojson::JsonValue> for CustomKey {
 
 impl LowerHex for CustomKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for byte in self.0 {
-            write!(f, "{:x}", byte)?;
+        let mut first = true;
+        for bytes in self.0.chunks_exact(4) {
+            if !first {
+                write!(f, " ")?;
+            }
+            first = false;
+
+            write!(
+                f,
+                "{:02x}{:02x}{:02x}{:02x}",
+                bytes[0], bytes[1], bytes[2], bytes[3]
+            )?;
         }
         Ok(())
     }

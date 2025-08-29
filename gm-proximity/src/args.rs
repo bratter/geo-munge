@@ -56,7 +56,7 @@ pub enum ClientCommand {
     Window(WindowArgs),
 
     /// Start a REPL loop.
-    Repl,
+    Repl(ReplArgs),
 
     /// Benchmarking command to load test the server.
     ///
@@ -104,12 +104,17 @@ pub struct GetArgs {
     #[clap(long, short = 'c', default_value = "full")]
     pub content: ContentMode,
 
+    /// Input file containing keys to get. If not provided, reads from stdin.
+    #[clap(long, conflicts_with = "data")]
+    pub input: Option<PathBuf>,
+
     /// Manually passed comma-separated keys to get.
-    #[clap(long, short, conflicts_with = "file")]
+    #[clap(long, short)]
     pub data: Option<String>,
 
-    /// An optional file input containing keys to get.
-    pub file: Option<PathBuf>,
+    /// Output file for results. If not provided, writes to stdout.
+    #[clap(long, short)]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -151,12 +156,24 @@ pub struct KnnArgs {
     #[clap(long, short = 'c', default_value = "none")]
     pub content: ContentMode,
 
+    /// Input file containing items to test. If not provided, reads from stdin.
+    #[clap(long, conflicts_with = "data")]
+    pub input: Option<PathBuf>,
+
     /// Manually passed data to test.
-    #[clap(long, short, conflicts_with = "file")]
+    #[clap(long, short)]
     pub data: Option<String>,
 
-    /// An optional file input containing items to test.
-    pub file: Option<PathBuf>,
+    /// Output file for results. If not provided, writes to stdout.
+    #[clap(long, short)]
+    pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+pub struct ReplArgs {
+    /// Output file for REPL results. If not provided, writes to stdout.
+    #[clap(long, short)]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -172,6 +189,10 @@ pub struct WindowArgs {
     /// Content mode for output data.
     #[clap(long, short = 'c', default_value = "none")]
     pub content: ContentMode,
+
+    /// Output file for results. If not provided, writes to stdout.
+    #[clap(long, short)]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]

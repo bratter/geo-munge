@@ -1,10 +1,10 @@
 use std::{
-    fs,
+    fs::{self, OpenOptions},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -13,7 +13,7 @@ use anyhow::{bail, Error, Result};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 
 use crate::{
-    args::{KnnArgs, ResetArgs},
+    args::{KnnArgs, ReplArgs, ResetArgs},
     message::prelude::*,
 };
 
@@ -23,10 +23,19 @@ use super::{handlers, CommandHandler, ResponseHandler};
 ///
 /// Start an interactive prompt for the client.
 #[tracing::instrument(skip_all)]
-pub fn repl(handler: Arc<CommandHandler>) -> Result<()> {
-    // Set the special repl response handler
+pub fn repl(handler: Arc<CommandHandler>, repl_args: ReplArgs) -> Result<()> {
+    // Create the special repl response handler
     let (send, recv) = crossbeam::channel::bounded(0);
-    *handler.response_handler.lock().expect("Lock poisoned") = ResponseHandler::Repl(send);
+    let res = if let Some(output_file) = &repl_args.output {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(output_file)?;
+        ResponseHandler::ReplFile(send, file)
+    } else {
+        ResponseHandler::ReplPrint(send)
+    };
+    let res = Arc::new(Mutex::new(res));
 
     // Set standard get/delete settings
     let mut settings = Settings::default();
@@ -48,11 +57,11 @@ pub fn repl(handler: Arc<CommandHandler>) -> Result<()> {
         // First dispatch all the requests
         let command_result = match select_command()? {
             // Stats
-            Some(0) => handler.send(Request::Stats),
+            Some(0) => handler.send(Request::Stats, &res),
             // Reset
             Some(1) => {
                 if let Some(reset_args) = build_reset() {
-                    handlers::reset(&handler, reset_args)
+                    handlers::reset(&handler, &res, reset_args)
                 } else {
                     Ok(())
                 }
@@ -65,9 +74,10 @@ pub fn repl(handler: Arc<CommandHandler>) -> Result<()> {
                 if let Some(path) = build_path() {
                     let th = Arc::clone(&handler);
                     let w = Arc::clone(&waiting);
+                    let r = Arc::clone(&res);
                     waiting.store(true, Ordering::Release);
                     join_handle = Some(std::thread::spawn(move || {
-                        let handle_result = handlers::load(&th, Some(path));
+                        let handle_result = handlers::load(&th, &r, Some(path));
                         w.store(false, Ordering::Release);
 
                         handle_result
@@ -79,7 +89,7 @@ pub fn repl(handler: Arc<CommandHandler>) -> Result<()> {
             Some(3) => {
                 // For Get, we only send a single request
                 if let Some(get_req) = build_get(&mut settings) {
-                    handler.send(Request::Get(get_req))
+                    handler.send(Request::Get(get_req), &res)
                 } else {
                     Ok(())
                 }
@@ -88,7 +98,7 @@ pub fn repl(handler: Arc<CommandHandler>) -> Result<()> {
             Some(4) => {
                 // For Delete, we only send a single request
                 if let Some(key_set) = build_delete(&mut settings) {
-                    handler.send(Request::Delete(key_set))
+                    handler.send(Request::Delete(key_set), &res)
                 } else {
                     Ok(())
                 }
@@ -100,9 +110,10 @@ pub fn repl(handler: Arc<CommandHandler>) -> Result<()> {
                 if let Some(knn_args) = build_knn(&mut settings) {
                     let th = Arc::clone(&handler);
                     let w = Arc::clone(&waiting);
+                    let r = Arc::clone(&res);
                     waiting.store(true, Ordering::Release);
                     join_handle = Some(std::thread::spawn(move || {
-                        let handle_result = handlers::knn(&th, knn_args);
+                        let handle_result = handlers::knn(&th, &r, knn_args);
                         w.store(false, Ordering::Release);
 
                         handle_result
@@ -114,7 +125,7 @@ pub fn repl(handler: Arc<CommandHandler>) -> Result<()> {
             Some(6) => {
                 // For window we can just send a single request
                 if let Some(window_req) = build_window(&settings) {
-                    handler.send(Request::Window(window_req))
+                    handler.send(Request::Window(window_req), &res)
                 } else {
                     Ok(())
                 }
@@ -192,13 +203,13 @@ enum QueryDataType {
 impl QueryDataType {
     fn as_str(&self) -> &str {
         match self {
-            QueryDataType::Key => "Key",
-            QueryDataType::Geometry => "Geometry",
+            Self::Key => "Key",
+            Self::Geometry => "Geometry",
         }
     }
 
     fn list() -> [&'static str; 2] {
-        [QueryKeyType::Uid.as_str(), QueryKeyType::Custom.as_str()]
+        [Self::Key.as_str(), Self::Geometry.as_str()]
     }
 }
 
@@ -232,13 +243,13 @@ impl QueryKeyType {
 
     fn as_str(&self) -> &str {
         match self {
-            QueryKeyType::Uid => "Uid",
-            QueryKeyType::Custom => "Custom",
+            Self::Uid => "Uid",
+            Self::Custom => "Custom",
         }
     }
 
     fn list() -> [&'static str; 2] {
-        [QueryKeyType::Uid.as_str(), QueryKeyType::Custom.as_str()]
+        [Self::Uid.as_str(), Self::Custom.as_str()]
     }
 }
 
@@ -491,7 +502,7 @@ fn build_knn(settings: &mut Settings) -> Option<KnnArgs> {
         .interact_text()
         .unwrap();
 
-    let (data, file) = if raw_data.len() == 0 {
+    let (data, input) = if raw_data.len() == 0 {
         match Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Abort or choose file")
             .items(&["Abort", "Choose File"])
@@ -521,7 +532,8 @@ fn build_knn(settings: &mut Settings) -> Option<KnnArgs> {
         key_uid,
         key_bytes,
         data,
-        file,
+        input,
+        output: None,
         content: settings.content_mode,
     })
 }
