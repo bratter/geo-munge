@@ -371,7 +371,7 @@ fn write_response<W: Write>(
                     (Ok(proximity_result), OutputFormat::Csv) => {
                         // print header row as above
                         if meta.res_id == 0 && meta.output_options.header {
-                            write!(data_writer, "input_index,uid,distance")?;
+                            write!(data_writer, "input_index,input_uid,result_uid,distance")?;
                             match &proximity_result.content {
                                 ContentType::FullFeature(_) | ContentType::GeometryOnly(_) => {
                                     writeln!(data_writer, ",feature")?;
@@ -387,12 +387,16 @@ fn write_response<W: Write>(
 
                         let content_json =
                             format_json(&proximity_result.content, meta.output_options.escape);
+                        write!(data_writer, "{},", proximity_result.input_index)?;
+                        if let Some(input_uid) = proximity_result.input_uid {
+                            write!(data_writer, "{},", input_uid)?;
+                        } else {
+                            write!(data_writer, ",")?;
+                        }
                         write!(
                             data_writer,
-                            "{},{},{}",
-                            proximity_result.input_index,
-                            proximity_result.id,
-                            proximity_result.distance,
+                            "{},{}",
+                            proximity_result.id, proximity_result.distance,
                         )?;
                         if let Some(json) = content_json {
                             writeln!(data_writer, ",{}", json)?;
@@ -400,9 +404,13 @@ fn write_response<W: Write>(
                     }
                     (Ok(proximity_result), OutputFormat::Json) => {
                         let content = &mut proximity_result.content;
-                        content.set_property("_distance", proximity_result.distance);
-                        content.set_property("_uid", proximity_result.id);
                         content.set_property("_inputIndex", proximity_result.input_index);
+                        if let Some(input_uid) = proximity_result.input_uid {
+                            content.set_property("_inputUid", input_uid);
+                        }
+                        content.set_property("_resultUid", proximity_result.id);
+                        content.set_property("_distance", proximity_result.distance);
+
                         writeln!(
                             data_writer,
                             "{}",

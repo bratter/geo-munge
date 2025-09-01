@@ -29,6 +29,7 @@ pub fn knn(handler: &CommandHandler, res: &Res, knn_args: KnnArgs) -> Result<()>
             k: knn_args.k,
             r: knn_args.r,
             content_mode: out_opts.content_mode,
+            start_index: 0,
             data: find_data,
         };
 
@@ -62,6 +63,8 @@ fn handle_io_data(handler: &CommandHandler, res: &Res, knn_args: &KnnArgs) -> Re
         }
     };
 
+    // Track the absolute index of the incoming request item
+    let mut cur_index = 0;
     match (knn_args.key_uid, knn_args.key_bytes) {
         (true, true) => unreachable!("key_uid and key_bytes are mutually exclusive"),
         (true, false) => {
@@ -69,7 +72,13 @@ fn handle_io_data(handler: &CommandHandler, res: &Res, knn_args: &KnnArgs) -> Re
             let _ = dispatch_counted_batches(
                 input.into_uid_iter().filter_map(print_and_filter_err),
                 MAX_ID_BATCH_SIZE,
-                |batch| send_knn_req(handler, res, knn_args, FindData::Keys(KeySet::Uid(batch))),
+                |batch| {
+                    let batch = FindData::Keys(KeySet::Uid(batch));
+                    let batch_len = batch.len();
+                    let res = send_knn_req(handler, res, knn_args, cur_index, batch);
+                    cur_index += batch_len;
+                    res
+                },
             )?;
         }
         (false, true) => {
@@ -80,12 +89,11 @@ fn handle_io_data(handler: &CommandHandler, res: &Res, knn_args: &KnnArgs) -> Re
                     .filter_map(print_and_filter_err),
                 MAX_ID_BATCH_SIZE,
                 |batch| {
-                    send_knn_req(
-                        handler,
-                        res,
-                        knn_args,
-                        FindData::Keys(KeySet::Custom(batch)),
-                    )
+                    let batch = FindData::Keys(KeySet::Custom(batch));
+                    let batch_len = batch.len();
+                    let res = send_knn_req(handler, res, knn_args, cur_index, batch);
+                    cur_index += batch_len;
+                    res
                 },
             )?;
         }
@@ -105,15 +113,19 @@ fn handle_io_data(handler: &CommandHandler, res: &Res, knn_args: &KnnArgs) -> Re
                         &mut feature_buffer,
                         Vec::with_capacity(MAX_FEATURE_COUNT),
                     );
-                    send_knn_req(handler, res, knn_args, FindData::Features(batch))?;
+                    let features = FindData::Features(batch);
+                    let feature_len = features.len();
+                    send_knn_req(handler, res, knn_args, cur_index, features)?;
                     batch_bytes = 0;
+                    cur_index += feature_len;
                 }
                 feature_buffer.push(feature);
             }
 
             // Final flush
             if feature_buffer.len() > 0 {
-                send_knn_req(handler, res, knn_args, FindData::Features(feature_buffer))?;
+                let features = FindData::Features(feature_buffer);
+                send_knn_req(handler, res, knn_args, cur_index, features)?;
             }
         }
     }
@@ -125,6 +137,7 @@ fn send_knn_req(
     handler: &CommandHandler,
     res: &Res,
     knn_args: &KnnArgs,
+    start_index: usize,
     data: FindData,
 ) -> Result<()> {
     let out_opts = knn_args.output_options();
@@ -132,6 +145,7 @@ fn send_knn_req(
         k: knn_args.k,
         r: knn_args.r,
         content_mode: out_opts.content_mode,
+        start_index,
         data,
     };
 

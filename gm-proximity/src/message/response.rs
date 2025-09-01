@@ -155,10 +155,13 @@ pub struct ProximityResult {
     /// The input index from the original query request.
     pub input_index: usize,
 
-    /// The unique identifier of the node.
+    /// When the query was a reference to an id or a filter, return the uid of the retrieved input item.
+    pub input_uid: Option<NodeId>,
+
+    /// The unique identifier of the retrieved node.
     pub id: NodeId,
 
-    /// The distance from the query point.
+    /// The distance from the query geometry.
     pub distance: f64,
 
     /// The content to return with this result.

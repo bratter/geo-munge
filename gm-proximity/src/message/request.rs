@@ -215,6 +215,8 @@ pub struct KnnReq {
     pub k: usize,
     pub r: Option<f64>,
     pub content_mode: ContentMode,
+    /// The input_index of the first item in this request.
+    pub start_index: usize,
     pub data: FindData,
     // TODO: Add filters
 }
@@ -239,6 +241,16 @@ pub enum FindData {
 
     /// Run the find for a set of primary keys already in the quadtree.
     Keys(KeySet),
+}
+
+impl FindData {
+    pub fn len(&self) -> usize {
+        match self {
+            FindData::Features(features) => features.len(),
+            FindData::Keys(KeySet::Uid(keys)) => keys.len(),
+            FindData::Keys(KeySet::Custom(keys)) => keys.len(),
+        }
+    }
 }
 
 impl Debug for FindData {

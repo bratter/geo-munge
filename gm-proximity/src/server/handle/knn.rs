@@ -20,8 +20,22 @@ use super::{Context, MAX_GEOM_BATCH_SIZE, MAX_ID_BATCH_SIZE};
 /// be built in a common location and used everywhere
 pub fn knn(context: Context, req: KnnReq) {
     match req.data {
-        FindData::Features(feats) => process_geoms(&context, req.content_mode, req.k, req.r, feats),
-        FindData::Keys(keys) => process_keys(&context, req.content_mode, req.k, req.r, &keys),
+        FindData::Features(feats) => process_geoms(
+            &context,
+            req.content_mode,
+            req.k,
+            req.r,
+            req.start_index,
+            feats,
+        ),
+        FindData::Keys(keys) => process_keys(
+            &context,
+            req.content_mode,
+            req.k,
+            req.r,
+            req.start_index,
+            &keys,
+        ),
     }
 }
 
@@ -30,6 +44,7 @@ fn process_geoms(
     content_mode: ContentMode,
     k: usize,
     r: Option<f64>,
+    start_index: usize,
     geoms: Vec<Feature>,
 ) {
     let store = context.store.load();
@@ -46,9 +61,10 @@ fn process_geoms(
                 // NOTE: Convert incoming feature geometries to radians
                 geom.to_radians_in_place();
 
-                for neighbor in exec_neighbor_search(&store, content_mode, i, r, &geom)
-                    .map(Ok)
-                    .take(k)
+                for neighbor in
+                    exec_neighbor_search(&store, content_mode, start_index + i, None, r, &geom)
+                        .map(Ok)
+                        .take(k)
                 {
                     if items.len() >= batch_size {
                         let batch = std::mem::replace(&mut items, Vec::with_capacity(batch_size));
@@ -82,6 +98,7 @@ fn process_keys(
     content_mode: ContentMode,
     k: usize,
     r: Option<f64>,
+    start_index: usize,
     keys: &KeySet,
 ) {
     let store = context.store.load();
@@ -95,11 +112,12 @@ fn process_keys(
     // NOTE: We have to manually batch here rather than using the helping in message/batch.rs as the nested iterator
     // structure cannot be flattened due to lifetime issues, preventing us from passing a flat iterator to the batch
     // Instead we set up a helper closure here to manage the additional complexity
-    let mut process_record = |gr: &GeoRecord, i: usize, exclude_id: u32| {
-        for neighbor in exec_neighbor_search(&store, content_mode, i, r, &gr.geometry)
-            .filter(|item| item.id != exclude_id)
-            .map(Ok)
-            .take(k)
+    let mut process_record = |gr: &GeoRecord, i: usize, input_uid: NodeId| {
+        for neighbor in
+            exec_neighbor_search(&store, content_mode, i, Some(input_uid), r, &gr.geometry)
+                .filter(|item| item.id != input_uid)
+                .map(Ok)
+                .take(k)
         {
             if items.len() >= batch_size {
                 let batch = std::mem::replace(&mut items, Vec::with_capacity(batch_size));
@@ -114,14 +132,14 @@ fn process_keys(
         KeySet::Uid(keys) => {
             for (i, key) in keys.iter().enumerate() {
                 if let Some(gr) = store.get(key) {
-                    process_record(&gr, i, *key);
+                    process_record(&gr, start_index + i, *key);
                 }
             }
         }
         KeySet::Custom(keys) => {
             for (i, key) in keys.iter().enumerate() {
                 if let Some(gr) = store.get_with_custom_key(key) {
-                    process_record(&gr, i, gr.id);
+                    process_record(&gr, start_index + i, gr.id);
                 }
             }
         }
@@ -139,7 +157,8 @@ fn process_keys(
 fn exec_neighbor_search<'a>(
     store: &'a Arc<GeoStore>,
     content_mode: ContentMode,
-    i: usize,
+    input_index: usize,
+    input_uid: Option<NodeId>,
     r: Option<f64>,
     geom: &Geometry,
 ) -> impl Iterator<Item = ProximityResult> {
@@ -149,7 +168,8 @@ fn exec_neighbor_search<'a>(
             let content = content_mode.with_record(&record);
 
             ProximityResult {
-                input_index: i,
+                input_index,
+                input_uid,
                 id: record.id,
                 distance,
                 content,
