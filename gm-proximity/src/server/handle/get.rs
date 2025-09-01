@@ -8,7 +8,7 @@ pub fn get(context: Context, req: GetReq) {
         ContentMode::None => MAX_ID_BATCH_SIZE,
         _ => MAX_GEOM_BATCH_SIZE,
     };
-    let mut response_count = 0;
+    let mut response_count = 0u32;
 
     match req.keys {
         KeySet::Uid(keys) => {

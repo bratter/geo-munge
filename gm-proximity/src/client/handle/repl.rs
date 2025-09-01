@@ -17,7 +17,7 @@ use crate::{
     message::prelude::*,
 };
 
-use super::{handlers, CommandHandler, ResponseHandler};
+use super::{handlers, CommandHandler, OutputFormat, OutputOptions, ResponseHandler};
 
 /// REPL command handler.
 ///
@@ -89,7 +89,7 @@ pub fn repl(handler: Arc<CommandHandler>, repl_args: ReplArgs) -> Result<()> {
             Some(3) => {
                 // For Get, we only send a single request
                 if let Some(get_req) = build_get(&mut settings) {
-                    handler.send(Request::Get(get_req), &res)
+                    handler.send_with_output(Request::Get(get_req), &res, settings.output_options)
                 } else {
                     Ok(())
                 }
@@ -125,7 +125,11 @@ pub fn repl(handler: Arc<CommandHandler>, repl_args: ReplArgs) -> Result<()> {
             Some(6) => {
                 // For window we can just send a single request
                 if let Some(window_req) = build_window(&settings) {
-                    handler.send(Request::Window(window_req), &res)
+                    handler.send_with_output(
+                        Request::Window(window_req),
+                        &res,
+                        settings.output_options,
+                    )
                 } else {
                     Ok(())
                 }
@@ -180,7 +184,7 @@ pub fn repl(handler: Arc<CommandHandler>, repl_args: ReplArgs) -> Result<()> {
 struct Settings {
     query_data_type: QueryDataType,
     query_key_type: QueryKeyType,
-    content_mode: ContentMode,
+    output_options: OutputOptions,
 }
 
 impl Settings {
@@ -296,6 +300,7 @@ fn change_settings(settings: &mut Settings) -> Result<()> {
                 "Spatial operation (use keys or geoms for neighbor queries)",
                 "Key type (use Uids or Custom keys for id-based queries)",
                 "Content mode (the geojson data to return from queries)",
+                "Output format (whether to return data as all json or partial csv/json)",
                 "Done changing settings (also, esc/q)",
             ])
             .interact_opt()
@@ -333,15 +338,43 @@ fn change_settings(settings: &mut Settings) -> Result<()> {
                 let content_mode: ContentMode = Select::with_theme(&ColorfulTheme::default())
                     .with_prompt("Content response mode for KNN and Window queries")
                     .items(&ContentMode::list())
-                    .default(settings.content_mode as usize)
+                    .default(settings.output_options.content_mode as usize)
                     .interact()
                     .map_err(Error::new)
                     .and_then(TryInto::try_into)
                     .unwrap();
 
-                settings.content_mode = content_mode;
+                settings.output_options.content_mode = content_mode;
             }
-            Some(3) | None => break,
+            Some(3) => {
+                let mut opts = settings.output_options;
+
+                opts.output_format = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Output format mode for data-returning queries")
+                    .items(&OutputFormat::list())
+                    .default(opts.output_format as usize)
+                    .interact()
+                    .map_err(Error::new)
+                    .and_then(TryInto::try_into)
+                    .unwrap();
+
+                if opts.output_format == OutputFormat::Csv {
+                    opts.header = Confirm::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Show headers")
+                        .default(opts.header)
+                        .interact()
+                        .unwrap();
+
+                    opts.escape = Confirm::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Escape JSON in CSV")
+                        .default(opts.escape)
+                        .interact()
+                        .unwrap();
+                }
+
+                settings.output_options = opts;
+            }
+            Some(4) | None => break,
             _ => unreachable!(),
         };
     }
@@ -419,7 +452,7 @@ fn build_get(settings: &mut Settings) -> Option<GetReq> {
     if let Some(keys) = key_set_loop(settings) {
         Some(GetReq {
             keys,
-            content_mode: settings.content_mode,
+            content_mode: settings.output_options.content_mode,
         })
     } else {
         None
@@ -441,7 +474,10 @@ fn build_delete(settings: &mut Settings) -> Option<KeySet> {
 ///
 /// TODO:Consider pushing parsing the KnnArgs to the Args module and create a parsed variant here for use in the handler
 fn build_knn(settings: &mut Settings) -> Option<KnnArgs> {
-    let k: usize = loop {
+    // Create the args struct to build over the course of the builder.
+    let mut args = KnnArgs::new(settings.output_options);
+
+    args.k = loop {
         let k_raw: String = Input::with_theme(&ColorfulTheme::default())
             .with_prompt("Enter k nearest neighbors to retrieve")
             .interact_text()
@@ -453,7 +489,7 @@ fn build_knn(settings: &mut Settings) -> Option<KnnArgs> {
         }
     };
 
-    let r: Option<f64> = loop {
+    args.r = loop {
         let r_raw: String = Input::with_theme(&ColorfulTheme::default())
             .with_prompt("Enter max search radius (blank for unbounded)")
             .allow_empty(true)
@@ -493,6 +529,8 @@ fn build_knn(settings: &mut Settings) -> Option<KnnArgs> {
             (false, true)
         }
     };
+    args.key_uid = key_uid;
+    args.key_bytes = key_bytes;
 
     // TODO: Would like to directly use KeySet here, but doesn't work as it currently stands with the handler setup
     eprintln!("Enter data in the appropriate format or blank to abort or choose a file");
@@ -525,17 +563,10 @@ fn build_knn(settings: &mut Settings) -> Option<KnnArgs> {
     } else {
         (Some(raw_data), None)
     };
+    args.data = data;
+    args.input = input;
 
-    Some(KnnArgs {
-        k,
-        r,
-        key_uid,
-        key_bytes,
-        data,
-        input,
-        output: None,
-        content: settings.content_mode,
-    })
+    Some(args)
 }
 
 fn build_window(settings: &Settings) -> Option<WindowReq> {
@@ -571,7 +602,7 @@ fn build_window(settings: &Settings) -> Option<WindowReq> {
     Some(WindowReq {
         bbox,
         join,
-        content_mode: settings.content_mode,
+        content_mode: settings.output_options.content_mode,
     })
 }
 

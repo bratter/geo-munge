@@ -25,7 +25,7 @@ pub fn delete(handler: &CommandHandler, res: &Res, del_args: DeleteArgs) -> Resu
         // Handle IO data - per-line processing with individual error reporting
         // Note that with input will try and use stdio if the path is None, therefore covering the case where both the
         // data and file are None
-        let input = match Input::try_new(del_args.file.as_ref()) {
+        let input = match Input::try_new(del_args.input.as_ref()) {
             Ok(input) => input,
             Err(err) => {
                 eprintln!("Could not read input: {}", err);

@@ -13,6 +13,8 @@ use super::{print_and_filter_err, CommandHandler, Res, MAX_ID_BATCH_SIZE};
 /// Gets store entries using their primary or custom key. Sends all as a single batch for CLI data,
 /// or per-line for IO data with individual error reporting.
 pub fn get(handler: &CommandHandler, res: &Res, get_args: GetArgs) -> Result<()> {
+    let out_opts = get_args.output_options();
+
     if let Some(data) = get_args.data {
         // Handle CLI data - batch processing with fail-fast error handling
         let keys = match KeySet::parse_with_type(&data, get_args.key_bytes) {
@@ -25,9 +27,9 @@ pub fn get(handler: &CommandHandler, res: &Res, get_args: GetArgs) -> Result<()>
 
         let req = Request::Get(GetReq {
             keys,
-            content_mode: get_args.content,
+            content_mode: out_opts.content_mode,
         });
-        handler.send(req, &res)?;
+        handler.send_with_output(req, &res, out_opts)?;
     } else {
         // Handle IO data - per-line processing with individual error reporting
         // Note that with input will try and use stdio if the path is None, therefore covering the case where both the
@@ -50,9 +52,9 @@ pub fn get(handler: &CommandHandler, res: &Res, get_args: GetArgs) -> Result<()>
                 |batch| {
                     let get_req = GetReq {
                         keys: KeySet::Custom(batch),
-                        content_mode: get_args.content,
+                        content_mode: get_args.output_options().content_mode,
                     };
-                    handler.send(Request::Get(get_req), &res)
+                    handler.send_with_output(Request::Get(get_req), &res, out_opts)
                 },
             )?;
         } else {
@@ -63,9 +65,9 @@ pub fn get(handler: &CommandHandler, res: &Res, get_args: GetArgs) -> Result<()>
                 |batch| {
                     let get_req = GetReq {
                         keys: KeySet::Uid(batch),
-                        content_mode: get_args.content,
+                        content_mode: get_args.output_options().content_mode,
                     };
-                    handler.send(Request::Get(get_req), &res)
+                    handler.send_with_output(Request::Get(get_req), &res, out_opts)
                 },
             )?;
         }

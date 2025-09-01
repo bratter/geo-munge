@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU32, Ordering},
         Arc, Mutex, MutexGuard,
     },
     time::{Duration, Instant},
@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, Error, Result};
 
 use crate::message::prelude::*;
 
-use super::ResponseHandler;
+use super::{handle::ResponseMeta, OutputOptions, ResponseHandler};
 
 /// Newtype for a reuqest/response tracker.
 ///
@@ -30,14 +30,21 @@ impl Tracker {
             .ok_or_else(|| Self::non_existent(id))
     }
 
-    pub fn track(&self, id: u32, req: &Request, handler: Arc<Mutex<ResponseHandler>>) {
+    pub fn track(
+        &self,
+        id: u32,
+        req: &Request,
+        handler: Arc<Mutex<ResponseHandler>>,
+        output_options: OutputOptions,
+    ) {
         self.lock().insert(
             id,
             Arc::new(TrackerData {
                 is_oneshot: req.is_oneshot(),
                 start: Instant::now(),
                 handler,
-                response_count: AtomicUsize::new(0),
+                output_options,
+                response_count: AtomicU32::new(0),
             }),
         );
     }
@@ -69,36 +76,43 @@ impl Tracker {
     /// Will then call the appropriate response handler from the tracking data if it can be found. If the tracking data
     /// can't be found, this indicates a critical error in the system due to lost data, and the client should likely
     /// abort.
-    pub fn handle(&mut self, id: u32, res: Response) -> Result<()> {
+    pub fn handle(&mut self, req_id: u32, res: Response) -> Result<()> {
         // We return with an error if the id can't be found in the tracker - this should be treated as a critical
         // failure by the system.
-        let tracker_data = self.get(id)?;
+        let tracker_data = self.get(req_id)?;
 
-        // Actual count doesn't include the current response, but neither does the expected count in Done
-        let actual_response_count = tracker_data.response_count.fetch_add(1, Ordering::Relaxed);
+        // Actual response count doesn't include the current response, but neither does the expected count in Done
+        let res_id = tracker_data.response_count.fetch_add(1, Ordering::Relaxed);
 
         let done = if tracker_data.is_oneshot || matches!(res, Response::Done(_)) {
-            if let Response::Done(expected_count) = res {
-                if actual_response_count != expected_count {
+            if let Response::Done(expected_response_count) = res {
+                if res_id != expected_response_count {
                     bail!(
                         "Response count mismatch, expecting {}, recieved {}",
-                        expected_count,
-                        actual_response_count
+                        expected_response_count,
+                        res_id
                     )
                 }
             }
 
-            tracing::info!("Retiring request with id {}", id);
-            Some(self.retire(id)?)
+            tracing::debug!("Retiring request with id {}", req_id);
+            Some(self.retire(req_id)?)
         } else {
             None
+        };
+
+        let meta = ResponseMeta {
+            req_id,
+            res_id,
+            done,
+            output_options: tracker_data.output_options,
         };
 
         tracker_data
             .handler
             .lock()
             .expect("Lock poisoned")
-            .handle(id, done, &res)
+            .handle(meta, res)
     }
 }
 
@@ -106,5 +120,6 @@ struct TrackerData {
     is_oneshot: bool,
     start: Instant,
     handler: Arc<Mutex<ResponseHandler>>,
-    response_count: AtomicUsize,
+    output_options: OutputOptions,
+    response_count: AtomicU32,
 }

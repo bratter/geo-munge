@@ -2,6 +2,7 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     path::Path,
+    str::FromStr,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex,
@@ -9,12 +10,20 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
+use anyhow::{bail, Error, Result};
 use crossbeam::channel::{self, Receiver, Sender};
 
 use crate::{args::ClientCommand, message::prelude::*};
 
 use super::{handlers, Res, Tracker};
+
+/// DTO for Response metadata
+pub struct ResponseMeta {
+    pub req_id: u32,
+    pub res_id: u32,
+    pub done: Option<Duration>,
+    pub output_options: OutputOptions,
+}
 
 /// Client command handler. Translates client commands into requests.
 pub struct CommandHandler {
@@ -84,7 +93,7 @@ impl CommandHandler {
         };
 
         // As this is a oneshot and shouldn't be called anywhere else, we don't care about the result
-        tracing::info!("Request done, sending done notification");
+        tracing::debug!("Request done, sending done notification");
         _ = cmd.done_send.try_send(());
 
         response
@@ -113,15 +122,24 @@ impl CommandHandler {
     /// Will block until the request channel has capacity.
     #[tracing::instrument(skip_all)]
     pub fn send(&self, req: Request, res: &Res) -> Result<()> {
+        self.send_with_output(req, res, OutputOptions::default())
+    }
+
+    /// Send a request for dispatch with additional output format information.
+    ///
+    /// Will block until the request channel has capacity. Will add contextual information to the tracker so responses
+    /// follow the right format.
+    #[tracing::instrument(skip_all)]
+    pub fn send_with_output(&self, req: Request, res: &Res, out_opts: OutputOptions) -> Result<()> {
         tracing::debug!("Sent request: {:?}", req);
 
         // Get an id and bump to the next one
         // We are just using this as an id so we can safely use Relaxed ordering here
-        let id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
+        let req_id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
 
         // Track the request before sending so we know when we have received responses
-        self.tracker.track(id, &req, Arc::clone(&res));
-        self.request_tx.send((id, req))?;
+        self.tracker.track(req_id, &req, Arc::clone(&res), out_opts);
+        self.request_tx.send((req_id, req))?;
 
         Ok(())
     }
@@ -145,27 +163,27 @@ pub enum ResponseHandler {
 
 impl ResponseHandler {
     #[tracing::instrument(skip_all)]
-    pub fn handle(&mut self, id: u32, done: Option<Duration>, res: &Response) -> Result<()> {
+    pub fn handle(&mut self, meta: ResponseMeta, mut res: Response) -> Result<()> {
         tracing::debug!("Handling response: {:?}", res);
 
         match self {
             Self::Print => {
                 let stdout = std::io::stdout();
-                write_response(id, done, res, &mut stdout.lock())?;
+                write_response(&meta, &mut res, &mut stdout.lock())?;
             }
             Self::File(file) => {
-                write_response(id, done, res, file)?;
+                write_response(&meta, &mut res, file)?;
             }
             Self::ReplPrint(sender) => {
                 let stdout = std::io::stdout();
-                write_response(id, done, res, &mut stdout.lock())?;
-                if done.is_some() {
+                write_response(&meta, &mut res, &mut stdout.lock())?;
+                if meta.done.is_some() {
                     sender.send(()).expect("channel disconnected");
                 }
             }
             Self::ReplFile(sender, file) => {
-                write_response(id, done, res, file)?;
-                if done.is_some() {
+                write_response(&meta, &mut res, file)?;
+                if meta.done.is_some() {
                     sender.send(()).expect("channel disconnected");
                 }
             }
@@ -189,10 +207,10 @@ impl ResponseHandler {
 
 /// Write to the passed writer with a short logging preamble.
 macro_rules! writeln_with_preamble {
-    ($writer:expr, $req_id:expr, $duration:expr, $($arg:tt)*) => {
+    ($writer:expr, $meta:expr, $($arg:tt)*) => {
         (|| -> std::io::Result<()> {
-            write!($writer, "[req {}", $req_id)?;
-            if let Some(duration) = $duration {
+            write!($writer, "[req {}; res {}", $meta.req_id, $meta.res_id)?;
+            if let Some(duration) = $meta.done {
                 write!($writer, "; {}ms", duration.as_millis())?;
             }
             write!($writer, "] ")?;
@@ -201,24 +219,99 @@ macro_rules! writeln_with_preamble {
     };
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub enum OutputFormat {
+    /// Return output as JSON.
+    #[default]
+    Json,
+
+    /// Return output as csv with geometries or properties as JSON when the content_mode returns them.
+    Csv,
+}
+
+impl OutputFormat {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Json => "JSON",
+            Self::Csv => "CSV",
+        }
+    }
+
+    pub fn list() -> [&'static str; 2] {
+        [Self::Json.as_str(), Self::Csv.as_str()]
+    }
+}
+
+impl FromStr for OutputFormat {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "json" => Ok(Self::Json),
+            "csv" => Ok(Self::Csv),
+            _ => bail!("Invalid output format '{}'. Valid options are json, csv", s),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OutputOptions {
+    /// Content mode for output data. for get requests will default to "full", but all others will default to returning
+    /// the request metadata only.
+    pub content_mode: ContentMode,
+
+    pub output_format: OutputFormat,
+
+    /// Render headers in csv output.
+    pub header: bool,
+
+    /// Escape JSON in CSV to ensure correct csv parsing.
+    pub escape: bool,
+}
+
+impl Default for OutputOptions {
+    fn default() -> Self {
+        Self {
+            content_mode: ContentMode::default(),
+            output_format: OutputFormat::default(),
+            header: true,
+            escape: true,
+        }
+    }
+}
+
+// TODO: Like ContentMode, should these be moved to a common location?
+impl TryFrom<usize> for OutputFormat {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Json),
+            1 => Ok(Self::Csv),
+            _ => bail!("Invalid index for OutputFormat"),
+        }
+    }
+}
+
 fn write_response<W: Write>(
-    id: u32,
-    duration: Option<Duration>,
-    res: &Response,
+    meta: &ResponseMeta,
+    res: &mut Response,
     data_writer: &mut W,
 ) -> Result<(), std::io::Error> {
     let mut stderr = std::io::stderr().lock();
-
     match res {
-        Response::Success(Some(msg)) => writeln_with_preamble!(stderr, id, duration, "{}", msg),
-        Response::Success(None) => writeln_with_preamble!(stderr, id, duration, "success"),
+        Response::Success(Some(msg)) => {
+            writeln_with_preamble!(stderr, meta, "{}", msg)
+        }
+        Response::Success(None) => {
+            writeln_with_preamble!(stderr, meta, "success")
+        }
         Response::Done(n) => {
-            writeln_with_preamble!(stderr, id, duration, "done with {} responses", n)
+            writeln_with_preamble!(stderr, meta, "done with {} responses", n)
         }
         Response::Stats(n) => writeln_with_preamble!(
             stderr,
-            id,
-            duration,
+            meta,
             "QT size={}; key: {:?}; bytes sent={}; bytes recv={}",
             n.qt_size,
             n.key_mode,
@@ -226,16 +319,46 @@ fn write_response<W: Write>(
             n.bytes_recv
         ),
         Response::ResultCounts { success, fail } => {
-            writeln_with_preamble!(stderr, id, duration, "succeed {}, failed {}", success, fail)
+            writeln_with_preamble!(stderr, meta, "succeed {}, failed {}", success, fail)
         }
         Response::BasicResults(results) => {
             for result in results {
-                match result {
-                    Ok(basic_result) => {
-                        let content_json = format_content(&basic_result.content);
-                        writeln!(data_writer, "{},{}", basic_result.id, content_json)?;
+                match (result, &meta.output_options.output_format) {
+                    (Ok(basic_result), OutputFormat::Csv) => {
+                        // When the output format is csv and we are in the first response for the request, we want to print a
+                        // header row
+                        if meta.res_id == 0 && meta.output_options.header {
+                            write!(data_writer, "uid")?;
+                            match &basic_result.content {
+                                ContentType::FullFeature(_) | ContentType::GeometryOnly(_) => {
+                                    writeln!(data_writer, ",feature")?;
+                                }
+                                ContentType::PropertiesOnly(_) => {
+                                    writeln!(data_writer, ",properties")?;
+                                }
+                                ContentType::None => {
+                                    writeln!(data_writer, "")?;
+                                }
+                            }
+                        }
+
+                        let content_json =
+                            format_json(&basic_result.content, meta.output_options.escape);
+                        write!(data_writer, "{}", basic_result.id)?;
+                        if let Some(json) = content_json {
+                            writeln!(data_writer, ",{}", json)?;
+                        }
                     }
-                    Err(err) => {
+                    (Ok(basic_result), OutputFormat::Json) => {
+                        let content = &mut basic_result.content;
+                        content.set_property("_uid", basic_result.id);
+                        writeln!(
+                            data_writer,
+                            "{}",
+                            format_json(content, false).expect("ContentType is not None")
+                        )?;
+                    }
+                    (Err(err), _) => {
                         writeln!(stderr, "Error: {}", err)?;
                     }
                 }
@@ -244,39 +367,72 @@ fn write_response<W: Write>(
         }
         Response::ProximityResults(results) => {
             for result in results {
-                match result {
-                    Ok(proximity_result) => {
-                        let content_json = format_content(&proximity_result.content);
-                        let _ = writeln!(
+                match (result, &meta.output_options.output_format) {
+                    (Ok(proximity_result), OutputFormat::Csv) => {
+                        // print header row as above
+                        if meta.res_id == 0 && meta.output_options.header {
+                            write!(data_writer, "input_index,uid,distance")?;
+                            match &proximity_result.content {
+                                ContentType::FullFeature(_) | ContentType::GeometryOnly(_) => {
+                                    writeln!(data_writer, ",feature")?;
+                                }
+                                ContentType::PropertiesOnly(_) => {
+                                    writeln!(data_writer, ",properties")?;
+                                }
+                                ContentType::None => {
+                                    writeln!(data_writer, "")?;
+                                }
+                            }
+                        }
+
+                        let content_json =
+                            format_json(&proximity_result.content, meta.output_options.escape);
+                        write!(
                             data_writer,
-                            "{},{},{},{}",
+                            "{},{},{}",
                             proximity_result.input_index,
                             proximity_result.id,
                             proximity_result.distance,
-                            content_json
+                        )?;
+                        if let Some(json) = content_json {
+                            writeln!(data_writer, ",{}", json)?;
+                        }
+                    }
+                    (Ok(proximity_result), OutputFormat::Json) => {
+                        let content = &mut proximity_result.content;
+                        content.set_property("_distance", proximity_result.distance);
+                        content.set_property("_uid", proximity_result.id);
+                        content.set_property("_inputIndex", proximity_result.input_index);
+                        writeln!(
+                            data_writer,
+                            "{}",
+                            format_json(content, false).expect("ContentType is not None")
                         )?;
                     }
-                    Err(err) => {
-                        writeln_with_preamble!(stderr, id, duration, "Error: {}", err)?;
+                    (Err(err), _) => {
+                        writeln_with_preamble!(stderr, meta, "Error: {}", err)?;
                     }
                 }
             }
             Ok(())
         }
-        Response::Error(msg) => writeln_with_preamble!(stderr, id, duration, "error: {}", msg),
+        Response::Error(msg) => writeln_with_preamble!(stderr, meta, "error: {}", msg),
         Response::Bench(_) => unreachable!(),
     }
 }
 
-fn format_content(content: &ContentType) -> String {
+// TODO: Write this rather than allocate
+fn format_json(content: &ContentType, escape_json: bool) -> Option<String> {
     let json_str = match content {
-        ContentType::FullFeature(feature) => feature.to_string(),
-        ContentType::GeometryOnly(geometry) => geometry.to_string(),
-        ContentType::PropertiesOnly(json_value) => json_value.to_string(),
-        ContentType::None => return String::new(),
+        ContentType::FullFeature(feature) => Some(feature.to_string()),
+        ContentType::GeometryOnly(feature) => Some(feature.to_string()),
+        ContentType::PropertiesOnly(properties) => Some(properties.to_string()),
+        ContentType::None => None,
     };
 
     // Ensure that the json strings are properly escaped in csv
-    // TODO: Is this really what we want? Do we at least want some form of possible formatting options
-    format!("\"{}\"", json_str.replace('"', "\"\""))
+    match (escape_json, &json_str) {
+        (true, Some(json_str)) => Some(format!("\"{}\"", json_str.replace('"', "\"\""))),
+        _ => json_str,
+    }
 }

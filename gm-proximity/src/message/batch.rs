@@ -6,20 +6,20 @@ use anyhow::Result;
 /// flush it is occurs.
 pub fn dispatch_counted_batches<T, R, I, F>(
     iter: I,
-    batch_size: usize,
+    batch_size: u32,
     mut process_batch: F,
-) -> Result<usize>
+) -> Result<u32>
 where
     I: Iterator<Item = T>,
     F: FnMut(Vec<R>) -> Result<()>,
     R: From<T>,
 {
-    let mut buffer = Vec::with_capacity(batch_size);
-    let mut batch_count = 0;
+    let mut buffer = Vec::with_capacity(batch_size as usize);
+    let mut batch_count = 0u32;
 
     for item in iter {
-        if buffer.len() >= batch_size {
-            let batch = std::mem::replace(&mut buffer, Vec::with_capacity(batch_size));
+        if buffer.len() >= batch_size as usize {
+            let batch = std::mem::replace(&mut buffer, Vec::with_capacity(batch_size as usize));
             process_batch(batch)?;
             batch_count += 1;
         }

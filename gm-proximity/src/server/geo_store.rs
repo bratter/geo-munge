@@ -9,19 +9,16 @@ use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use geo::{Geometry, Rect};
-use geojson::JsonValue;
 use spatial::{BasicQuadTree, ProximitySearch, RegionQuery, SpatialIndex};
 
 // TODO: Move Bbox?
-use crate::message::{prelude::Bbox, CustomKey, NodeId};
+use crate::message::{prelude::Bbox, CustomKey, NodeId, Properties};
 
 /// Base record containing the actual data.
 pub struct GeoRecordInner {
     pub id: NodeId,
     pub geometry: Geometry<f64>,
-    // TODO: Metadata is just JSON values, use JSON pointer syntax for extraction
-    // https://datatracker.ietf.org/doc/html/rfc6901
-    pub metadata: Option<JsonValue>,
+    pub metadata: Option<Properties>,
     is_deleted: AtomicBool,
 }
 
@@ -38,17 +35,13 @@ impl From<&GeoRecordInner> for geojson::Feature {
     fn from(value: &GeoRecordInner) -> Self {
         let mut feature: geojson::Feature = geojson::Geometry::from(&value.geometry).into();
         feature.id = Some(geojson::feature::Id::Number(value.id.into()));
-        feature.properties = match &value.metadata {
-            Some(JsonValue::Object(meta)) => Some(meta.clone()),
-            None => None,
-            _ => unreachable!(),
-        };
+        feature.properties = value.metadata.clone().map(Properties::into);
 
         feature
     }
 }
 
-impl From<&GeoRecordInner> for JsonValue {
+impl From<&GeoRecordInner> for Properties {
     fn from(value: &GeoRecordInner) -> Self {
         value.metadata.clone().unwrap_or_default()
     }
@@ -121,7 +114,7 @@ impl GeoStore {
         &self,
         id: NodeId,
         geometry: Geometry<f64>,
-        metadata: Option<JsonValue>,
+        metadata: Option<Properties>,
     ) -> Result<()> {
         let record = Arc::new(GeoRecordInner {
             id,
@@ -169,7 +162,7 @@ impl GeoStore {
     /// TODO: Consider adding failure reasons and/or ids instead of just a count
     pub fn bulk_insert<I>(&self, records: I) -> (usize, usize)
     where
-        I: IntoIterator<Item = (NodeId, Geometry<f64>, Option<JsonValue>)>,
+        I: IntoIterator<Item = (NodeId, Geometry<f64>, Option<Properties>)>,
     {
         let mut insert_count: usize = 0;
         let mut error_count: usize = 0;
@@ -249,7 +242,7 @@ impl GeoStore {
     /// Using the stored JSON Pointer, extract the custom primary key for the passed metadata.
     /// This supports both string and i64 keys
     /// TODO: Expose this so that incoming items can determine the custom key before getting/deleting?
-    fn extract_custom_key(&self, metadata: &JsonValue) -> Result<CustomKey> {
+    fn extract_custom_key(&self, metadata: &Properties) -> Result<CustomKey> {
         let ptr = self
             .custom_key_pointer
             .as_ref()

@@ -16,7 +16,7 @@ pub fn window(context: Context, req: WindowReq) {
     let batch_size = match req.content_mode {
         ContentMode::None => MAX_ID_BATCH_SIZE,
         _ => MAX_GEOM_BATCH_SIZE,
-    };
+    } as usize;
     let mut items = Vec::with_capacity(batch_size);
     let mut response_count = 0;
 

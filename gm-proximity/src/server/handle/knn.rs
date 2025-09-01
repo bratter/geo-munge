@@ -36,7 +36,7 @@ fn process_geoms(
     let batch_size = match content_mode {
         ContentMode::None => MAX_ID_BATCH_SIZE,
         _ => MAX_GEOM_BATCH_SIZE,
-    };
+    } as usize;
     let mut items = Vec::with_capacity(batch_size);
     let mut response_count = 0;
 
@@ -88,7 +88,7 @@ fn process_keys(
     let batch_size = match content_mode {
         ContentMode::None => MAX_ID_BATCH_SIZE,
         _ => MAX_GEOM_BATCH_SIZE,
-    };
+    } as usize;
     let mut items = Vec::with_capacity(batch_size);
     let mut response_count = 0;
 

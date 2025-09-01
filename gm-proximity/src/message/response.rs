@@ -4,8 +4,9 @@ use std::fmt::Debug;
 
 use anyhow::Result;
 use bincode::{Decode, Encode};
+use geojson::JsonValue;
 
-use super::{encode::IoCodec, request::KeyMode, Feature, JsonValue, NodeId};
+use super::{encode::IoCodec, request::KeyMode, Feature, NodeId, Properties};
 
 #[derive(Encode, Decode)]
 #[non_exhaustive]
@@ -21,7 +22,7 @@ pub enum Response {
     /// Indicate that this is the last response for the operation when the request returned multiple individual
     /// responses. This will usually be attached to a request id in the message and contains the number of individual
     /// responses EXCLUDING this one that were returned.
-    Done(usize),
+    Done(u32),
 
     /// Response to Stats request.
     ///
@@ -113,10 +114,29 @@ pub enum ContentType {
     GeometryOnly(Feature),
 
     /// Properties only as JSON value.
-    PropertiesOnly(JsonValue),
+    PropertiesOnly(Properties),
 
     /// No additional content, ID only.
     None,
+}
+
+impl ContentType {
+    /// Set a property on the content type.
+    ///
+    /// When the content type is None, this will change the content type to properties only, enabling the addition of
+    /// properties in a mutable manner downstream from origination. This lets us inject results data in the response.
+    pub fn set_property(&mut self, key: impl Into<String>, value: impl Into<JsonValue>) {
+        match self {
+            ContentType::FullFeature(feature) => feature.0.set_property(key, value),
+            ContentType::GeometryOnly(feature) => feature.0.set_property(key, value),
+            ContentType::PropertiesOnly(properties) => properties.set_property(key, value),
+            ContentType::None => {
+                let mut new_properties = Properties::default();
+                new_properties.set_property(key, value);
+                let _ = std::mem::replace(self, ContentType::PropertiesOnly(new_properties));
+            }
+        }
+    }
 }
 
 /// Basic query result without distance information.

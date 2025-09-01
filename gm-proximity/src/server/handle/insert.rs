@@ -3,9 +3,8 @@ use std::sync::{atomic::Ordering, Arc};
 use anyhow::{anyhow, Result};
 use arc_swap::Guard;
 use geo::{Geometry, ToRadians};
-use geojson::JsonValue;
 
-use crate::message::prelude::*;
+use crate::message::{prelude::*, Properties};
 
 use super::{handle::KeyGenerator, Context};
 
@@ -40,13 +39,13 @@ pub fn insert(handler: Context, insert: Vec<Feature>) {
 fn prepare_insert(
     key_type: Guard<Arc<KeyGenerator>>,
     feature: Feature,
-) -> Result<(NodeId, Geometry, Option<JsonValue>)> {
+) -> Result<(NodeId, Geometry, Option<Properties>)> {
     let mut feature = feature.0;
-    let meta = std::mem::take(&mut feature.properties).map(JsonValue::Object);
+    let props = std::mem::take(&mut feature.properties).map(Properties::from);
 
     let uid = match &**key_type {
         KeyGenerator::AutoIncrement(id_gen) => id_gen.fetch_add(1, Ordering::Relaxed),
-        KeyGenerator::CustomU32(ptr) => meta
+        KeyGenerator::CustomU32(ptr) => props
             .as_ref()
             .and_then(|json| json.pointer(ptr.as_str()))
             .and_then(|v| v.as_u64())
@@ -59,7 +58,7 @@ fn prepare_insert(
     let mut geom = Geometry::<f64>::try_from(feature)?;
     geom.to_radians_in_place();
 
-    Ok((uid, geom, meta))
+    Ok((uid, geom, props))
 }
 
 #[cfg(test)]

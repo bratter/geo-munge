@@ -8,7 +8,7 @@ use geo::{Point, Rect};
 
 use crate::server::geo_store::GeoRecord;
 
-use super::{encode::IoCodec, response::ContentType, CustomKey, Feature, NodeId};
+use super::{encode::IoCodec, response::ContentType, CustomKey, Feature, NodeId, Properties};
 
 #[derive(Encode, Decode)]
 #[non_exhaustive]
@@ -380,9 +380,7 @@ impl ContentMode {
                 let geom: geojson::Feature = geojson::Geometry::from(record.as_ref()).into();
                 ContentType::GeometryOnly(geom.into())
             }
-            Self::Properties => {
-                ContentType::PropertiesOnly(geojson::JsonValue::from(record.as_ref()).into())
-            }
+            Self::Properties => ContentType::PropertiesOnly(Properties::from(record.as_ref())),
         }
     }
 
@@ -410,14 +408,14 @@ impl FromStr for ContentMode {
 
     fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
-            "none" | "id" | "ids" => Ok(ContentMode::None),
-            "full" | "feature" => Ok(ContentMode::Full),
-            "geometry" | "geom" => Ok(ContentMode::Geometry),
-            "properties" | "props" | "meta" => Ok(ContentMode::Properties),
-            _ => Err(anyhow!(
+            "none" | "id" | "ids" => Ok(Self::None),
+            "full" | "feature" => Ok(Self::Full),
+            "geometry" | "geom" => Ok(Self::Geometry),
+            "properties" | "props" | "meta" => Ok(Self::Properties),
+            _ => bail!(
                 "Invalid content mode '{}'. Valid options: full, geometry, properties, none",
                 s
-            )),
+            ),
         }
     }
 }

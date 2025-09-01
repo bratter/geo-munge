@@ -27,10 +27,10 @@ pub use handle::{record_to_basic_result, Context, Handler};
 ///
 /// This number is a hedge between arbitrary geometries while reducing overhead for points. This should be tweaked in
 /// practice, and potentially changed to something far more accurate if the transmission encoding is changed.
-const MAX_GEOM_BATCH_SIZE: usize = 200;
+const MAX_GEOM_BATCH_SIZE: u32 = 200;
 
 /// The maximum number of ids to send in a single batch of results.
 ///
 /// Because id only content is much smaller than geometry/properties, we set a spearate limit for these to add some
 /// additional efficiency.
-const MAX_ID_BATCH_SIZE: usize = 2;
+const MAX_ID_BATCH_SIZE: u32 = 2048;

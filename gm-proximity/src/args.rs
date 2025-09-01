@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Args as ArgsTrait, Parser, Subcommand};
 
+use crate::client::{OutputFormat, OutputOptions};
 use crate::message::prelude::*;
 
 /// Command line client and server for proximity-based geospatial operations.
@@ -64,6 +65,44 @@ pub enum ClientCommand {
     Bench(BenchClient),
 }
 
+/// Output options struct for use as nested clap parser.
+///
+/// This args version has an optional content_mode to allow Get and the other uses to have different defaults.
+/// Additionally the csv flags are negative flags to tie in better with CLI options.
+///
+/// TODO: Add a pretty print json option that applies to JSON output only
+#[derive(Debug, Default, Clone, Copy, ArgsTrait)]
+struct OutputOptionArgs {
+    /// Content mode for output data. for get requests will default to "full", but all others will default to returning
+    /// the request metadata only.
+    #[clap(long = "content", short = 'c')]
+    pub content_mode: Option<ContentMode>,
+
+    /// Whether to output data as newline delimited json (default) or a csv/json hybrid with the result data in csv and
+    /// any returned geometries or properties as json in a csv field.
+    #[clap(long = "format", short = 'f', default_value = "json")]
+    pub output_format: OutputFormat,
+
+    /// Turn off header rendering for csv output.
+    #[clap(long)]
+    pub no_header: bool,
+
+    /// Turn off json escaping in csv output.
+    #[clap(long)]
+    pub no_escape: bool,
+}
+
+impl From<OutputOptionArgs> for OutputOptions {
+    fn from(value: OutputOptionArgs) -> Self {
+        Self {
+            content_mode: value.content_mode.unwrap_or_default(),
+            output_format: value.output_format,
+            header: !value.no_header,
+            escape: !value.no_escape,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 pub struct ResetArgs {
     #[clap(long, short)]
@@ -100,21 +139,33 @@ pub struct GetArgs {
     #[clap(long, short = 'y')]
     pub key_bytes: bool,
 
-    /// Content mode for output data. Defaults to full for get (unlike other queries).
-    #[clap(long, short = 'c', default_value = "full")]
-    pub content: ContentMode,
+    /// Manually passed comma-separated keys to get.
+    #[clap(long, short, conflicts_with = "input")]
+    pub data: Option<String>,
 
     /// Input file containing keys to get. If not provided, reads from stdin.
-    #[clap(long, conflicts_with = "data")]
-    pub input: Option<PathBuf>,
-
-    /// Manually passed comma-separated keys to get.
     #[clap(long, short)]
-    pub data: Option<String>,
+    pub input: Option<PathBuf>,
 
     /// Output file for results. If not provided, writes to stdout.
     #[clap(long, short)]
     pub output: Option<PathBuf>,
+
+    #[command(flatten)]
+    output_options: OutputOptionArgs,
+}
+
+impl GetArgs {
+    pub fn output_options(&self) -> OutputOptions {
+        let mut opts: OutputOptions = self.output_options.into();
+
+        opts.content_mode = self
+            .output_options
+            .content_mode
+            .unwrap_or(ContentMode::Full);
+
+        opts
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -124,11 +175,11 @@ pub struct DeleteArgs {
     pub key_bytes: bool,
 
     /// Manually passed comma-separated keys to remove.
-    #[clap(long, short, conflicts_with = "file")]
+    #[clap(long, short, conflicts_with = "input")]
     pub data: Option<String>,
 
     /// An optional file input containing keys to remove.
-    pub file: Option<PathBuf>,
+    pub input: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -152,21 +203,52 @@ pub struct KnnArgs {
     #[clap(long, short = 'y', conflicts_with = "key_uid")]
     pub key_bytes: bool,
 
-    /// Content mode for output data.
-    #[clap(long, short = 'c', default_value = "none")]
-    pub content: ContentMode,
+    /// Manually passed data to test.
+    #[clap(long, short, conflicts_with = "input")]
+    pub data: Option<String>,
 
     /// Input file containing items to test. If not provided, reads from stdin.
-    #[clap(long, conflicts_with = "data")]
-    pub input: Option<PathBuf>,
-
-    /// Manually passed data to test.
     #[clap(long, short)]
-    pub data: Option<String>,
+    pub input: Option<PathBuf>,
 
     /// Output file for results. If not provided, writes to stdout.
     #[clap(long, short)]
     pub output: Option<PathBuf>,
+
+    #[command(flatten)]
+    output_options: OutputOptionArgs,
+}
+
+impl KnnArgs {
+    /// Create a new stub for KnnArgs.
+    ///
+    /// WARN: Be careful with this method!
+    ///
+    /// This method is only provided as a plug to enable making a KnnArgs struct without exposing the private
+    /// OutputOptionArgs struct or confusing access to output only. It will not enforce any business rules.
+    ///
+    /// TODO: Create better arg translation that will enforce business rules
+    pub fn new(opts: OutputOptions) -> Self {
+        Self {
+            k: 0,
+            r: None,
+            key_uid: false,
+            key_bytes: false,
+            data: None,
+            input: None,
+            output: None,
+            output_options: OutputOptionArgs {
+                content_mode: Some(opts.content_mode),
+                output_format: opts.output_format,
+                no_header: !opts.header,
+                no_escape: !opts.escape,
+            },
+        }
+    }
+
+    pub fn output_options(&self) -> OutputOptions {
+        self.output_options.into()
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -186,13 +268,18 @@ pub struct WindowArgs {
     #[clap(long, short)]
     pub intersects: bool,
 
-    /// Content mode for output data.
-    #[clap(long, short = 'c', default_value = "none")]
-    pub content: ContentMode,
-
     /// Output file for results. If not provided, writes to stdout.
     #[clap(long, short)]
     pub output: Option<PathBuf>,
+
+    #[command(flatten)]
+    output_options: OutputOptionArgs,
+}
+
+impl WindowArgs {
+    pub fn output_options(&self) -> OutputOptions {
+        self.output_options.into()
+    }
 }
 
 #[derive(Debug, Parser)]

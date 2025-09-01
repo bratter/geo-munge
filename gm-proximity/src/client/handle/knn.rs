@@ -13,6 +13,8 @@ use super::{
 
 /// Knn command handler.
 pub fn knn(handler: &CommandHandler, res: &Res, knn_args: KnnArgs) -> Result<()> {
+    let out_opts = knn_args.output_options();
+
     if let Some(raw_data) = knn_args.data {
         // Handle CLI data - batch processing with fail-fast error handling
         let find_data = match handle_cli_data(raw_data, knn_args.key_uid, knn_args.key_bytes) {
@@ -26,11 +28,11 @@ pub fn knn(handler: &CommandHandler, res: &Res, knn_args: KnnArgs) -> Result<()>
         let knn_req = KnnReq {
             k: knn_args.k,
             r: knn_args.r,
-            content_mode: knn_args.content,
+            content_mode: out_opts.content_mode,
             data: find_data,
         };
 
-        handler.send(Request::Knn(knn_req), &res)?;
+        handler.send_with_output(Request::Knn(knn_req), &res, out_opts)?;
     } else {
         // Handle IO data - per-line processing with individual error reporting
         handle_io_data(handler, &res, &knn_args)?;
@@ -125,12 +127,13 @@ fn send_knn_req(
     knn_args: &KnnArgs,
     data: FindData,
 ) -> Result<()> {
+    let out_opts = knn_args.output_options();
     let knn_req = KnnReq {
         k: knn_args.k,
         r: knn_args.r,
-        content_mode: knn_args.content,
+        content_mode: out_opts.content_mode,
         data,
     };
 
-    handler.send(Request::Knn(knn_req), res)
+    handler.send_with_output(Request::Knn(knn_req), res, out_opts)
 }

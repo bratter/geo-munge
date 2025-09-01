@@ -12,11 +12,12 @@ pub fn window(handler: &CommandHandler, res: &Res, window_args: WindowArgs) -> R
         JoinType::Contains
     };
 
+    let out_opts = window_args.output_options();
     let req = Request::Window(WindowReq {
         bbox: window_args.bbox,
         join,
-        content_mode: window_args.content,
+        content_mode: out_opts.content_mode,
     });
 
-    handler.send(req, &res)
+    handler.send_with_output(req, &res, out_opts)
 }

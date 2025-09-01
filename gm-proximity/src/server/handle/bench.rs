@@ -19,5 +19,5 @@ pub fn bench(handler: Context, bench: BenchReq) {
         handler.send(Response::Bench(bench_res));
     }
 
-    handler.send(Response::Done(bench.ratio as usize));
+    handler.send(Response::Done(bench.ratio));
 }

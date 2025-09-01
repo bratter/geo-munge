@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
-pub use handle::{CommandHandler, ResponseHandler};
+pub use handle::{CommandHandler, OutputFormat, OutputOptions, ResponseHandler};
 pub use tracker::Tracker;
 
 /// Convenience type wrapper for response handlers.
@@ -50,7 +50,7 @@ const MAX_FEATURE_COUNT: usize = MAX_BATCH_BYTES / 66;
 /// The maximum number of items for a single batch of ids.
 ///
 /// This should be well inside the available 64kb because the maximum size of a Custom Key is 16b -> max 4096.
-const MAX_ID_BATCH_SIZE: usize = 2048;
+const MAX_ID_BATCH_SIZE: u32 = 2048;
 
 /// Callback to be passed to filter_map to eprintln!() a parse error then pass on the non-error items. For use only in
 /// client batching controllers to publish then not batch errors.

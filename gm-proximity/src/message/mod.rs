@@ -16,6 +16,7 @@ mod encode;
 mod request;
 mod response;
 pub use batch::dispatch_counted_batches;
+use geojson::{JsonObject, JsonValue};
 
 pub mod prelude {
     pub use super::encode::IoCodec;
@@ -152,37 +153,71 @@ impl<'de, Context> BorrowDecode<'de, Context> for Feature {
     }
 }
 
-/// Newtype wrapper to enable codec on geojson properties.
-#[derive(Debug)]
-pub struct JsonValue(pub geojson::JsonValue);
+/// Stored property data as a newtype around a JsonObject for ergonomics.
+///
+/// TODO: Metadata is just JSON values, use JSON pointer syntax for extraction
+/// https://datatracker.ietf.org/doc/html/rfc6901
+#[derive(Clone, Debug)]
+pub struct Properties(JsonValue);
 
-impl From<geojson::JsonValue> for JsonValue {
-    fn from(value: geojson::JsonValue) -> Self {
-        JsonValue(value)
+impl Properties {
+    pub fn set_property(&mut self, key: impl Into<String>, value: impl Into<JsonValue>) {
+        match &mut self.0 {
+            JsonValue::Object(obj) => obj.insert(key.into(), value.into()),
+            _ => unreachable!(),
+        };
+    }
+
+    /// Json pointer implementation for our properties type.
+    ///
+    /// The underlying JsonObject does not implement pointer itself, so we implement it manually, adapted from
+    /// https://docs.rs/serde_json/1.0.143/src/serde_json/value/mod.rs.html#779.
+    pub fn pointer(&self, pointer: &str) -> Option<&JsonValue> {
+        self.0.pointer(pointer)
     }
 }
 
-impl From<JsonValue> for geojson::JsonValue {
-    fn from(value: JsonValue) -> Self {
-        value.0
+impl Default for Properties {
+    fn default() -> Self {
+        Properties(JsonValue::Object(JsonObject::default()))
     }
 }
 
-impl FromStr for JsonValue {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(s.parse::<geojson::JsonValue>().map(JsonValue)?)
+impl From<JsonObject> for Properties {
+    fn from(value: JsonObject) -> Self {
+        Properties(JsonValue::Object(value))
     }
 }
 
-impl Display for JsonValue {
+impl From<Properties> for JsonObject {
+    fn from(value: Properties) -> Self {
+        match value.0 {
+            JsonValue::Object(obj) => obj,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Display for Properties {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.0, f)
     }
 }
 
-impl Encode for JsonValue {
+impl FromStr for Properties {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let value = s.parse::<geojson::JsonValue>()?;
+        if matches!(value, JsonValue::Object(_)) {
+            Ok(Properties(value))
+        } else {
+            bail!("Properties must be a GeoJSON object")
+        }
+    }
+}
+
+impl Encode for Properties {
     fn encode<E: bincode::enc::Encoder>(
         &self,
         encoder: &mut E,
@@ -191,7 +226,7 @@ impl Encode for JsonValue {
     }
 }
 
-impl<Context> Decode<Context> for JsonValue {
+impl<Context> Decode<Context> for Properties {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
         decoder: &mut D,
     ) -> std::result::Result<Self, bincode::error::DecodeError> {
@@ -201,7 +236,7 @@ impl<Context> Decode<Context> for JsonValue {
     }
 }
 
-impl<'de, Context> BorrowDecode<'de, Context> for JsonValue {
+impl<'de, Context> BorrowDecode<'de, Context> for Properties {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> std::result::Result<Self, bincode::error::DecodeError> {
