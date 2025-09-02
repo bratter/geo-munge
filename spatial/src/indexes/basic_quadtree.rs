@@ -48,6 +48,10 @@ impl<T> BasicQuadTree<T> {
         }
     }
 
+    pub fn bbox(&self) -> Rect {
+        self.read().bbox
+    }
+
     fn read(&self) -> RwLockReadGuard<'_, Node<T>> {
         self.root.read().expect(POISON)
     }
@@ -493,7 +497,7 @@ mod test {
     use crate::{
         harness::{read_cities_as_record, read_city_pairs, TestRecord},
         math::get_earth_bbox,
-        p, MEAN_EARTH_RADIUS,
+        p, EARTH_RADIUS_METERS,
     };
 
     #[test]
@@ -569,7 +573,7 @@ mod test {
         // Tested to the nearest meter (approx)
         for ((test, test_d), (exp_name, exp_d)) in knn_result.iter().zip(city_dist) {
             assert_eq!(test.name, exp_name);
-            assert_abs_diff_eq!(*test_d * MEAN_EARTH_RADIUS, exp_d, epsilon = 1.0);
+            assert_abs_diff_eq!(*test_d * EARTH_RADIUS_METERS, exp_d, epsilon = 1.0);
         }
     }
 

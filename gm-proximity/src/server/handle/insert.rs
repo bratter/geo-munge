@@ -1,26 +1,21 @@
-use std::sync::{atomic::Ordering, Arc};
+use crate::message::prelude::*;
 
-use anyhow::{anyhow, Result};
-use arc_swap::Guard;
-use geo::{Geometry, ToRadians};
-
-use crate::message::{prelude::*, Properties};
-
-use super::{handle::KeyGenerator, Context};
+use super::Context;
 
 /// Insert records from the incoming data stream into the store.
 ///
 /// Generates an iterator for insertion based on incoming features, leaving it up to the store to batch as appropriate.
 ///
-/// This insert method will convert all incoming geometries to radians. Therefore all incoming [`Feature`]'s must be in
+/// This insert method will convert all incoming geometries to radians. Therefore all incoming [`JsonFeature`]'s must be in
 /// decimal degrees (which they should be if they are valid geojson).
-///
-/// TODO: Is this the best place for radian conversion? Should it be done with types?
-pub fn insert(handler: Context, insert: Vec<Feature>) {
+pub fn insert(handler: Context, insert: Vec<JsonFeature>) {
     let mut error_count: usize = 0;
 
-    let insert_iter = insert.into_iter().filter_map(|feature| {
-        match prepare_insert(handler.key_gen.load(), feature) {
+    let key_gen = &**handler.key_gen.load();
+    let insert_iter = insert.into_iter().filter_map(|json| {
+        let feature = ParsedFeature::try_from(json.0).and_then(|f| f.with_key_generator(key_gen));
+
+        match feature {
             Ok(value) => Some(value),
             Err(_) => {
                 error_count += 1;
@@ -34,31 +29,6 @@ pub fn insert(handler: Context, insert: Vec<Feature>) {
         success: insert_count,
         fail: error_count + insert_errors,
     })
-}
-
-fn prepare_insert(
-    key_type: Guard<Arc<KeyGenerator>>,
-    feature: Feature,
-) -> Result<(NodeId, Geometry, Option<Properties>)> {
-    let mut feature = feature.0;
-    let props = std::mem::take(&mut feature.properties).map(Properties::from);
-
-    let uid = match &**key_type {
-        KeyGenerator::AutoIncrement(id_gen) => id_gen.fetch_add(1, Ordering::Relaxed),
-        KeyGenerator::CustomU32(ptr) => props
-            .as_ref()
-            .and_then(|json| json.pointer(ptr.as_str()))
-            .and_then(|v| v.as_u64())
-            .and_then(|v| v.try_into().ok())
-            .ok_or(anyhow!("Insert failed: Could not generate CustomU32 id"))?,
-        KeyGenerator::MetaPointer(id_gen, _) => id_gen.fetch_add(1, Ordering::Relaxed),
-    };
-
-    // NOTE: We ensure conversion to radians on insert
-    let mut geom = Geometry::<f64>::try_from(feature)?;
-    geom.to_radians_in_place();
-
-    Ok((uid, geom, props))
 }
 
 #[cfg(test)]

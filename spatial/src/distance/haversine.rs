@@ -265,7 +265,7 @@ mod test {
 
     use crate::{
         harness::{read_cities, read_city_pairs},
-        MEAN_EARTH_RADIUS,
+        EARTH_RADIUS_METERS,
     };
 
     use super::{super::gradient_descent, *};
@@ -280,7 +280,7 @@ mod test {
                 // TODO: This clone should not be necessary, but seems difficult to avoid
                 // Best solution seems to be to replace with hashbrown, but probably not useful for testing
                 let target = test_results.get(&(a.clone(), b.clone())).unwrap();
-                let result = MEAN_EARTH_RADIUS * haversine(pa, pb);
+                let result = EARTH_RADIUS_METERS * haversine(pa, pb);
 
                 approx::assert_abs_diff_eq!(result, target, epsilon = 1e-2);
             }

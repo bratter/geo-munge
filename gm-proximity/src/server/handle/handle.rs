@@ -1,4 +1,3 @@
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -6,7 +5,7 @@ use crossbeam::channel::Sender;
 
 use crate::connection::{MsgToken, Traffic};
 use crate::message::prelude::*;
-use crate::server::geo_store::{GeoRecord, GeoStore};
+use crate::server::geo_store::GeoStore;
 
 use super::handlers;
 
@@ -88,41 +87,9 @@ impl<'a> Context<'a> {
     }
 }
 
-pub enum KeyGenerator {
-    AutoIncrement(AtomicU32),
-    CustomU32(String),
-    MetaPointer(AtomicU32, String),
-}
-
-impl From<KeyMode> for KeyGenerator {
-    fn from(value: KeyMode) -> Self {
-        match value {
-            KeyMode::AutoIncrement => Self::AutoIncrement(0.into()),
-            KeyMode::CustomU32(ptr) => Self::CustomU32(ptr),
-            KeyMode::MetaPointer(ptr) => Self::MetaPointer(0.into(), ptr),
-        }
-    }
-}
-
-impl From<&KeyGenerator> for KeyMode {
-    fn from(value: &KeyGenerator) -> Self {
-        match value {
-            KeyGenerator::AutoIncrement(_) => KeyMode::AutoIncrement,
-            KeyGenerator::CustomU32(ptr) => KeyMode::CustomU32(ptr.clone()),
-            KeyGenerator::MetaPointer(_, ptr) => KeyMode::MetaPointer(ptr.clone()),
-        }
-    }
-}
-
-impl Default for KeyGenerator {
-    fn default() -> Self {
-        Self::AutoIncrement(0.into())
-    }
-}
-
 #[inline]
-pub fn record_to_basic_result(content_mode: ContentMode, record: &GeoRecord) -> BasicResult {
-    let content = content_mode.with_record(record);
+pub fn feature_to_basic_result(content_mode: ContentMode, record: &Feature) -> BasicResult {
+    let content = content_mode.with_feature(record);
 
     BasicResult {
         id: record.id,

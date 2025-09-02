@@ -9,53 +9,60 @@ use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use geo::{Geometry, Rect};
-use spatial::{BasicQuadTree, ProximitySearch, RegionQuery, SpatialIndex};
+use spatial::{earth_bbox, BasicQuadTree, ProximitySearch, RegionQuery, SpatialIndex};
 
-// TODO: Move Bbox?
-use crate::message::{prelude::Bbox, CustomKey, NodeId, Properties};
+use crate::message::{prelude::*, CustomKey, NodeId, Properties};
 
-/// Base record containing the actual data.
-pub struct GeoRecordInner {
-    pub id: NodeId,
-    pub geometry: Geometry<f64>,
-    pub metadata: Option<Properties>,
+/// Storage wrapper around Feature with server-specific metadata.
+pub struct RecordInner {
+    pub data: Feature,
     is_deleted: AtomicBool,
 }
 
-/// Shared record type used throughout the system.
-pub type GeoRecord = Arc<GeoRecordInner>;
+/// Shared record type used throughout the server.
+pub type Record = Arc<RecordInner>;
 
-impl From<&GeoRecordInner> for geojson::Geometry {
-    fn from(value: &GeoRecordInner) -> Self {
-        geojson::Geometry::from(&value.geometry)
+impl From<&RecordInner> for Feature {
+    fn from(record: &RecordInner) -> Self {
+        record.data.clone()
     }
 }
 
-impl From<&GeoRecordInner> for geojson::Feature {
-    fn from(value: &GeoRecordInner) -> Self {
-        let mut feature: geojson::Feature = geojson::Geometry::from(&value.geometry).into();
-        feature.id = Some(geojson::feature::Id::Number(value.id.into()));
-        feature.properties = value.metadata.clone().map(Properties::into);
-
-        feature
+impl From<Feature> for RecordInner {
+    fn from(data: Feature) -> Self {
+        Self {
+            data,
+            is_deleted: AtomicBool::new(false),
+        }
     }
 }
 
-impl From<&GeoRecordInner> for Properties {
-    fn from(value: &GeoRecordInner) -> Self {
-        value.metadata.clone().unwrap_or_default()
+impl AsRef<Geometry<f64>> for RecordInner {
+    fn as_ref(&self) -> &Geometry<f64> {
+        &self.data.geometry
     }
 }
 
-impl AsRef<Geometry> for GeoRecordInner {
-    fn as_ref(&self) -> &Geometry {
-        &self.geometry
-    }
-}
-
-impl PartialEq<NodeId> for GeoRecordInner {
+impl PartialEq<NodeId> for RecordInner {
     fn eq(&self, other: &NodeId) -> bool {
-        &self.id == other
+        &self.data.id == other
+    }
+}
+
+impl RecordInner {
+    pub fn new(data: Feature) -> Self {
+        Self {
+            data,
+            is_deleted: AtomicBool::new(false),
+        }
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.is_deleted.load(Ordering::Relaxed)
+    }
+
+    pub fn mark_deleted(&self) {
+        self.is_deleted.store(true, Ordering::Relaxed);
     }
 }
 
@@ -67,15 +74,15 @@ impl PartialEq<NodeId> for GeoRecordInner {
 /// TODO: Hash function? Consider AHash
 /// TODO: Other options for custom key, or make it generic to save space when not used
 pub struct GeoStore {
-    id_index: DashMap<NodeId, GeoRecord, FxBuildHasher>,
-    custom_key: DashMap<CustomKey, GeoRecord, FxBuildHasher>,
-    spatial_index: BasicQuadTree<GeoRecord>,
+    id_index: DashMap<NodeId, Record, FxBuildHasher>,
+    custom_key: DashMap<CustomKey, Record, FxBuildHasher>,
+    spatial_index: BasicQuadTree<Record>,
     custom_key_pointer: Option<String>,
 }
 
 // TODO: Should the bbox struct be pulled into this module instead?
 impl GeoStore {
-    pub fn new(bbox: geo::Rect) -> Self {
+    pub fn new(bbox: Rect) -> Self {
         GeoStore {
             id_index: DashMap::with_hasher(FxBuildHasher::new()),
             custom_key: DashMap::with_hasher(FxBuildHasher::new()),
@@ -95,11 +102,15 @@ impl GeoStore {
         store
     }
 
-    pub fn size(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.id_index.len()
     }
 
-    /// Insert a new record with metadata.
+    pub fn bbox(&self) -> Rect {
+        self.spatial_index.bbox()
+    }
+
+    /// Insert a new feature.
     ///
     /// If using an additional custom key, metadata must be provided or the insert will fail.
     ///
@@ -110,24 +121,14 @@ impl GeoStore {
     /// correct - impose that condition on the caller, and should also be the first check that happens, so if the caller
     /// ensures this we don't need anything, if we want to be defensive, just need to manage time-of-check, time-of-use
     /// on the id_index insert. Will also need to be able to rollback if a later insert fails.
-    pub fn insert(
-        &self,
-        id: NodeId,
-        geometry: Geometry<f64>,
-        metadata: Option<Properties>,
-    ) -> Result<()> {
-        let record = Arc::new(GeoRecordInner {
-            id,
-            geometry,
-            metadata,
-            is_deleted: AtomicBool::new(false),
-        });
+    pub fn insert(&self, feature: Feature) -> Result<()> {
+        let record = Arc::new(RecordInner::new(feature));
 
         // Do this after the record to avoid a double conditional
         // Best to do before the other inserts as this can easily fail
         // No need to rollback here on failure as this is the first insert
         if self.has_custom_key() {
-            match &record.metadata {
+            match &record.data.properties {
                 Some(value) => {
                     let custom_key = self.extract_custom_key(value)?;
                     match self.custom_key.entry(custom_key) {
@@ -142,14 +143,14 @@ impl GeoStore {
         }
 
         if let Err(err) = self.spatial_index.insert(Arc::clone(&record)) {
-            self.delete(&id);
+            self.delete(&record.data.id);
             bail!(err);
         }
 
-        match self.id_index.entry(id) {
+        match self.id_index.entry(record.data.id) {
             dashmap::Entry::Occupied(_) => {
-                self.delete(&id);
-                bail!("Duplicate key {}", id);
+                self.delete(&record.data.id);
+                bail!("Duplicate key {}", record.data.id);
             }
             dashmap::Entry::Vacant(vacant) => vacant.insert(record),
         };
@@ -162,13 +163,13 @@ impl GeoStore {
     /// TODO: Consider adding failure reasons and/or ids instead of just a count
     pub fn bulk_insert<I>(&self, records: I) -> (usize, usize)
     where
-        I: IntoIterator<Item = (NodeId, Geometry<f64>, Option<Properties>)>,
+        I: IntoIterator<Item = Feature>,
     {
         let mut insert_count: usize = 0;
         let mut error_count: usize = 0;
 
-        for (id, geometry, metadata) in records {
-            match self.insert(id, geometry, metadata) {
+        for feature in records {
+            match self.insert(feature) {
                 Ok(_) => insert_count += 1,
                 Err(_) => error_count += 1,
             }
@@ -189,8 +190,8 @@ impl GeoStore {
             // might want the key on the Item, but also this will happen rarely; note that the unwrap should be fine as
             // it needed to get in there, but could also use an if let or an and_then
             if self.has_custom_key() {
-                if let Ok(custom_key) = self.extract_custom_key(&record.metadata.as_ref().unwrap())
-                {
+                let props = record.data.properties.as_ref().unwrap();
+                if let Ok(custom_key) = self.extract_custom_key(props) {
                     self.custom_key.remove(&custom_key);
                 }
             }
@@ -206,8 +207,8 @@ impl GeoStore {
     pub fn delete_with_custom_key(&self, custom_key: &CustomKey) -> bool {
         if let Some((_, record)) = self.custom_key.remove(&custom_key) {
             let is_deleted = record.is_deleted.fetch_or(true, Ordering::Release);
-            self.id_index.remove(&record.id);
-            self.spatial_index.remove(&record.id);
+            self.id_index.remove(&record.data.id);
+            self.spatial_index.remove(&record.data.id);
 
             !is_deleted
         } else {
@@ -219,7 +220,7 @@ impl GeoStore {
     ///
     /// This does not check the deletion status, which introduces a small race condition, but is still eventually
     /// consistent.
-    pub fn get(&self, id: &NodeId) -> Option<GeoRecord> {
+    pub fn get(&self, id: &NodeId) -> Option<Record> {
         self.id_index.get(&id).map(|r| Arc::clone(&r))
     }
 
@@ -227,7 +228,7 @@ impl GeoStore {
     ///
     /// Will return [`None`] if the key doesn't exist or there is no custom key on the store. Similar to get, this
     /// does not check deletion status.
-    pub fn get_with_custom_key(&self, custom_key: &CustomKey) -> Option<GeoRecord> {
+    pub fn get_with_custom_key(&self, custom_key: &CustomKey) -> Option<Record> {
         if self.has_custom_key() {
             self.custom_key.get(custom_key).map(|r| Arc::clone(&r))
         } else {
@@ -258,26 +259,26 @@ impl GeoStore {
 
 impl Default for GeoStore {
     fn default() -> Self {
-        Self::new(Bbox::default().into())
+        Self::new(earth_bbox())
     }
 }
 
-impl ProximitySearch<GeoRecord> for GeoStore {
-    fn within_radius(&self, cmp: &Geometry, r: f64) -> impl Iterator<Item = (GeoRecord, f64)> {
+impl ProximitySearch<Record> for GeoStore {
+    fn within_radius(&self, cmp: &Geometry<f64>, r: f64) -> impl Iterator<Item = (Record, f64)> {
         self.spatial_index
             .within_radius(cmp, r)
             .filter(|r| !r.0.is_deleted.load(Ordering::Acquire))
     }
 }
 
-impl RegionQuery<GeoRecord> for GeoStore {
-    fn contained_by(&self, bbox: &Rect) -> impl Iterator<Item = GeoRecord> {
+impl RegionQuery<Record> for GeoStore {
+    fn contained_by(&self, bbox: &Rect) -> impl Iterator<Item = Record> {
         self.spatial_index
             .contained_by(bbox)
             .filter(|r| !r.is_deleted.load(Ordering::Acquire))
     }
 
-    fn intersecting(&self, bbox: &Rect) -> impl Iterator<Item = GeoRecord> {
+    fn intersecting(&self, bbox: &Rect) -> impl Iterator<Item = Record> {
         self.spatial_index
             .intersecting(bbox)
             .filter(|r| !r.is_deleted.load(Ordering::Acquire))

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use geo::{Geometry, ToRadians};
-use spatial::ProximitySearch;
+use geo::Geometry;
+use spatial::{ProximitySearch, EARTH_RADIUS_METERS};
 
 use crate::{
     message::prelude::*,
-    server::geo_store::{GeoRecord, GeoStore},
+    server::geo_store::{GeoStore, Record},
 };
 
 use super::{Context, MAX_GEOM_BATCH_SIZE, MAX_ID_BATCH_SIZE};
@@ -19,23 +19,16 @@ use super::{Context, MAX_GEOM_BATCH_SIZE, MAX_ID_BATCH_SIZE};
 /// specific method if we have a filter, note that filtering will also be required on all other collections, so should
 /// be built in a common location and used everywhere
 pub fn knn(context: Context, req: KnnReq) {
+    // Convert from meters input to radians
+    let r = req.r.map(|r| r / EARTH_RADIUS_METERS);
+
     match req.data {
-        FindData::Features(feats) => process_geoms(
-            &context,
-            req.content_mode,
-            req.k,
-            req.r,
-            req.start_index,
-            feats,
-        ),
-        FindData::Keys(keys) => process_keys(
-            &context,
-            req.content_mode,
-            req.k,
-            req.r,
-            req.start_index,
-            &keys,
-        ),
+        FindData::Features(feats) => {
+            process_geoms(&context, req.content_mode, req.k, r, req.start_index, feats)
+        }
+        FindData::Keys(keys) => {
+            process_keys(&context, req.content_mode, req.k, r, req.start_index, &keys)
+        }
     }
 }
 
@@ -45,7 +38,7 @@ fn process_geoms(
     k: usize,
     r: Option<f64>,
     start_index: usize,
-    geoms: Vec<Feature>,
+    geoms: Vec<JsonFeature>,
 ) {
     let store = context.store.load();
     let batch_size = match content_mode {
@@ -55,12 +48,10 @@ fn process_geoms(
     let mut items = Vec::with_capacity(batch_size);
     let mut response_count = 0;
 
-    for (i, feature) in geoms.into_iter().enumerate() {
-        match Geometry::try_from(feature.0) {
-            Ok(mut geom) => {
-                // NOTE: Convert incoming feature geometries to radians
-                geom.to_radians_in_place();
-
+    for (i, json) in geoms.into_iter().enumerate() {
+        // NOTE: ParsedFeature does radians conversion
+        match ParsedFeature::try_from(json.0).map(|f| f.geometry) {
+            Ok(geom) => {
                 for neighbor in
                     exec_neighbor_search(&store, content_mode, start_index + i, None, r, &geom)
                         .map(Ok)
@@ -112,12 +103,12 @@ fn process_keys(
     // NOTE: We have to manually batch here rather than using the helping in message/batch.rs as the nested iterator
     // structure cannot be flattened due to lifetime issues, preventing us from passing a flat iterator to the batch
     // Instead we set up a helper closure here to manage the additional complexity
-    let mut process_record = |gr: &GeoRecord, i: usize, input_uid: NodeId| {
-        for neighbor in
-            exec_neighbor_search(&store, content_mode, i, Some(input_uid), r, &gr.geometry)
-                .filter(|item| item.id != input_uid)
-                .map(Ok)
-                .take(k)
+    let mut process_record = |record: &Record, i: usize, input_uid: NodeId| {
+        let geom = &record.data.geometry;
+        for neighbor in exec_neighbor_search(&store, content_mode, i, Some(input_uid), r, geom)
+            .filter(|item| item.id != input_uid)
+            .map(Ok)
+            .take(k)
         {
             if items.len() >= batch_size {
                 let batch = std::mem::replace(&mut items, Vec::with_capacity(batch_size));
@@ -138,8 +129,8 @@ fn process_keys(
         }
         KeySet::Custom(keys) => {
             for (i, key) in keys.iter().enumerate() {
-                if let Some(gr) = store.get_with_custom_key(key) {
-                    process_record(&gr, start_index + i, gr.id);
+                if let Some(record) = store.get_with_custom_key(key) {
+                    process_record(&record, start_index + i, record.data.id);
                 }
             }
         }
@@ -165,13 +156,13 @@ fn exec_neighbor_search<'a>(
     store
         .within_radius(geom, r.unwrap_or(std::f64::MAX))
         .map(move |(record, distance)| {
-            let content = content_mode.with_record(&record);
+            let content = content_mode.with_feature(&record.data);
 
             ProximityResult {
                 input_index,
                 input_uid,
-                id: record.id,
-                distance,
+                id: record.data.id,
+                distance_meters: distance * EARTH_RADIUS_METERS,
                 content,
             }
         })

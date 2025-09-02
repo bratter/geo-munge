@@ -16,9 +16,11 @@ pub fn reset(handler: &CommandHandler, res: &Res, reset: ResetArgs) -> Result<()
     {
         // key int and key bytes are mutually exclusive, so can test in turn
         let key_mode = if let Some(ptr) = reset.key_int {
-            KeyMode::CustomU32(ptr)
+            KeyMode::U32Pointer(ptr)
         } else if let Some(ptr) = reset.key_bytes {
             KeyMode::MetaPointer(ptr)
+        } else if reset.key_json_id {
+            KeyMode::GeoJsonId
         } else {
             KeyMode::AutoIncrement
         };

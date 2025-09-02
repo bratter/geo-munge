@@ -120,7 +120,7 @@ pub fn geometry_intersects_rect<T: GeoNum>(geom: &Geometry<T>, bbox: &Rect<T>) -
     geom.intersects(bbox)
 }
 
-pub fn get_earth_bbox<T: GeoNum>() -> Rect<T> {
+pub fn earth_bbox<T: GeoNum>() -> Rect<T> {
     let pi = T::from(-PI).expect("Valid Pi conversion");
     let pi_2 = T::from(-FRAC_PI_2).expect("Valid Pi conversion");
 

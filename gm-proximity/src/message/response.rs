@@ -6,7 +6,11 @@ use anyhow::Result;
 use bincode::{Decode, Encode};
 use geojson::JsonValue;
 
-use super::{encode::IoCodec, request::KeyMode, Feature, NodeId, Properties};
+use super::{
+    encode::IoCodec,
+    request::{DegreeBbox, KeyMode},
+    JsonFeature, NodeId, Properties,
+};
 
 #[derive(Encode, Decode)]
 #[non_exhaustive]
@@ -98,7 +102,8 @@ impl Debug for Response {
 #[derive(Debug, Encode, Decode)]
 pub struct Stats {
     pub key_mode: KeyMode,
-    pub qt_size: usize,
+    pub bbox: DegreeBbox,
+    pub len: usize,
     pub bytes_sent: usize,
     pub bytes_recv: usize,
 }
@@ -108,10 +113,10 @@ pub struct Stats {
 #[derive(Debug, Encode, Decode)]
 pub enum ContentType {
     /// Full GeoJSON feature with properties and geometry.
-    FullFeature(Feature),
+    FullFeature(JsonFeature),
 
     /// GeoJSON geometry only, without properties.
-    GeometryOnly(Feature),
+    GeometryOnly(JsonFeature),
 
     /// Properties only as JSON value.
     PropertiesOnly(Properties),
@@ -161,8 +166,8 @@ pub struct ProximityResult {
     /// The unique identifier of the retrieved node.
     pub id: NodeId,
 
-    /// The distance from the query geometry.
-    pub distance: f64,
+    /// The distance from the query geometry in meters.
+    pub distance_meters: f64,
 
     /// The content to return with this result.
     pub content: ContentType,

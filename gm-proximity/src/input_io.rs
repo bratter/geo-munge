@@ -48,7 +48,7 @@ impl Input {
     /// Due to the highly variable size of a feature, we also return the length of the geojson string being processed to
     /// help as a proxy for batching. The geojson string will be longer than the binary encoding so will be a decent
     /// proxy for how large a request should be.
-    pub fn into_feature_iter(self) -> impl Iterator<Item = Result<(usize, Feature)>> {
+    pub fn into_feature_iter(self) -> impl Iterator<Item = Result<(usize, JsonFeature)>> {
         FeatureIterator::new(self)
     }
 
@@ -126,7 +126,7 @@ impl FeatureIterator {
 }
 
 impl Iterator for FeatureIterator {
-    type Item = Result<(usize, Feature)>;
+    type Item = Result<(usize, JsonFeature)>;
 
     // Reports all errors, including blank lines
     fn next(&mut self) -> Option<Self::Item> {
@@ -134,7 +134,7 @@ impl Iterator for FeatureIterator {
             match line_result {
                 // TODO: Are these really errors? Perhaps just in case, but should then have own error type
                 Ok(s) if s.len() == 0 => Some(Err(anyhow!("Warning: Empty line {}", line_number))),
-                Ok(s) => match s.parse::<Feature>() {
+                Ok(s) => match s.parse::<JsonFeature>() {
                     Ok(f) => Some(Ok((s.len(), f))),
                     Err(err) => Some(Err(anyhow!(
                         "Warning: Could not parse line {}: {}",
@@ -161,7 +161,7 @@ mod tests {
 
     static MANIFEST: &str = env!("CARGO_MANIFEST_DIR");
 
-    fn get_name<'a>((_, f): &'a (usize, Feature)) -> &'a str {
+    fn get_name<'a>((_, f): &'a (usize, JsonFeature)) -> &'a str {
         f.0.properties.as_ref().unwrap()["name"].as_str().unwrap()
     }
 

@@ -1,14 +1,18 @@
 //! Requests.
 
-use std::{fmt::Debug, num::ParseIntError, str::FromStr};
+use std::{
+    fmt::{Debug, Display},
+    num::ParseIntError,
+    str::FromStr,
+};
 
 use anyhow::{anyhow, bail, Error, Ok, Result};
 use bincode::{Decode, Encode};
-use geo::{Point, Rect};
+use geo::{Point, Rect, ToDegrees, ToRadians};
 
-use crate::server::geo_store::GeoRecord;
-
-use super::{encode::IoCodec, response::ContentType, CustomKey, Feature, NodeId, Properties};
+use super::{
+    encode::IoCodec, feature::Feature, response::ContentType, CustomKey, JsonFeature, NodeId,
+};
 
 #[derive(Encode, Decode)]
 #[non_exhaustive]
@@ -40,7 +44,7 @@ pub enum Request {
     /// If possible, clients SHOULD batch insertion requests to improve efficiency. Batches should be sized small enough to
     /// avoid over-using memory, but can be larger than 1 to make inserts more efficient. The server MAY choose to
     /// arbitrarily chunk large batches, but will not batch across requests.
-    Insert(Vec<Feature>),
+    Insert(Vec<JsonFeature>),
 
     /// Get items using either the uid or a custom key.
     Get(GetReq),
@@ -114,11 +118,11 @@ impl Debug for Request {
 #[derive(Debug, Default, Encode, Decode)]
 pub struct ResetReq {
     pub key_mode: KeyMode,
-    pub bbox: Option<Bbox>,
+    pub bbox: Option<DegreeBbox>,
 }
 
 impl ResetReq {
-    pub fn new(key_mode: KeyMode, bbox: Option<Bbox>) -> Self {
+    pub fn new(key_mode: KeyMode, bbox: Option<DegreeBbox>) -> Self {
         Self { key_mode, bbox }
     }
 }
@@ -130,24 +134,25 @@ impl ResetReq {
 pub enum KeyMode {
     #[default]
     AutoIncrement,
-    CustomU32(String),
+    U32Pointer(String),
     MetaPointer(String),
+    GeoJsonId,
 }
 
-/// Bounding box request data.
+/// Bounding box for client use in degrees.
 ///
-/// Can be used in a [`Request::Bbox`], but more likely to be used in [`Request::Reset`].
+/// This struct is designed to be parsed as lng_min, lat_min, lnhg_max, lat_max in decimal degrees.
 ///
-/// FIX: Needs to be radians aware, need to harmonize with the get_earth_bbox function in math, probably needs to move
+/// Producing a [`Rect`] from this bounding box will automatically convert to Radians.
 #[derive(Debug, Clone, Encode, Decode)]
-pub struct Bbox {
+pub struct DegreeBbox {
     x1: f64,
     y1: f64,
     x2: f64,
     y2: f64,
 }
 
-impl Default for Bbox {
+impl Default for DegreeBbox {
     fn default() -> Self {
         Self {
             x1: -180.0,
@@ -158,12 +163,13 @@ impl Default for Bbox {
     }
 }
 
-impl From<Rect> for Bbox {
-    fn from(value: Rect) -> Self {
+impl From<Rect> for DegreeBbox {
+    fn from(mut value: Rect) -> Self {
+        value.to_degrees_in_place();
         let min = value.min();
         let max = value.max();
 
-        Bbox {
+        DegreeBbox {
             x1: min.x,
             y1: min.y,
             x2: max.x,
@@ -172,17 +178,20 @@ impl From<Rect> for Bbox {
     }
 }
 
-impl From<Bbox> for Rect {
-    fn from(value: Bbox) -> Self {
-        Rect::new(
+impl From<DegreeBbox> for Rect {
+    fn from(value: DegreeBbox) -> Self {
+        let mut rect = Rect::new(
             Point::new(value.x1, value.y1),
             Point::new(value.x2, value.y2),
-        )
+        );
+        rect.to_radians_in_place();
+
+        rect
     }
 }
 
 // TODO: Better error messages for floats on let entries, and better bounds checking
-impl FromStr for Bbox {
+impl FromStr for DegreeBbox {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -206,7 +215,13 @@ impl FromStr for Bbox {
             bail!("A bounding box must be four floats x1,y1,x2,y2 with 1 being the top left and 2 being the bottom right");
         }
 
-        Ok(Bbox { x1, y1, x2, y2 })
+        Ok(DegreeBbox { x1, y1, x2, y2 })
+    }
+}
+
+impl Display for DegreeBbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{},{},{},{}]", self.x1, self.y1, self.x2, self.y2)
     }
 }
 
@@ -223,7 +238,7 @@ pub struct KnnReq {
 
 #[derive(Debug, Encode, Decode)]
 pub struct WindowReq {
-    pub bbox: Bbox,
+    pub bbox: DegreeBbox,
     pub join: JoinType,
     pub content_mode: ContentMode,
 }
@@ -237,7 +252,7 @@ pub enum JoinType {
 #[derive(Encode, Decode)]
 pub enum FindData {
     /// Run the find for the stream of passed features.
-    Features(Vec<Feature>),
+    Features(Vec<JsonFeature>),
 
     /// Run the find for a set of primary keys already in the quadtree.
     Keys(KeySet),
@@ -383,16 +398,16 @@ pub enum ContentMode {
 }
 
 impl ContentMode {
-    /// Convert a [`GeoRecord`] to the correct [`ContentType`] for responses based on this mode.
-    pub fn with_record(&self, record: &GeoRecord) -> ContentType {
+    /// Convert a [`Feature`] to the correct [`ContentType`] for responses based on this mode.
+    pub fn with_feature(&self, feature: &Feature) -> ContentType {
         match self {
             Self::None => ContentType::None,
-            Self::Full => ContentType::FullFeature(geojson::Feature::from(record.as_ref()).into()),
+            Self::Full => ContentType::FullFeature(geojson::Feature::from(feature).into()),
             Self::Geometry => {
-                let geom: geojson::Feature = geojson::Geometry::from(record.as_ref()).into();
+                let geom: geojson::Feature = geojson::Geometry::from(feature.as_ref()).into();
                 ContentType::GeometryOnly(geom.into())
             }
-            Self::Properties => ContentType::PropertiesOnly(Properties::from(record.as_ref())),
+            Self::Properties => ContentType::PropertiesOnly(feature.into()),
         }
     }
 

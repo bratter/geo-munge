@@ -1,6 +1,6 @@
 use crate::message::{dispatch_counted_batches, prelude::*};
 
-use super::{record_to_basic_result, Context, MAX_GEOM_BATCH_SIZE, MAX_ID_BATCH_SIZE};
+use super::{feature_to_basic_result, Context, MAX_GEOM_BATCH_SIZE, MAX_ID_BATCH_SIZE};
 
 pub fn get(context: Context, req: GetReq) {
     let store = context.store.load();
@@ -16,7 +16,7 @@ pub fn get(context: Context, req: GetReq) {
                 store
                     .get(&key)
                     .ok_or_else(|| format!("Record with key {} not found", key))
-                    .map(|record| record_to_basic_result(req.content_mode, &record))
+                    .map(|record| feature_to_basic_result(req.content_mode, &record.data))
             });
             response_count += dispatch_counted_batches(iter, batch_size, |batch| {
                 context.send(Response::BasicResults(batch));
@@ -29,7 +29,7 @@ pub fn get(context: Context, req: GetReq) {
                 store
                     .get_with_custom_key(&key)
                     .ok_or_else(|| format!("Record with key {:x} not found", key))
-                    .map(|record| record_to_basic_result(req.content_mode, &record))
+                    .map(|record| feature_to_basic_result(req.content_mode, &record.data))
             });
             response_count += dispatch_counted_batches(iter, batch_size, |batch| {
                 context.send(Response::BasicResults(batch));

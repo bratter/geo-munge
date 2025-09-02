@@ -309,15 +309,17 @@ fn write_response<W: Write>(
         Response::Done(n) => {
             writeln_with_preamble!(stderr, meta, "done with {} responses", n)
         }
-        Response::Stats(n) => writeln_with_preamble!(
-            stderr,
-            meta,
-            "QT size={}; key: {:?}; bytes sent={}; bytes recv={}",
-            n.qt_size,
-            n.key_mode,
-            n.bytes_sent,
-            n.bytes_recv
-        ),
+        Response::Stats(n) => {
+            writeln_with_preamble!(
+                stderr,
+                meta,
+                "GeoStore stats:\nUsing key: {:?} (bytes sent={}; bytes recv={})",
+                n.key_mode,
+                n.bytes_sent,
+                n.bytes_recv
+            )?;
+            writeln!(stderr, "Count={}; Bbox={}", n.len, n.bbox)
+        }
         Response::ResultCounts { success, fail } => {
             writeln_with_preamble!(stderr, meta, "succeed {}, failed {}", success, fail)
         }
@@ -371,7 +373,10 @@ fn write_response<W: Write>(
                     (Ok(proximity_result), OutputFormat::Csv) => {
                         // print header row as above
                         if meta.res_id == 0 && meta.output_options.header {
-                            write!(data_writer, "input_index,input_uid,result_uid,distance")?;
+                            write!(
+                                data_writer,
+                                "input_index,input_uid,result_uid,distance_meters"
+                            )?;
                             match &proximity_result.content {
                                 ContentType::FullFeature(_) | ContentType::GeometryOnly(_) => {
                                     writeln!(data_writer, ",feature")?;
@@ -396,7 +401,7 @@ fn write_response<W: Write>(
                         write!(
                             data_writer,
                             "{},{}",
-                            proximity_result.id, proximity_result.distance,
+                            proximity_result.id, proximity_result.distance_meters,
                         )?;
                         if let Some(json) = content_json {
                             writeln!(data_writer, ",{}", json)?;
@@ -409,7 +414,7 @@ fn write_response<W: Write>(
                             content.set_property("_inputUid", input_uid);
                         }
                         content.set_property("_resultUid", proximity_result.id);
-                        content.set_property("_distance", proximity_result.distance);
+                        content.set_property("_distanceMeters", proximity_result.distance_meters);
 
                         writeln!(
                             data_writer,

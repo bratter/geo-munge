@@ -3,7 +3,7 @@ use spatial::RegionQuery;
 
 use crate::message::prelude::*;
 
-use super::{record_to_basic_result, Context, MAX_GEOM_BATCH_SIZE, MAX_ID_BATCH_SIZE};
+use super::{feature_to_basic_result, Context, MAX_GEOM_BATCH_SIZE, MAX_ID_BATCH_SIZE};
 
 /// Run a "window" bounding box query using the provided bounding box.
 ///
@@ -24,7 +24,7 @@ pub fn window(context: Context, req: WindowReq) {
         JoinType::Intersects => {
             let iter = store
                 .intersecting(&rect)
-                .map(|record| Ok(record_to_basic_result(req.content_mode, &record)));
+                .map(|record| Ok(feature_to_basic_result(req.content_mode, &record.data)));
 
             for item in iter {
                 if items.len() >= batch_size {
@@ -38,7 +38,7 @@ pub fn window(context: Context, req: WindowReq) {
         JoinType::Contains => {
             let iter = store
                 .contained_by(&rect)
-                .map(|record| Ok(record_to_basic_result(req.content_mode, &record)));
+                .map(|record| Ok(feature_to_basic_result(req.content_mode, &record.data)));
 
             for item in iter {
                 if items.len() >= batch_size {

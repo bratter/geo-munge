@@ -385,12 +385,12 @@ fn change_settings(settings: &mut Settings) -> Result<()> {
 fn build_reset() -> Option<ResetArgs> {
     let key_type = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("What key type (esc/q to cancel)?")
-        .items(&["Auto", "Custom Increment", "Custom Value"])
+        .items(&["Auto", "Custom Increment", "Custom Value", "GeoJSON Id"])
         .default(0)
         .interact_opt()
         .unwrap()?;
 
-    let json_ptr: Option<String> = if key_type > 0 {
+    let json_ptr: Option<String> = if key_type == 1 || key_type == 2 {
         let ptr = Input::with_theme(&ColorfulTheme::default())
             .with_prompt("JSON pointer for custom key")
             .interact_text()
@@ -400,10 +400,11 @@ fn build_reset() -> Option<ResetArgs> {
         None
     };
 
-    let (key_int, key_bytes) = match key_type {
-        0 => (None, None),
-        1 => (json_ptr, None),
-        2 => (None, json_ptr),
+    let (key_int, key_bytes, key_json_id) = match key_type {
+        0 => (None, None, false),
+        1 => (json_ptr, None, false),
+        2 => (None, json_ptr, false),
+        3 => (None, None, true),
         _ => unreachable!(),
     };
 
@@ -434,6 +435,7 @@ fn build_reset() -> Option<ResetArgs> {
             bbox,
             key_int,
             key_bytes,
+            key_json_id,
             force: true,
         })
     } else {
@@ -592,7 +594,7 @@ fn build_window(settings: &Settings) -> Option<WindowReq> {
         if bbox_raw.len() == 0 {
             return None;
         } else {
-            match bbox_raw.parse::<Bbox>() {
+            match bbox_raw.parse::<DegreeBbox>() {
                 Ok(bbox) => break bbox,
                 Err(err) => eprintln!("{}", err),
             }

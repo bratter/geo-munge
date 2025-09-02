@@ -21,7 +21,7 @@ pub mod handlers {
     pub use super::window::window;
 }
 
-pub use handle::{record_to_basic_result, Context, Handler};
+pub use handle::{feature_to_basic_result, Context, Handler};
 
 /// The maximum number of items for a single batch of results.
 ///

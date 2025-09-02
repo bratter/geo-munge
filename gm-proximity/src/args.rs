@@ -106,14 +106,19 @@ impl From<OutputOptionArgs> for OutputOptions {
 #[derive(Debug, Parser)]
 pub struct ResetArgs {
     #[clap(long, short)]
-    pub bbox: Option<Bbox>,
+    pub bbox: Option<DegreeBbox>,
 
     /// Use a u32 key from metadata instead of an auto-increment.
     ///
     /// The key must exist and be within the range of a u32 for all items or operations will fail.
     ///
     /// The argument takes a string that contains the JSON Pointer definition to a numeric field.
-    #[clap(long, short = 'k', conflicts_with = "key_bytes")]
+    #[clap(
+        long,
+        short = 'k',
+        conflicts_with = "key_bytes",
+        conflicts_with = "key_json_id"
+    )]
     pub key_int: Option<String>,
 
     /// Use an arbitrary field from metadata instead of an auto-increment.
@@ -121,8 +126,14 @@ pub struct ResetArgs {
     /// The field must be less than or equal to 16 bytes long or operations will fail. This is intended for use with
     /// alphanumeric identifiers. The argument takes a string that contains the JSON Pointer definition to a string
     /// field.
-    #[clap(long, short = 'y')]
+    #[clap(long, short = 'y', conflicts_with = "key_json_id")]
     pub key_bytes: Option<String>,
+
+    /// Use the id field from the GeoJSON feature as the numeric id instead of an auto-increment.
+    ///
+    /// The ids must be integers or parsable as unqiue u32s, or operations will fail.
+    #[clap(long, short = 'j')]
+    pub key_json_id: bool,
 
     #[clap(long, short)]
     pub force: bool,
@@ -188,7 +199,7 @@ pub struct KnnArgs {
     #[clap(short)]
     pub k: usize,
 
-    /// Maximum seach radius to truncate the search.
+    /// Maximum seach radius to truncate the search in meters.
     #[clap(short)]
     pub r: Option<f64>,
 
@@ -261,7 +272,7 @@ pub struct ReplArgs {
 #[derive(Debug, Parser)]
 pub struct WindowArgs {
     /// The bounding box to query.
-    pub bbox: Bbox,
+    pub bbox: DegreeBbox,
 
     /// The default mode is contains, where it will return only items completely contained by the bbox, but passing
     /// this flag sets intersects mode, where anything that intersects the bbox is returned.

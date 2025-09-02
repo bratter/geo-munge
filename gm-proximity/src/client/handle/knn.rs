@@ -49,7 +49,7 @@ fn handle_cli_data(data: String, key_uid: bool, key_bytes: bool) -> Result<FindD
         let keys = KeySet::parse_with_type(&data, key_bytes);
         Ok(FindData::Keys(keys?))
     } else {
-        let features: Result<Vec<_>, _> = data.lines().map(|l| l.parse::<Feature>()).collect();
+        let features: Result<Vec<_>, _> = data.lines().map(|l| l.parse::<JsonFeature>()).collect();
         Ok(FindData::Features(features?))
     }
 }
