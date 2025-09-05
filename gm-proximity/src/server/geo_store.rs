@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use geo::{Geometry, Rect};
-use spatial::{earth_bbox, BasicQuadTree, ProximitySearch, RegionQuery, SpatialIndex};
+use spatial::{earth_bbox, BasicQuadTree, Identified, ProximitySearch, RegionQuery, SpatialIndex};
 
 use crate::message::{prelude::*, CustomKey, NodeId, Properties};
 
@@ -34,6 +34,12 @@ impl From<Feature> for RecordInner {
             data,
             is_deleted: AtomicBool::new(false),
         }
+    }
+}
+
+impl Identified for RecordInner {
+    fn uid(&self) -> u32 {
+        self.data.id
     }
 }
 

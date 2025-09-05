@@ -5,6 +5,7 @@ edition.workspace = true
 
 [features]
 prop-tests = []
+debug-print = []
 
 [dependencies]
 anyhow = { workspace = true }

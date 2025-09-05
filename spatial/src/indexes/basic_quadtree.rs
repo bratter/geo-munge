@@ -6,11 +6,12 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Result};
-use geo::{Geometry, Rect};
+use geo::{Geometry, Rect, ToDegrees};
 
-use super::{ProximitySearch, RegionQuery, SpatialIndex};
+use super::{Identified, ProximitySearch, RegionQuery, SpatialIndex};
 
 use crate::{
+    debug_println,
     math::{
         geometry_contained_by_rect, geometry_intersects_rect, rect_in_rect, rect_intersects_rect,
         Bbox,
@@ -18,11 +19,20 @@ use crate::{
     Distance,
 };
 
+#[cfg(feature = "debug-print")]
+use crate::EARTH_RADIUS_METERS;
+
 /// The number of records to store in a given node before subdividing.
 ///
 /// Balances the linear lookup cost of this fixed list against node depth. While it addes fixed overhead, it helps
 /// amortize the cost of unbalanced trees.
 const MAX_CHILDREN: usize = 8;
+
+/// Debug configs that are technically only used in debug printouts.
+#[allow(unused)]
+const DEBUG_PRINT: bool = true;
+#[allow(unused)]
+const DEBUG_DETAILS: bool = true;
 
 /// Maximum subdivision depth to prevent infinite recursion with duplicate geometries.
 ///
@@ -68,7 +78,7 @@ impl<T> BasicQuadTree<T> {
 impl<T> SpatialIndex<T> for BasicQuadTree<T>
 where
     T: Deref,
-    T::Target: AsRef<Geometry>,
+    T::Target: AsRef<Geometry> + Identified,
 {
     fn insert(&self, record: T) -> Result<()> {
         let g: &Geometry = record.as_ref();
@@ -126,7 +136,6 @@ where
     }
 }
 
-#[derive(Debug)]
 struct Node<T> {
     bbox: Rect,
     depth: usize,
@@ -215,6 +224,26 @@ where
     }
 }
 
+impl<T> std::fmt::Debug for Node<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let bbox = self.bbox.to_degrees();
+        let min = bbox.min();
+        let max = bbox.max();
+        write!(
+            f,
+            "Node: [{:+7.2},{:+7.2},{:+7.2},{:+7.2}] @ depth {}; children {}-{}; has nodes {:?}",
+            min.x,
+            min.y,
+            max.x,
+            max.y,
+            self.depth,
+            self.stuck_children.len(),
+            self.children.len(),
+            self.nodes.is_some()
+        )
+    }
+}
+
 // TODO: If we usually use preorder, it might be slightly better to reverse the order here
 // to enable extension of preorder stacks
 enum NodeIndex {
@@ -258,42 +287,160 @@ enum NearestWorkType<T> {
     Node(Arc<RwLock<Node<T>>>),
 }
 
+impl<T> std::fmt::Debug for NearestWorkType<T>
+where
+    T: Deref,
+    T::Target: AsRef<Geometry> + Identified,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // TODO: Cleaner geometry debug for more complex geoms
+            NearestWorkType::Child(child) => write!(
+                f,
+                "WorkType -> Child uid: {}; {:?}",
+                child.uid(),
+                child.as_ref().to_degrees(),
+            ),
+            NearestWorkType::Node(rw_lock) => {
+                write!(f, "WorkType -> {:?}", rw_lock.read().expect(POISON))
+            }
+        }
+    }
+}
+
 /// Iterator for nearest neighbor search with radius constraint.
 pub struct NearestIterator<'a, T> {
     cmp: &'a Geometry,
     r: f64,
     work: Vec<(NearestWorkType<T>, f64)>,
+    #[cfg(feature = "debug-print")]
+    iter_count: usize,
 }
 
 impl<'a, T> NearestIterator<'a, T>
 where
     T: Deref + Clone,
-    T::Target: AsRef<Geometry>,
+    T::Target: AsRef<Geometry> + Identified,
 {
     fn new(root: Arc<RwLock<Node<T>>>, cmp: &'a Geometry, r: f64) -> Self {
         let d_root = root.read().expect(POISON).bbox.distance(cmp);
         let work = vec![(NearestWorkType::Node(root), d_root)];
 
-        Self { cmp, r, work }
+        debug_println!(DEBUG_PRINT, "Creating new NearestIter with cmp: {:?}", cmp);
+
+        Self {
+            cmp,
+            r,
+            work,
+            #[cfg(feature = "debug-print")]
+            iter_count: 0,
+        }
     }
 }
 
 impl<'a, T> Iterator for NearestIterator<'a, T>
 where
     T: Deref + Clone,
-    T::Target: AsRef<Geometry>,
+    T::Target: AsRef<Geometry> + Identified,
 {
     type Item = (T, f64);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             // Sort the work stack to process closest elements first
-            self.work.sort_by(|(_, d1), (_, d2)| {
-                d2.partial_cmp(d1)
-                    .expect("Invalid distance already removed")
-            });
+            //self.work.sort_by(|(_, d1), (_, d2)| {
+            //    d2.partial_cmp(d1)
+            //        .expect("Invalid distance already removed")
+            //});
 
+            // Dump the header for the current loop iteration
+            // Note that debug print is compiled out unless the feature is enabled, but we are wrapping this whole block
+            // to avoid the loops
+            #[cfg(feature = "debug-print")]
+            {
+                use crate::debug_print;
+
+                debug_print!(
+                    DEBUG_PRINT,
+                    "Iteration: {:3}, stack size: {:3}",
+                    self.iter_count,
+                    self.work.len()
+                );
+                if let Some((last_item, last_d)) = self.work.last() {
+                    debug_println!(
+                        DEBUG_PRINT,
+                        " Pop: {:7.0} {:?}",
+                        last_d * EARTH_RADIUS_METERS,
+                        last_item
+                    );
+                } else {
+                    debug_println!(DEBUG_PRINT, "");
+                }
+                if DEBUG_DETAILS {
+                    for (item, d) in &self.work {
+                        debug_println!(
+                            DEBUG_DETAILS,
+                            "    {:7.0} {:?}",
+                            d * EARTH_RADIUS_METERS,
+                            item
+                        );
+                    }
+                }
+                self.iter_count += 1;
+            }
+
+            match self.work.pop() {
+                Some((NearestWorkType::Child(child), d)) => {
+                    // Process children (they're the actual results to emit)
+                    // Stop if distance exceeds radius
+                    if d > self.r {
+                        return None;
+                    }
+
+                    return Some((child, d));
+                }
+                Some((NearestWorkType::Node(node), d)) => {
+                    // Process nodes (expand them into children and sub-nodes)
+                    // Stop if distance exceeds radius
+                    if d > self.r {
+                        return None;
+                    }
+
+                    let node = node.read().expect(POISON);
+
+                    // Add all children to work stack
+                    for child in node.stuck_children.iter().chain(&node.children) {
+                        let d: f64 = self.cmp.distance(child.as_ref());
+
+                        if d.is_finite() {
+                            self.work.push((NearestWorkType::Child(child.clone()), d));
+                        }
+                    }
+
+                    // Add sub-nodes to work stack
+                    if let Some(nodes) = &node.nodes {
+                        for sub_node in nodes {
+                            let bbox = sub_node.read().expect(POISON).bbox;
+                            let d: f64 = bbox.distance(self.cmp);
+                            let work_node = NearestWorkType::Node(Arc::clone(&sub_node));
+
+                            if d.is_finite() {
+                                self.work.push((work_node, d));
+                            }
+                        }
+                    }
+
+                    // Because we've pushed items onto the stack, we need to sort here
+                    self.work.sort_by(|(_, d1), (_, d2)| {
+                        d2.partial_cmp(d1).expect("No invalid distances")
+                    });
+                }
+                None => return None,
+            }
+
+            /*
             // Process children first (they're actual results)
+            // FIX: There isn't any need for the while loop here, but can we also minimize sorting with a flag
             while let Some(&(NearestWorkType::Child(ref child), d)) = self.work.last() {
                 // Stop if distance exceeds radius
                 if d > self.r {
@@ -339,6 +486,7 @@ where
                 // No more work to do
                 return None;
             }
+            */
         }
     }
 }
@@ -346,7 +494,7 @@ where
 impl<T> ProximitySearch<T> for BasicQuadTree<T>
 where
     T: Deref + Clone,
-    T::Target: AsRef<Geometry>,
+    T::Target: AsRef<Geometry> + Identified,
 {
     fn within_radius(&self, cmp: &Geometry, radius: f64) -> impl Iterator<Item = (T, f64)> {
         NearestIterator::new(Arc::clone(&self.root), cmp, radius)
@@ -491,12 +639,13 @@ where
 #[cfg(test)]
 mod test {
     use approx::assert_abs_diff_eq;
+    use rand::{rngs::StdRng, Rng, SeedableRng};
 
     use super::*;
 
     use crate::{
         harness::{read_cities_as_record, read_city_pairs, TestRecord},
-        math::get_earth_bbox,
+        math::earth_bbox,
         p, EARTH_RADIUS_METERS,
     };
 
@@ -511,7 +660,7 @@ mod test {
             .point
             .clone();
 
-        let qt = BasicQuadTree::new(get_earth_bbox());
+        let qt = BasicQuadTree::new(earth_bbox());
         for city in &cities {
             qt.insert(city).unwrap();
         }
@@ -533,7 +682,7 @@ mod test {
             .point
             .clone();
 
-        let qt = BasicQuadTree::new(get_earth_bbox());
+        let qt = BasicQuadTree::new(earth_bbox());
         for city in &cities {
             qt.insert(city).unwrap();
         }
@@ -559,7 +708,7 @@ mod test {
             .point
             .clone();
 
-        let qt = BasicQuadTree::new(get_earth_bbox());
+        let qt = BasicQuadTree::new(earth_bbox());
         for city in &cities {
             qt.insert(city).unwrap();
         }
@@ -582,7 +731,7 @@ mod test {
     // We also check that we return only k matches, even though more exist at the same point
     #[test]
     fn does_not_overflow_with_points_at_same_location() {
-        let qt = BasicQuadTree::new(get_earth_bbox());
+        let qt = BasicQuadTree::new(earth_bbox());
         let point = p!(0.1, 0.2);
 
         for i in 0..20 {
@@ -601,10 +750,52 @@ mod test {
         assert_eq!(res[0].0.point, res[2].0.point);
     }
 
+    // Run with a lot of points and make sure it returns all of them in ascending order
+    #[test]
+    fn knn_with_points_returns_in_order() {
+        const SEED: u64 = 42;
+        const NUM_ITEMS: usize = 1_000;
+
+        let mut rng = StdRng::seed_from_u64(SEED);
+
+        let qt = BasicQuadTree::new(earth_bbox());
+
+        // Add two items first that we are going to test against
+        let r1 = TestRecord::new_point("first", p!(-45.0, -88.0).to_radians());
+        let r2 = TestRecord::new_point("second", p!(0.0, -0.0).to_radians());
+        qt.insert(TestRecord::clone(&r1)).unwrap();
+        qt.insert(TestRecord::clone(&r2)).unwrap();
+
+        for i in 0..(NUM_ITEMS - 2) {
+            let lon = rng.random_range(-180.0..180.0);
+            let lat = rng.random_range(-90.0..90.0);
+            let record = TestRecord::new_point(i, p!(lon, lat).to_radians());
+            qt.insert(record).unwrap();
+        }
+
+        let results_r1: Vec<_> = qt.neighbors(&r1.point).collect();
+
+        assert_eq!(results_r1.len(), NUM_ITEMS);
+        assert_eq!(results_r1[0].1, 0.0);
+        assert_eq!(results_r1[0].0.name, "first");
+        for i in 0..(NUM_ITEMS - 1) {
+            assert!(results_r1[i].1 <= results_r1[i + 1].1);
+        }
+
+        let results_r2: Vec<_> = qt.neighbors(&r2.point).collect();
+
+        assert_eq!(results_r2.len(), NUM_ITEMS);
+        assert_eq!(results_r2[0].1, 0.0);
+        assert_eq!(results_r2[0].0.name, "second");
+        for i in 0..(NUM_ITEMS - 1) {
+            assert!(results_r2[i].1 <= results_r2[i + 1].1);
+        }
+    }
+
     // Some basic tests with points only - would be more telling if we added some other geometries
     #[test]
     fn region_query_basic_functionality() {
-        let qt = BasicQuadTree::new(get_earth_bbox());
+        let qt = BasicQuadTree::new(earth_bbox());
 
         // Add some test points at known locations (lon, lat in radians)
         // Note: Earth bbox is roughly [-π, -π/2] to [π, π/2]
@@ -654,7 +845,7 @@ mod test {
 
     #[test]
     fn region_query_empty_results() {
-        let qt = BasicQuadTree::new(get_earth_bbox());
+        let qt = BasicQuadTree::new(earth_bbox());
 
         // Add a point in Europe
         let record = TestRecord {

@@ -9,6 +9,8 @@ use std::{
 
 use geo::{Geometry, Point};
 
+use crate::Identified;
+
 fn get_data_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../data/sample_geojson")
@@ -42,6 +44,15 @@ pub struct TestRecord {
     pub point: geo::Geometry,
 }
 
+impl TestRecord {
+    pub fn new_point<T: ToString>(name: T, point: geo::Point) -> Self {
+        Self {
+            name: name.to_string(),
+            point: geo::Geometry::Point(point),
+        }
+    }
+}
+
 impl std::ops::Deref for TestRecord {
     type Target = Self;
 
@@ -53,6 +64,13 @@ impl std::ops::Deref for TestRecord {
 impl AsRef<geo::Geometry> for TestRecord {
     fn as_ref(&self) -> &geo::Geometry {
         &self.point
+    }
+}
+
+// Dummy implementation, not required for testing
+impl Identified for TestRecord {
+    fn uid(&self) -> u32 {
+        0
     }
 }
 

@@ -3,6 +3,9 @@ name = "gm-proximity"
 version.workspace = true
 edition.workspace = true
 
+[features]
+debug-print = ["spatial/debug-print"]
+
 [dependencies]
 anyhow = { workspace = true }
 bincode = "2.0.1"

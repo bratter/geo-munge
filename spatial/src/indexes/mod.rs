@@ -29,6 +29,21 @@ where
         T::Target: PartialEq<K>;
 }
 
+/// A convenience trait representing an item that can be assigned a unique id.
+///
+/// This is required by the spatial indexes primarily for debugging and instrumentation purposes as it gives the index
+/// some way of reporting to the user what item it was processing without having a concrete type. We force it to provide
+/// a u32 rather than being a generic for ease of use, so when an identifier is not that space it would have to be cast
+/// somehow.
+///
+/// If the caller doesn't want any form of identification but the trait bounds require it, suggest implementing just be
+/// returning 0 in all cases.
+///
+/// TODO: Consider making this a generic, and/or wrapping in an Option with a default impl of None
+pub trait Identified {
+    fn uid(&self) -> u32;
+}
+
 /// Proximity-based search functions for spatial indexes.
 ///
 /// While this trait doesn't require the structure to also implement [`SpatialIndex`] it usually will to provide the

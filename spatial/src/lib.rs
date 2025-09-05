@@ -1,8 +1,10 @@
+mod debug;
 mod distance;
 #[cfg(test)]
 pub mod harness;
 mod indexes;
 mod math;
+mod vector;
 
 pub use distance::Distance;
 pub use indexes::basic_quadtree::BasicQuadTree;

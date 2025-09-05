@@ -8,13 +8,14 @@ use geo::{GeoFloat, Intersects, Line, LineString, Point, Polygon, Rect};
 use crate::{
     l,
     math::{pt_rect_postion, PtRectPostion},
-    p,
+    vector::Vector,
 };
 
 // FIX: Using the slower gradient descent algorithms until we fully explore a fast and accurate optimization
 use super::gradient_descent::meridian_to_meridian;
 
-/// Internal struct for ensuring Lng wrapping math works correctly.
+/// Internal struct for ensuring Lng wrapping math around the antimeridian works correctly.
+/// TODO: Move to math helper module
 #[derive(Debug, Clone, Copy)]
 struct Lng<T: GeoFloat>(T);
 
@@ -74,39 +75,10 @@ pub fn haversine<T: GeoFloat>(p1: &Point<T>, p2: &Point<T>) -> T {
 ///
 /// Inputs and outputs are in radians. Convert radians to a linear distance by multiplying by the sphere's radius.
 ///
-/// Adapted from [TurfJS](https://github.com/Turfjs/turf/blob/master/packages/turf-point-to-line-distance/index.ts).
 pub fn haversine_pt_line<T: GeoFloat>(pt: &Point<T>, line: &Line<T>) -> T {
-    // Projection logic is identical to the euclidean case,
-    // but distance calc is different
-    let (x, y) = pt.x_y();
-    let (x1, y1) = line.start_point().x_y();
+    let closest = closest_point_on_line(*line, *pt);
 
-    let (x2, y2) = line.end_point().x_y();
-
-    let (a, b, c, d) = (x - x1, y - y1, x2 - x1, y2 - y1);
-
-    let dot = a * c + b * d;
-    let len_sq = c * c + d * d;
-
-    // Wrap in an `if` to account for a zero line length
-    // Just has to be <0 to work so we pick distance to p1
-    let param = if len_sq == T::zero() {
-        -T::one()
-    } else {
-        dot / len_sq
-    };
-
-    if param < T::zero() {
-        // Closest to start point, so reduces to pt-pt
-        haversine(pt, &line.start_point())
-    } else if param > T::one() {
-        // Closest to end point, so pt-pt again
-        haversine(pt, &line.end_point())
-    } else {
-        // Here we project onto the segment
-        let projected = p!(x1 + param * c, y1 + param * d);
-        haversine(pt, &projected)
-    }
+    haversine(&closest, pt)
 }
 
 /// Calculate the great circle distance between a [`Point`] and a [`LineString`] using the Hsversine formula.
@@ -143,7 +115,7 @@ pub fn haversine_pt_rect<T: GeoFloat>(pt: &Point<T>, rect: &Rect<T>) -> T {
         PtRectPostion::East | PtRectPostion::NorthEast | PtRectPostion::SouthEast => {
             haversine_pt_line(
                 pt,
-                &l!(rect.max().x, rect.min().y, rect.max().x, rect.min().y),
+                &l!(rect.max().x, rect.min().y, rect.max().x, rect.max().y),
             )
         }
         // West use the rect's left edge
@@ -257,21 +229,77 @@ pub fn haversine_pt_poly<T: GeoFloat>(pt: &Point<T>, poly: &Polygon<T>) -> T {
     }
 }
 
+/// Determine the point on a [`Line`] segment that is closest to the provided target [`Point`].
+///
+/// Uses spherical geometry to determine the closest point based on great circle distance. Inputs and outputs are in
+/// radians.
+///
+/// Adapted from [TurfJS](https://github.com/Turfjs/turf/blob/v7.2.0/packages/turf-nearest-point-on-line/index.ts#L192).
+/// NOTE: The Turf algorithm has an issue with intersection detection that causes errors for widely spaced inputs. We
+/// fix this issue here by using a dot-product comparison instead of the angular one used in Turf
+pub fn closest_point_on_line<T: GeoFloat>(line: Line<T>, point: Point<T>) -> Point<T> {
+    // Convert spherical (lng, lat) to cartesian vector coords (x, y, z)
+    let a = Vector::unit_vec_from_point(line.start_point());
+    let b = Vector::unit_vec_from_point(line.end_point());
+    let c = Vector::unit_vec_from_point(point);
+
+    // The axis (normal vector) of the great circle plane containing the line segment
+    let segment_axis = a.cross(b);
+
+    // The axis of the great circle passing through the segment's axis and the target point
+    let target_axis = segment_axis.cross(c);
+
+    // The line of intersection between the two great circle planes
+    let intersection_axis = target_axis.cross(segment_axis);
+
+    // Vectors to the two points these great circles intersect are the normalized intersection and its antipodes
+    let i1 = intersection_axis.normalize();
+    let i2 = i1.scale(-T::one());
+
+    // Figure out which is the closest intersection to this segment of the great circle
+    let i = if c.dot(i1) > c.dot(i2) { i1 } else { i2 };
+
+    // I is the closest intersection to the segment, though might not actually be
+    // ON the segment.
+    // If angle AI or BI is greater than angleAB, I lies on the circle *beyond* A
+    // and B so use the closest of A or B as the intersection
+    let angle_ab = a.angle_to(b);
+    let i_point = i.unit_vec_into_point();
+
+    if a.angle_to(i) > angle_ab || b.angle_to(i) > angle_ab {
+        let start = line.start_point();
+        let end = line.end_point();
+
+        let dist_to_a = haversine(&i_point, &start);
+        let dist_to_b = haversine(&i_point, &end);
+
+        if dist_to_a <= dist_to_b {
+            start
+        } else {
+            end
+        }
+    } else {
+        // As angleAI nor angleBI don't exceed angleAB, I is on the segment
+        i_point
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_8};
 
     use approx::assert_abs_diff_eq;
+    use geo::{ToDegrees, ToRadians};
 
     use crate::{
         harness::{read_cities, read_city_pairs},
-        EARTH_RADIUS_METERS,
+        p, EARTH_RADIUS_METERS,
     };
 
     use super::{super::gradient_descent, *};
 
     #[test]
-    fn haversine_is_correct() {
+    fn haversine_calculation() {
         let cities: Vec<_> = read_cities().collect();
         let test_results = read_city_pairs();
 
@@ -287,6 +315,7 @@ mod test {
         }
     }
 
+    // TODO: Move to math helper module
     #[test]
     fn create_eq_add_subtract_lngs() {
         // Into works for f64, from works for Lng
@@ -459,5 +488,86 @@ mod test {
         let dist = haversine_pt_poly(&pt, &poly);
         let test = haversine_pt_line(&pt, &line);
         assert_abs_diff_eq!(dist, test, epsilon = 1e-6);
+    }
+
+    mod closest_point {
+        use super::*;
+
+        #[test]
+        fn close_to_equator() {
+            // Simple test case - point perpendicular to equator
+            let line = l!(0.0, 5.0, 0.0, -5.0).to_radians();
+            let target = p!(2.0, 0.0).to_radians();
+            let nearest = closest_point_on_line(line, target);
+            let dist = haversine(&nearest, &target);
+
+            assert_abs_diff_eq!(nearest.x(), 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(nearest.y(), 0.0, epsilon = 1e-6);
+            assert_abs_diff_eq!(dist, 2.0f64.to_radians(), epsilon = 1e-6);
+        }
+
+        // Test something that falls within the segment
+        // This test case was failing in production, so here as a regression test
+        #[test]
+        fn near_pole() {
+            let line = l!(-123.75, -84.38, -123.75, -90.0).to_radians();
+            let point = p!(-45.0, -88.0).to_radians();
+            let nearest = closest_point_on_line(line, point).to_degrees();
+
+            assert_abs_diff_eq!(nearest.x(), -123.75, epsilon = 1e-4);
+            assert_abs_diff_eq!(nearest.y(), -89.609667, epsilon = 1e-4);
+        }
+
+        // This test case was failing in production, so here as a regression test
+        #[test]
+        fn opposite_globe() {
+            let line = l!(22.5, 78.75, 22.5, 90.0).to_radians();
+            let point = p!(-45.0, -88.0).to_radians();
+            let nearest = closest_point_on_line(line, point).to_degrees();
+
+            assert_abs_diff_eq!(nearest.x(), 22.5, epsilon = 1e-4);
+            assert_abs_diff_eq!(nearest.y(), 78.75, epsilon = 1e-4);
+        }
+
+        // Let's also make sure inverting the coordinates works
+        #[test]
+        fn opposite_globe_flipped() {
+            let line = l!(22.5, 90.0, 22.5, 78.75).to_radians();
+            let point = p!(-45.0, -88.0).to_radians();
+            let nearest = closest_point_on_line(line, point).to_degrees();
+
+            assert_abs_diff_eq!(nearest.x(), 22.5, epsilon = 1e-4);
+            assert_abs_diff_eq!(nearest.y(), 78.75, epsilon = 1e-4);
+        }
+
+        #[test]
+        fn long_meridian() {
+            let line = l!(25.0, 80.0, 25.0, -70.0).to_radians();
+            let point = p!(-45.0, -88.0).to_radians();
+            let nearest = closest_point_on_line(line, point).to_degrees();
+
+            assert_abs_diff_eq!(nearest.x(), 25.0, epsilon = 1e-4);
+            assert_abs_diff_eq!(nearest.y(), -70.0, epsilon = 1e-4);
+        }
+
+        #[test]
+        fn lands_on_end() {
+            let line = l!(20.0, 10.0, 40.0, 30.0).to_radians();
+            let point = p!(30.0, 50.0).to_radians();
+            let nearest = closest_point_on_line(line, point).to_degrees();
+
+            assert_abs_diff_eq!(nearest.x(), 40.0, epsilon = 1e-4);
+            assert_abs_diff_eq!(nearest.y(), 30.0, epsilon = 1e-4);
+        }
+
+        #[test]
+        fn lands_on_segment() {
+            let line = l!(20.0, 10.0, 40.0, 30.0).to_radians();
+            let point = p!(20.0, 30.0).to_radians();
+            let nearest = closest_point_on_line(line, point).to_degrees();
+
+            assert_abs_diff_eq!(nearest.x(), 30.716437, epsilon = 1e-4);
+            assert_abs_diff_eq!(nearest.y(), 21.656060, epsilon = 1e-4);
+        }
     }
 }
