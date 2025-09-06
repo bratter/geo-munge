@@ -1,147 +1,35 @@
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::BufReader;
-use std::iter::once;
 use std::path::Path;
 
-use anyhow::{anyhow, bail};
+use anyhow::anyhow;
 use shapefile::dbase::Record;
 use shapefile::reader::{ShapeIterator, ShapeRecordIterator};
 use shapefile::Reader;
 use shapefile::{dbase::FieldValue, Shape, ShapeReader};
 
-use quadtree::*;
+use crate::format::{ContentMode, GeoItem, Meta, Value};
 
-use crate::error::{Error, UnsupportedGeoType};
-use crate::format::{GeoItem, GeoItemIterator, Meta, MetaMode, Value};
-
-/// Convert dbase fields to a string representation for inclusion in csv output.
-pub fn convert_dbase_field(f: &FieldValue) -> String {
-    match f {
-        FieldValue::Character(s) => s.to_owned().unwrap_or(String::default()),
-        FieldValue::Memo(s) => s.to_owned(),
-        FieldValue::Integer(n) => format!("{}", n),
-        FieldValue::Numeric(n) => format!("{}", n.unwrap_or(f64::NAN)),
-        FieldValue::Double(n) => format!("{}", n),
-        FieldValue::Float(n) => format!("{}", n.unwrap_or(f32::NAN)),
-        FieldValue::Currency(n) => format!("{}", n),
-        FieldValue::Logical(b) => match b {
-            Some(true) => "true".to_owned(),
-            Some(false) => "false".to_owned(),
-            None => String::default(),
-        },
-        FieldValue::Date(d) => d.map(|d| d.to_string()).unwrap_or(String::default()),
-        FieldValue::DateTime(d) => {
-            let date = d.date();
-            let time = d.time();
-            format!(
-                "{:4}-{:2}-{:2} {:2}:{:2}:{:2}",
-                date.year(),
-                date.month(),
-                date.day(),
-                time.hours(),
-                time.minutes(),
-                time.seconds()
-            )
-        }
-    }
-}
-
-pub fn convert_dbase_field_opt(f: Option<&FieldValue>) -> String {
-    match f {
-        Some(f) => convert_dbase_field(f),
-        None => String::default(),
-    }
-}
-
-/// Convert shapefile shapes to their geo-type equivalents. This will only
-/// convert those types that are valid in quadtrees.
-pub fn convert_shape(shape: Shape) -> Box<dyn Iterator<Item = Result<Geometry<f64>, Error>>> {
-    match shape {
-        Shape::Point(p) => point_to_iter(p),
-        Shape::PointM(p) => point_to_iter(p),
-        Shape::PointZ(p) => point_to_iter(p),
-        Shape::Polyline(p) => mls_to_iter(p),
-        Shape::PolylineM(p) => mls_to_iter(p),
-        Shape::PolylineZ(p) => mls_to_iter(p),
-        Shape::Multipoint(p) => mp_to_iter(p),
-        Shape::MultipointM(p) => mp_to_iter(p),
-        Shape::MultipointZ(p) => mp_to_iter(p),
-        Shape::Polygon(p) => mpoly_to_iter(p),
-        Shape::PolygonM(p) => mpoly_to_iter(p),
-        Shape::PolygonZ(p) => mpoly_to_iter(p),
-        // NullShape and MultiPatch are not covered
-        Shape::Multipatch(_) => Box::new(once(Err(Error::UnsupportedGeometry(
-            UnsupportedGeoType::MultipatchShp,
-        )))),
-        Shape::NullShape => Box::new(once(Err(Error::UnsupportedGeometry(
-            UnsupportedGeoType::NullShp,
-        )))),
-    }
-}
-
-fn point_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, Error>>>
-where
-    S: Into<geo::Point>,
-{
-    let mut p: geo::Point = shape.into();
-    p.to_radians_in_place();
-    Box::new(once(Ok(Geometry::Point(p))))
-}
-
-fn mls_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, Error>>>
-where
-    S: Into<geo::MultiLineString>,
-{
-    let mls: geo::MultiLineString = shape.into();
-    Box::new(mls.into_iter().map(move |mut item| {
-        item.to_radians_in_place();
-        Ok(Geometry::LineString(item))
-    }))
-}
-
-fn mp_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, Error>>>
-where
-    S: Into<geo::MultiPoint>,
-{
-    let mp: geo::MultiPoint = shape.into();
-    Box::new(mp.into_iter().map(move |mut item| {
-        item.to_radians_in_place();
-        Ok(Geometry::Point(item))
-    }))
-}
-
-fn mpoly_to_iter<S>(shape: S) -> Box<dyn Iterator<Item = Result<Geometry<f64>, Error>>>
-where
-    S: Into<geo::MultiPolygon>,
-{
-    let mp: geo::MultiPolygon = shape.into();
-    Box::new(mp.into_iter().map(move |mut item| {
-        item.to_radians_in_place();
-        Ok(Geometry::Polygon(item))
-    }))
-}
-
+// TODO: The new version starts here
+// TODO: Make some notes about the box leak and how static bound is OK as we are only passing owned readers
 enum ShapeIter {
     Shape(ShapeIterator<'static, BufReader<File>, Shape>),
     ShapeRecord(ShapeRecordIterator<'static, BufReader<File>, BufReader<File>, Shape, Record>),
 }
 
-// TODO: The new version starts here
-// TODO: Make some notes about the box leak and how static bound is OK as we are only passing owned readers
 pub struct ShapefileReader {
-    mode: MetaMode,
+    mode: ContentMode,
     shapes: ShapeIter,
 }
 
 impl ShapefileReader {
-    pub fn new(file: impl AsRef<Path>, mode: MetaMode) -> anyhow::Result<Self> {
+    pub fn new(file: impl AsRef<Path>, mode: ContentMode) -> anyhow::Result<Self> {
         let shapes = match mode {
-            MetaMode::Full | MetaMode::Meta => {
+            ContentMode::Full | ContentMode::Properties => {
                 let reader = Box::leak(Box::new(Reader::from_path(file)?));
                 ShapeIter::ShapeRecord(reader.iter_shapes_and_records())
             }
-            MetaMode::Shapes => {
+            ContentMode::Geometry => {
                 let reader = Box::leak(Box::new(ShapeReader::from_path(file)?));
                 ShapeIter::Shape(reader.iter_shapes())
             }
@@ -151,7 +39,7 @@ impl ShapefileReader {
     }
 
     fn next_shape(shape: Shape) -> anyhow::Result<GeoItem> {
-        Ok(GeoItem::without_meta(
+        Ok(GeoItem::without_props(
             geo::Geometry::try_from(shape).map_err(|e| anyhow!(e))?,
         ))
     }
@@ -181,35 +69,11 @@ impl Iterator for ShapefileReader {
                 .next()?
                 .map_err(|e| anyhow!(e))
                 .and_then(|shape| Self::next_shape(shape)),
-            ShapeIter::ShapeRecord(iter) => iter
-                .next()?
-                .map_err(|e| anyhow!(e))
-                .and_then(|arg| Self::next_shape_record(arg, matches!(self.mode, MetaMode::Full))),
+            ShapeIter::ShapeRecord(iter) => iter.next()?.map_err(|e| anyhow!(e)).and_then(|arg| {
+                Self::next_shape_record(arg, matches!(self.mode, ContentMode::Full))
+            }),
         };
         Some(result)
-    }
-}
-
-// TODO: Work on outputting shapefiles. This will require some level of workarounds as it is better to create the writer
-// directly, and making the dbase file for Meta requires work upfront
-pub struct ShapefileTransformer<I: GeoItemIterator> {
-    _iter: I,
-    _mode: MetaMode,
-}
-
-impl<I: GeoItemIterator> ShapefileTransformer<I> {
-    pub fn new(_iter: I, _mode: MetaMode) -> anyhow::Result<Self> {
-        //Self { iter, mode }
-        bail!("Cannot use Shapefile transformer")
-    }
-}
-
-impl<I: GeoItemIterator> Iterator for ShapefileTransformer<I> {
-    // TODO: The wrapper enum needs a cow, but may be able to map that if this is better making a String or other simpler type
-    type Item = anyhow::Result<Cow<'static, [u8]>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        unreachable!("Should be erroring Shapefile transformation")
     }
 }
 

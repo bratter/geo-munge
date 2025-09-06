@@ -1,7 +1,7 @@
 use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser};
 use geolib::{
     csv::{CsvGeom, CsvSettings},
-    format::{Format, MetaMode},
+    format::{ContentMode, Format},
 };
 
 use crate::{io::IO, stream::StreamKind};
@@ -13,7 +13,7 @@ use crate::{io::IO, stream::StreamKind};
 pub struct Cli {
     pub input: IO,
     pub output: IO,
-    pub mode: MetaMode,
+    pub mode: ContentMode,
     pub quiet: QuietLevel,
     pub csv_settings: CsvSettings,
 }
@@ -138,11 +138,11 @@ impl Args {
         Ok(s.as_bytes()[0])
     }
 
-    fn mode(&self) -> MetaMode {
+    fn mode(&self) -> ContentMode {
         match (self.shapes, self.meta) {
-            (false, false) => MetaMode::Full,
-            (true, false) => MetaMode::Shapes,
-            (false, true) => MetaMode::Meta,
+            (false, false) => ContentMode::Full,
+            (true, false) => ContentMode::Geometry,
+            (false, true) => ContentMode::Properties,
             (true, true) => unreachable!("Clap enforces mutual exclusivity"),
         }
     }

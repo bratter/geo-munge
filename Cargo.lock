@@ -866,19 +866,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 
 [[package]]
-name = "meta"
-version = "0.2.0"
-dependencies = [
- "clap",
- "csv",
- "geo",
- "geojson",
- "geolib",
- "kml",
- "shapefile",
-]
-
-[[package]]
 name = "miniz_oxide"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1026,17 +1013,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31971752e70b8b2686d7e46ec17fb38dad4051d94024c88df49b667caea9c84"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "proximity"
-version = "0.2.0"
-dependencies = [
- "clap",
- "csv",
- "geo",
- "geolib",
- "rayon",
 ]
 
 [[package]]

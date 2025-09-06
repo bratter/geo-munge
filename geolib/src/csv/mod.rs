@@ -12,7 +12,7 @@ use wkb::{
 };
 use wkt::{ToWkt, Wkt};
 
-use crate::format::{GeoItem, GeoItemIterator, Meta, MetaMode, Value};
+use crate::format::{ContentMode, GeoItem, GeoItemIterator, Meta, Value};
 
 const EAGER_PARSE_MSG: &str = "Indices eagerly parsed";
 
@@ -57,7 +57,8 @@ impl FromStr for CsvGeom {
     type Err = String;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split(',').collect();
+        let lowercase = s.to_lowercase();
+        let parts: Vec<&str> = lowercase.split(',').collect();
 
         match parts.as_slice() {
             ["pt"] => Ok(CsvGeom::pt(None)),
@@ -91,15 +92,15 @@ impl Default for CsvSettings {
 
 pub struct CsvReader<R: Read> {
     reader: Reader<R>,
-    mode: MetaMode,
+    mode: ContentMode,
     settings: CsvSettings,
-    headers: BTreeMap<String, ()>,
+    headers: Vec<String>,
     lng_lat_idx: Option<(usize, usize)>,
     wk_idx: Option<usize>,
 }
 
 impl<R: Read> CsvReader<R> {
-    pub fn new(reader: R, mode: MetaMode, settings: CsvSettings) -> Result<Self> {
+    pub fn new(reader: R, mode: ContentMode, settings: CsvSettings) -> Result<Self> {
         let mut reader = ReaderBuilder::new()
             .delimiter(settings.delimiter)
             .from_reader(reader);
@@ -126,7 +127,7 @@ impl<R: Read> CsvReader<R> {
 
         // Rewrite headers as a BTreeMap for Meta processing purposes
         // Technically not necessary for MetaMode::Shapes, but minimal overhead and saves an Option
-        let headers = headers.into_iter().map(|h| (h.to_string(), ())).collect();
+        let headers = headers.into_iter().map(str::to_string).collect();
 
         Ok(Self {
             reader,
@@ -173,7 +174,7 @@ impl<R: Read> CsvReader<R> {
     fn extract_meta(&self, record: &ByteRecord) -> Result<Meta> {
         let mut meta = BTreeMap::new();
 
-        for (i, ((key, ()), value)) in self.headers.iter().zip(record.iter()).enumerate() {
+        for (i, (header, value)) in self.headers.iter().zip(record.iter()).enumerate() {
             // Skip if the current field is one of the geometry fields
             if let Some((lng, lat)) = self.lng_lat_idx {
                 if lat == i || lng == i {
@@ -187,7 +188,7 @@ impl<R: Read> CsvReader<R> {
             }
 
             meta.insert(
-                key.to_string(),
+                header.to_string(),
                 Value::String(std::str::from_utf8(value)?.to_string()),
             );
         }
@@ -200,7 +201,7 @@ impl<R: Read> Iterator for CsvReader<R> {
     type Item = Result<GeoItem>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // e work on byte records in order to support WKB that will likely error utf8 conversion if we attempt to use
+        // We work on byte records in order to support WKB that will likely error utf8 conversion if we attempt to use
         // strings, therefore converting each byte slice into strings when we process meta.
         let item = self
             .reader
@@ -208,12 +209,12 @@ impl<R: Read> Iterator for CsvReader<R> {
             .next()?
             .map_err(|e| anyhow!(e))
             .and_then(|r| match self.mode {
-                MetaMode::Full => Ok(GeoItem::with_meta(
+                ContentMode::Full => Ok(GeoItem::with_props(
                     self.extract_geom(&r)?,
                     self.extract_meta(&r)?,
                 )),
-                MetaMode::Shapes => Ok(GeoItem::without_meta(self.extract_geom(&r)?)),
-                MetaMode::Meta => Ok(GeoItem::meta_only(self.extract_meta(&r)?)),
+                ContentMode::Geometry => Ok(GeoItem::without_props(self.extract_geom(&r)?)),
+                ContentMode::Properties => Ok(GeoItem::props_only(self.extract_meta(&r)?)),
             });
 
         Some(item)
@@ -222,13 +223,13 @@ impl<R: Read> Iterator for CsvReader<R> {
 
 pub struct CsvTransformer<I: Iterator> {
     iter: Peekable<I>,
-    mode: MetaMode,
+    mode: ContentMode,
     settings: CsvSettings,
     headers: Option<Vec<String>>,
 }
 
 impl<I: GeoItemIterator> CsvTransformer<I> {
-    pub fn new(iter: I, mode: MetaMode, settings: CsvSettings) -> Self {
+    pub fn new(iter: I, mode: ContentMode, settings: CsvSettings) -> Self {
         Self {
             iter: iter.peekable(),
             mode,
@@ -298,7 +299,7 @@ impl<I: GeoItemIterator> CsvTransformer<I> {
         Ok(())
     }
 
-    /// Push all metadata items onto the csv record.
+    /// Push all properties onto the csv record.
     ///
     /// This method is forgiving, it ignores members not present in the headers list and inserts missing members as
     /// empty strings.
@@ -358,7 +359,7 @@ impl<I: GeoItemIterator> Iterator for CsvTransformer<I> {
             // Empty geometry is an error
             // TODO: Option for error on empty output geometry rather than enforcing it? Should be consistent and
             // managed before it hits here? Check all of them
-            if self.mode == MetaMode::Full || self.mode == MetaMode::Shapes {
+            if self.mode == ContentMode::Full || self.mode == ContentMode::Geometry {
                 if let Some(geom) = item.geom {
                     self.push_geom(&mut byte_record, geom)?;
                 } else {
@@ -368,7 +369,7 @@ impl<I: GeoItemIterator> Iterator for CsvTransformer<I> {
 
             // Then emit the Meta if required, using get to ensure that everything is in the correct order
             // Empty fields are not errors, they are left blank
-            if self.mode == MetaMode::Full || self.mode == MetaMode::Meta {
+            if self.mode == ContentMode::Full || self.mode == ContentMode::Properties {
                 self.push_meta(&mut byte_record, item.meta.unwrap_or_default());
             }
 
@@ -395,8 +396,82 @@ mod tests {
         Geometry::Point(Point::new(x, y))
     }
 
-    mod read {
-        // TODO: Read tests
+    mod reader {
+        use super::*;
+
+        #[test]
+        fn emits_features_from_lnglat() {
+            let csv = "lng,lat,name,value,active\n1.1,1.2,point1,42,true\n2.1,2.2,point2,100,false";
+
+            let settings = CsvSettings {
+                geom: CsvGeom::LngLat("lng".to_string(), "lat".to_string()),
+                delimiter: b',',
+            };
+
+            let reader = CsvReader::new(csv.as_bytes(), ContentMode::Full, settings).unwrap();
+            let features: Vec<_> = reader.map(|result| result.unwrap()).collect();
+
+            assert_eq!(features.len(), 2);
+            assert!(matches!(
+                features[0].geom,
+                Some(geo::Geometry::Point(geo::Point(_)))
+            ));
+            assert!(matches!(
+                features[1].geom,
+                Some(geo::Geometry::Point(geo::Point(_)))
+            ));
+
+            // Check that properties are preserved
+            let first_meta = features[0].meta.as_ref().unwrap();
+            assert_eq!(
+                first_meta.get("name"),
+                Some(&Value::String("point1".to_string()))
+            );
+            assert_eq!(
+                first_meta.get("value"),
+                Some(&Value::String("42".to_string()))
+            );
+            assert_eq!(
+                first_meta.get("active"),
+                Some(&Value::String("true".to_string()))
+            );
+        }
+
+        #[test]
+        fn emits_features_from_wkt() {
+            let csv =
+                "geom,id,category,score\n\"POINT(1.1 1.2)\",1,A,95.5\n\"POINT(2.1 2.2)\",2,B,87.3";
+
+            let settings = CsvSettings {
+                geom: CsvGeom::Wkt("geom".to_string()),
+                delimiter: b',',
+            };
+
+            let reader = CsvReader::new(csv.as_bytes(), ContentMode::Full, settings).unwrap();
+            let features: Vec<_> = reader.map(|result| result.unwrap()).collect();
+
+            assert_eq!(features.len(), 2);
+            assert!(matches!(
+                features[0].geom,
+                Some(geo::Geometry::Point(geo::Point(_)))
+            ));
+            assert!(matches!(
+                features[1].geom,
+                Some(geo::Geometry::Point(geo::Point(_)))
+            ));
+
+            // Check that properties are preserved
+            let first_meta = features[0].meta.as_ref().unwrap();
+            assert_eq!(first_meta.get("id"), Some(&Value::String("1".to_string())));
+            assert_eq!(
+                first_meta.get("category"),
+                Some(&Value::String("A".to_string()))
+            );
+            assert_eq!(
+                first_meta.get("score"),
+                Some(&Value::String("95.5".to_string()))
+            );
+        }
     }
 
     mod transform {
@@ -405,7 +480,7 @@ mod tests {
         #[test]
         fn empty_input_gives_only_geom_headers() {
             let iter: std::iter::Empty<Result<GeoItem>> = std::iter::empty();
-            let csv = CsvTransformer::new(iter, MetaMode::Full, CsvSettings::default());
+            let csv = CsvTransformer::new(iter, ContentMode::Full, CsvSettings::default());
             let buf: Vec<u8> = csv.map(|i| i.unwrap().to_vec()).flatten().collect();
 
             assert_eq!(buf, b"geom\n");
@@ -416,7 +491,7 @@ mod tests {
             let iter: std::iter::Empty<Result<GeoItem>> = std::iter::empty();
             let mut settings = CsvSettings::default();
             settings.geom = CsvGeom::LngLat("x".to_string(), "y".to_string());
-            let csv = CsvTransformer::new(iter, MetaMode::Full, settings);
+            let csv = CsvTransformer::new(iter, ContentMode::Full, settings);
             let buf: Vec<u8> = csv.map(|i| i.unwrap().to_vec()).flatten().collect();
 
             assert_eq!(buf, b"x,y\n");
@@ -425,12 +500,12 @@ mod tests {
         #[test]
         fn outputs_wkt_geom() {
             let iter = vec![
-                Ok(GeoItem::without_meta(pt(0., 0.))),
-                Ok(GeoItem::without_meta(pt(1., 0.))),
+                Ok(GeoItem::without_props(pt(0., 0.))),
+                Ok(GeoItem::without_props(pt(1., 0.))),
             ];
 
             let settings = CsvSettings::default();
-            let csv = CsvTransformer::new(iter.into_iter(), MetaMode::Shapes, settings);
+            let csv = CsvTransformer::new(iter.into_iter(), ContentMode::Geometry, settings);
             let buf: Vec<u8> = csv.map(|i| i.unwrap().to_vec()).flatten().collect();
 
             assert_eq!(
@@ -442,13 +517,13 @@ mod tests {
         #[test]
         fn outputs_wkb_geom() {
             let iter = vec![
-                Ok(GeoItem::without_meta(pt(0., 0.))),
-                Ok(GeoItem::without_meta(pt(1., 0.))),
+                Ok(GeoItem::without_props(pt(0., 0.))),
+                Ok(GeoItem::without_props(pt(1., 0.))),
             ];
 
             let mut settings = CsvSettings::default();
             settings.geom = CsvGeom::Wkb("geom".to_string());
-            let csv = CsvTransformer::new(iter.into_iter(), MetaMode::Shapes, settings);
+            let csv = CsvTransformer::new(iter.into_iter(), ContentMode::Geometry, settings);
             let buf: Vec<u8> = csv.map(|i| i.unwrap().to_vec()).flatten().collect();
 
             let mut check_buf = Vec::from(b"geom\n");
@@ -463,38 +538,35 @@ mod tests {
         #[test]
         fn outputs_point_geom() {
             let iter = vec![
-                Ok(GeoItem::without_meta(pt(0., 0.))),
-                Ok(GeoItem::without_meta(pt(1., 0.))),
+                Ok(GeoItem::without_props(pt(0., 0.))),
+                Ok(GeoItem::without_props(pt(1., 0.))),
             ];
 
             let mut settings = CsvSettings::default();
             settings.geom = CsvGeom::LngLat("lng".to_string(), "lat".to_string());
-            let csv = CsvTransformer::new(iter.into_iter(), MetaMode::Shapes, settings);
+            let csv = CsvTransformer::new(iter.into_iter(), ContentMode::Geometry, settings);
             let buf: Vec<u8> = csv.map(|i| i.unwrap().to_vec()).flatten().collect();
 
             assert_eq!(std::str::from_utf8(&buf).unwrap(), "lng,lat\n0,0\n1,0\n");
         }
 
-        // TODO: This test
-        /*
         #[test]
         fn outputs_json_geom() {
             let iter = vec![
-                Ok(GeoItem::without_meta(pt(0., 0.))),
-                Ok(GeoItem::without_meta(pt(1., 0.))),
+                Ok(GeoItem::without_props(pt(0., 0.))),
+                Ok(GeoItem::without_props(pt(1., 0.))),
             ];
 
             let mut settings = CsvSettings::default();
             settings.geom = CsvGeom::Json("geom".to_string());
-            let csv = CsvTransformer::new(iter.into_iter(), MetaMode::Shapes, settings);
+            let csv = CsvTransformer::new(iter.into_iter(), ContentMode::Geometry, settings);
             let buf: Vec<u8> = csv.map(|i| i.unwrap().to_vec()).flatten().collect();
 
-            assert_eq!(std::str::from_utf8(&buf).unwrap(), "lng,lat\n0,0\n1,0\n");
+            assert_eq!(std::str::from_utf8(&buf).unwrap(), "geom\n\"{\"\"type\"\":\"\"Point\"\",\"\"coordinates\"\":[0.0,0.0]}\"\n\"{\"\"type\"\":\"\"Point\"\",\"\"coordinates\"\":[1.0,0.0]}\"\n");
         }
-        */
 
         #[test]
-        fn outputs_with_meta_even_when_different_order() {
+        fn outputs_with_props_even_when_different_order() {
             let m1 = BTreeMap::from([
                 ("f1".to_string(), Value::String("v1".to_string())),
                 ("f2".to_string(), Value::String("v2".to_string())),
@@ -504,12 +576,12 @@ mod tests {
                 ("f1".to_string(), Value::String("v4".to_string())),
             ]);
             let iter = vec![
-                Ok(GeoItem::with_meta(pt(0., 0.), m1)),
-                Ok(GeoItem::with_meta(pt(1., 0.), m2)),
+                Ok(GeoItem::with_props(pt(0., 0.), m1)),
+                Ok(GeoItem::with_props(pt(1., 0.), m2)),
             ];
 
             let settings = CsvSettings::default();
-            let csv = CsvTransformer::new(iter.into_iter(), MetaMode::Full, settings);
+            let csv = CsvTransformer::new(iter.into_iter(), ContentMode::Full, settings);
             let buf: Vec<u8> = csv.map(|i| i.unwrap().to_vec()).flatten().collect();
 
             assert_eq!(

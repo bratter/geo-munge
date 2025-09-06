@@ -4,9 +4,9 @@ use anyhow::{bail, Result};
 
 use geolib::{
     csv::{CsvReader, CsvSettings, CsvTransformer},
-    format::{Format, FormatReader, FormatTransformer, GeoItemIterator, MetaMode},
-    geojson::{JsonReader, JsonTransformer, NdjsonReader, NdjsonTransformer},
-    shp::{ShapefileReader, ShapefileTransformer},
+    format::{ContentMode, Format, FormatReader, FormatTransformer, GeoItemIterator},
+    geojson::{JsonStreamReader, JsonTransformer, NdjsonReader, NdjsonTransformer},
+    shp::ShapefileReader,
 };
 
 use crate::args::QuietLevel;
@@ -38,7 +38,7 @@ impl IO {
         Self::new(StreamKind::OutputString(str), format)
     }
 
-    pub fn create_reader(&self, mode: MetaMode) -> Result<impl GeoItemIterator> {
+    pub fn create_reader(&self, mode: ContentMode) -> Result<impl GeoItemIterator> {
         // Shapefiles require special management so we process them first
         // This just means we don't have to embed input stream generation in the match below
         if self.format == Format::Shp {
@@ -51,7 +51,7 @@ impl IO {
         let reader = InputStream::from(self.stream.clone());
 
         match self.format {
-            Format::Json => Ok(FormatReader::Json(JsonReader::new(reader, mode))),
+            Format::JsonStream => Ok(FormatReader::Json(JsonStreamReader::new(reader, mode))),
             Format::Ndjson => Ok(FormatReader::Ndjson(NdjsonReader::new(reader, mode))),
             Format::Shp => unreachable!(),
             Format::Csv => Ok(FormatReader::Csv(CsvReader::new(
@@ -66,18 +66,17 @@ impl IO {
     pub fn create_transformer<I>(
         &self,
         iter: I,
-        mode: MetaMode,
+        mode: ContentMode,
         csv_settings: CsvSettings,
     ) -> Result<impl Iterator<Item = Result<impl AsRef<[u8]>>>>
     where
         I: GeoItemIterator,
     {
         let ft = match self.format {
-            Format::Json => FormatTransformer::Json(JsonTransformer::new(iter, mode)),
+            Format::JsonStream => FormatTransformer::Json(JsonTransformer::new(iter, mode)),
             Format::Ndjson => FormatTransformer::Ndjson(NdjsonTransformer::new(iter, mode)),
-            Format::Shp => FormatTransformer::Shp(ShapefileTransformer::new(iter, mode)?),
             Format::Csv => FormatTransformer::Csv(CsvTransformer::new(iter, mode, csv_settings)),
-            _ => todo!(),
+            _ => bail!("Format type not available as an output"),
         };
         Ok(ft)
     }

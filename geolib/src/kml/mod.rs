@@ -1,12 +1,12 @@
-use std::{borrow::Cow, collections::HashMap, io::BufRead, iter::FlatMap, path::PathBuf};
+use std::{collections::HashMap, io::BufRead, iter::FlatMap, path::PathBuf};
 
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{anyhow, Error, Result};
 use kml::types::*;
 use quadtree::{Geometry, ToRadians};
 
 use crate::{
     error::{Error as GeoError, UnsupportedGeoType},
-    format::{GeoItem, GeoItemIterator, Meta, MetaMode, Value},
+    format::{ContentMode, GeoItem, Meta, Value},
 };
 
 /// Return a [`kml::Kml`] object loaded from a `.kml` or `.kmz` file.
@@ -272,11 +272,11 @@ type FlatIterRef<'a> =
 // TODO: Contemplate capturing nested attrs in the iterator
 pub struct KmlReader {
     kml: KmlIterator,
-    mode: MetaMode,
+    mode: ContentMode,
 }
 
 impl KmlReader {
-    pub fn try_new<R: BufRead>(reader: R, mode: MetaMode) -> Result<Self> {
+    pub fn try_new<R: BufRead>(reader: R, mode: ContentMode) -> Result<Self> {
         let raw_kml = kml::KmlReader::<_, f64>::from_reader(reader).read()?;
         let kml = Kml::from(raw_kml).into_iter();
 
@@ -285,12 +285,12 @@ impl KmlReader {
 
     fn make_geoitem(&self, mut item: KmlItem) -> Result<GeoItem> {
         let geoitem = match self.mode {
-            MetaMode::Shapes => GeoItem::without_meta(geo::Geometry::try_from(item)?),
-            MetaMode::Full => {
+            ContentMode::Geometry => GeoItem::without_props(geo::Geometry::try_from(item)?),
+            ContentMode::Full => {
                 let meta = Meta::from(take_attrs(&mut item));
-                GeoItem::with_meta(geo::Geometry::try_from(item)?, meta)
+                GeoItem::with_props(geo::Geometry::try_from(item)?, meta)
             }
-            MetaMode::Meta => GeoItem::meta_only(Meta::from(take_attrs(&mut item))),
+            ContentMode::Properties => GeoItem::props_only(Meta::from(take_attrs(&mut item))),
         };
 
         Ok(geoitem)
@@ -303,27 +303,6 @@ impl Iterator for KmlReader {
     fn next(&mut self) -> Option<Self::Item> {
         let next = self.kml.next()?;
         Some(self.make_geoitem(next))
-    }
-}
-
-pub struct KmlTransformer<I: GeoItemIterator> {
-    _iter: I,
-    _mode: MetaMode,
-}
-
-impl<I: GeoItemIterator> KmlTransformer<I> {
-    pub fn new(_iter: I, _mode: MetaMode) -> anyhow::Result<Self> {
-        //Self { iter, mode }
-        bail!("Cannot use Shapefile transformer")
-    }
-}
-
-impl<I: GeoItemIterator> Iterator for KmlTransformer<I> {
-    // TODO: The wrapper enum needs a cow, but may be able to map that if this is better making a String or other simpler type
-    type Item = anyhow::Result<Cow<'static, [u8]>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        unreachable!("Should be erroring Shapefile transformation")
     }
 }
 

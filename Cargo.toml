@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["proximity", "gm-proximity", "meta", "geolib", "bench", "convert", "spatial"]
+members = ["gm-proximity", "geolib", "bench", "convert", "spatial"]
 exclude = ["data/*"]
 
 [workspace.package]

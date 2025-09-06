@@ -7,16 +7,16 @@ use shapefile::dbase::{Date as DbaseDate, DateTime as DbaseDateTime};
 
 use crate::{
     csv::{CsvReader, CsvTransformer},
-    geojson::{JsonReader, JsonTransformer, NdjsonReader, NdjsonTransformer},
-    kml::{KmlReader, KmlTransformer},
-    shp::{ShapefileReader, ShapefileTransformer},
+    geojson::{JsonStreamReader, JsonTransformer, NdjsonReader, NdjsonTransformer},
+    kml::KmlReader,
+    shp::ShapefileReader,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetaMode {
+pub enum ContentMode {
     Full,
-    Shapes,
-    Meta,
+    Geometry,
+    Properties,
 }
 
 /// Wrapper object for a geometry and optional properties.
@@ -34,21 +34,21 @@ impl GeoItem {
         }
     }
 
-    pub fn without_meta(geom: Geometry) -> Self {
+    pub fn without_props(geom: Geometry) -> Self {
         Self {
             geom: Some(geom),
             meta: None,
         }
     }
 
-    pub fn with_meta(geom: Geometry, meta: Meta) -> Self {
+    pub fn with_props(geom: Geometry, meta: Meta) -> Self {
         Self {
             geom: Some(geom),
             meta: Some(meta),
         }
     }
 
-    pub fn meta_only(meta: Meta) -> Self {
+    pub fn props_only(meta: Meta) -> Self {
         Self {
             geom: None,
             meta: Some(meta),
@@ -77,7 +77,7 @@ pub enum Format {
     ///
     /// Uses geojson's permissive, streaming parser and therefore only works on FeatureCollections.
     /// TODO: Support for collections outside of the top level
-    Json,
+    JsonStream,
 
     /// Newline delimited JSON.
     ///
@@ -114,7 +114,7 @@ impl TryFrom<&PathBuf> for Format {
     fn try_from(path: &PathBuf) -> Result<Self, Self::Error> {
         match path.extension().and_then(|ext| ext.to_str()) {
             Some("shp") => Ok(Format::Shp),
-            Some("json") | Some("geojson") => Ok(Format::Json),
+            Some("json") | Some("geojson") => Ok(Format::JsonStream),
             Some("ndjson") => Ok(Format::Ndjson),
             Some("kml") => Ok(Format::Kml),
             Some("kmz") => Ok(Format::Kmz),
@@ -130,7 +130,7 @@ impl std::fmt::Display for Format {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
             Self::Shp => "shp",
-            Self::Json => "json",
+            Self::JsonStream => "json",
             Self::Ndjson => "ndjson",
             Self::Kml => "kml",
             Self::Kmz => "kmz",
@@ -149,7 +149,7 @@ pub type Meta = BTreeMap<String, Value>;
 /// Abstract value for attribute data across GIS formats.
 ///
 /// TODO: Upgrade handlilng for all types
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Value {
     String(String),
     Float(f64),
@@ -164,7 +164,7 @@ pub enum Value {
     Null,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Date(DbaseDate);
 
 impl Date {
@@ -192,7 +192,7 @@ impl Display for Date {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct DateTime(DbaseDateTime);
 
 impl DateTime {
@@ -228,7 +228,7 @@ impl<T> GeoItemIterator for T where T: Iterator<Item = Result<GeoItem>> {}
 
 /// Monomorphization of underlying readers to avoid the need for dynamic dispatch.
 pub enum FormatReader<R: BufRead> {
-    Json(JsonReader),
+    Json(JsonStreamReader),
     Ndjson(NdjsonReader<R>),
     Shp(ShapefileReader),
     Kml(KmlReader),
@@ -253,8 +253,6 @@ impl<R: BufRead> Iterator for FormatReader<R> {
 pub enum FormatTransformer<I: GeoItemIterator> {
     Json(JsonTransformer<I>),
     Ndjson(NdjsonTransformer<I>),
-    Shp(ShapefileTransformer<I>),
-    Kml(KmlTransformer<I>),
     Csv(CsvTransformer<I>),
 }
 
@@ -265,8 +263,6 @@ impl<I: GeoItemIterator> Iterator for FormatTransformer<I> {
         match self {
             Self::Json(iter) => iter.next(),
             Self::Ndjson(iter) => iter.next(),
-            Self::Shp(iter) => iter.next(),
-            Self::Kml(iter) => iter.next(),
             Self::Csv(iter) => iter.next(),
         }
     }

@@ -10,11 +10,6 @@ use anyhow::Result;
 
 use args::{Cli, QuietLevel};
 
-#[cfg(test)]
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Mutex;
-
 // TODO: Work out how this is going to work
 // - What is the full list of formats?
 //   And which formats support buffer-based/incremental parsing vs having to load the whole file
@@ -91,10 +86,12 @@ fn run(args: Cli) -> Result<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use geolib::{
         csv::CsvSettings,
-        format::{Format, MetaMode},
+        format::{ContentMode, Format},
     };
     use io::IO;
 
@@ -127,14 +124,14 @@ mod tests {
     fn convert_geojson_to_ndjson() {
         let output = Arc::new(Mutex::new(String::new()));
         let args = Cli {
-            input: IO::with_str(JSON.to_string(), Format::Json),
+            input: IO::with_str(JSON.to_string(), Format::JsonStream),
             output: IO::with_output_str(output.clone(), Format::Ndjson),
-            mode: MetaMode::Full,
+            mode: ContentMode::Full,
             csv_settings: CsvSettings::default(),
             quiet: QuietLevel::Normal,
         };
 
-        let (ok_chunks, err_chunks) = run(args).expect("Run succeeded");
+        let (ok_chunks, err_chunks) = run(args).unwrap();
         assert_eq!(ok_chunks, 2);
         assert_eq!(err_chunks, 0);
 
