@@ -43,7 +43,7 @@ impl IO {
         // This just means we don't have to embed input stream generation in the match below
         if self.format == Format::Shp {
             if let StreamKind::File(f) = &self.stream {
-                return Ok(FormatReader::Shp(ShapefileReader::new(f, mode)?));
+                return Ok(FormatReader::Shp(ShapefileReader::try_new(f, mode)?));
             } else {
                 bail!("Shapefiles can only be read from file input, not stdin");
             }

@@ -1,6 +1,6 @@
 //! CSV input and output format processing
 
-use std::{borrow::Cow, collections::BTreeMap, io::Read, iter::Peekable, str::FromStr};
+use std::{borrow::Cow, io::Read, iter::Peekable, str::FromStr};
 
 use anyhow::{anyhow, bail, Result};
 use csv::{ByteRecord, Reader, ReaderBuilder, WriterBuilder};
@@ -12,7 +12,7 @@ use wkb::{
 };
 use wkt::{ToWkt, Wkt};
 
-use crate::format::{ContentMode, GeoItem, GeoItemIterator, Meta, Value};
+use crate::format::{ContentMode, GeoItem, GeoItemIterator, Properties, Value};
 
 const EAGER_PARSE_MSG: &str = "Indices eagerly parsed";
 
@@ -171,8 +171,8 @@ impl<R: Read> CsvReader<R> {
         }
     }
 
-    fn extract_meta(&self, record: &ByteRecord) -> Result<Meta> {
-        let mut meta = BTreeMap::new();
+    fn extract_meta(&self, record: &ByteRecord) -> Result<Properties> {
+        let mut meta = Properties::new();
 
         for (i, (header, value)) in self.headers.iter().zip(record.iter()).enumerate() {
             // Skip if the current field is one of the geometry fields
@@ -257,9 +257,9 @@ impl<I: GeoItemIterator> CsvTransformer<I> {
                 .unwrap_or(&Ok(GeoItem::default()))
                 .as_ref()
                 .unwrap_or(&GeoItem::default())
-                .meta
+                .props
                 .as_ref()
-                .unwrap_or(&BTreeMap::default())
+                .unwrap_or(&Properties::default())
                 .keys()
                 .map(|k| {
                     // NOTE: Side effect - pushing field
@@ -303,7 +303,7 @@ impl<I: GeoItemIterator> CsvTransformer<I> {
     ///
     /// This method is forgiving, it ignores members not present in the headers list and inserts missing members as
     /// empty strings.
-    fn push_meta(&self, record: &mut ByteRecord, meta: Meta) {
+    fn push_meta(&self, record: &mut ByteRecord, meta: Properties) {
         // Loop through the headers just in case the order in each item is different
         for h in self
             .headers
@@ -311,12 +311,18 @@ impl<I: GeoItemIterator> CsvTransformer<I> {
             .expect("Headers defined on first next")
         {
             match meta.get(h) {
+                // Serialize nested properties as JSON when in CSV
+                Some(Value::Object(o)) => {
+                    record.push_field(serde_json::to_string(o).expect("Valid json map").as_bytes())
+                }
+                Some(Value::Array(a)) => record.push_field(
+                    serde_json::to_string(a)
+                        .expect("Valid json array")
+                        .as_bytes(),
+                ),
                 Some(Value::String(s)) => record.push_field(s.as_bytes()),
-                Some(Value::Integer(n)) => record.push_field(n.to_string().as_bytes()),
-                Some(Value::Float(n)) => record.push_field(n.to_string().as_bytes()),
-                Some(Value::Boolean(b)) => record.push_field(if *b { b"1" } else { b"0" }),
-                Some(Value::Date(d)) => record.push_field(d.to_string().as_bytes()),
-                Some(Value::DateTime(d)) => record.push_field(d.to_string().as_bytes()),
+                Some(Value::Number(n)) => record.push_field(n.to_string().as_bytes()),
+                Some(Value::Bool(b)) => record.push_field(if *b { b"1" } else { b"0" }),
                 Some(Value::Null) | None => record.push_field(b""),
             }
         }
@@ -370,7 +376,7 @@ impl<I: GeoItemIterator> Iterator for CsvTransformer<I> {
             // Then emit the Meta if required, using get to ensure that everything is in the correct order
             // Empty fields are not errors, they are left blank
             if self.mode == ContentMode::Full || self.mode == ContentMode::Properties {
-                self.push_meta(&mut byte_record, item.meta.unwrap_or_default());
+                self.push_meta(&mut byte_record, item.props.unwrap_or_default());
             }
 
             self.write_record(&byte_record)
@@ -422,7 +428,7 @@ mod tests {
             ));
 
             // Check that properties are preserved
-            let first_meta = features[0].meta.as_ref().unwrap();
+            let first_meta = features[0].props.as_ref().unwrap();
             assert_eq!(
                 first_meta.get("name"),
                 Some(&Value::String("point1".to_string()))
@@ -461,7 +467,7 @@ mod tests {
             ));
 
             // Check that properties are preserved
-            let first_meta = features[0].meta.as_ref().unwrap();
+            let first_meta = features[0].props.as_ref().unwrap();
             assert_eq!(first_meta.get("id"), Some(&Value::String("1".to_string())));
             assert_eq!(
                 first_meta.get("category"),
@@ -567,14 +573,14 @@ mod tests {
 
         #[test]
         fn outputs_with_props_even_when_different_order() {
-            let m1 = BTreeMap::from([
-                ("f1".to_string(), Value::String("v1".to_string())),
-                ("f2".to_string(), Value::String("v2".to_string())),
-            ]);
-            let m2 = BTreeMap::from([
-                ("f2".to_string(), Value::String("v3".to_string())),
-                ("f1".to_string(), Value::String("v4".to_string())),
-            ]);
+            let mut m1 = Properties::new();
+            m1.insert("f1".to_string(), Value::String("v1".to_string()));
+            m1.insert("f2".to_string(), Value::String("v2".to_string()));
+
+            let mut m2 = Properties::new();
+            m2.insert("f2".to_string(), Value::String("v3".to_string()));
+            m2.insert("f1".to_string(), Value::String("v4".to_string()));
+
             let iter = vec![
                 Ok(GeoItem::with_props(pt(0., 0.), m1)),
                 Ok(GeoItem::with_props(pt(1., 0.), m2)),

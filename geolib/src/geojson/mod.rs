@@ -7,9 +7,8 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use geojson::{FeatureReader, GeoJson};
-use serde_json::{Map, Value as JsonValue};
 
-use crate::format::{ContentMode, GeoItem, GeoItemIterator, Meta, Value};
+use crate::format::{ContentMode, GeoItem, GeoItemIterator, Properties};
 
 const GEOM_FEAT_ONLY_MSG: &str = "Can only process Feature and Geometry types";
 
@@ -54,9 +53,8 @@ impl Iterator for JsonStreamReader {
                 next.map(|f| geoitem_from_geojson(GeoJson::Feature(f?), false))
             }
             ContentMode::Properties => next.map(|f| {
-                Ok(GeoItem::props_only(Meta::from(PropsWrapper(
-                    f?.properties.unwrap_or_default(),
-                ))))
+                let props = f?.properties.unwrap_or_default();
+                Ok(GeoItem::props_only(props))
             }),
         }
     }
@@ -102,12 +100,12 @@ impl<R: BufRead> Iterator for NdjsonReader<R> {
             (ContentMode::Full, Ok(f)) => geoitem_from_geojson(f, true),
             (ContentMode::Geometry, Ok(f)) => geoitem_from_geojson(f, false),
             (ContentMode::Properties, Ok(f)) => {
-                let meta = match f {
+                let props = match f {
                     GeoJson::Feature(feat) => feat.properties.unwrap_or_default(),
-                    GeoJson::Geometry(_) => Map::default().into(),
+                    GeoJson::Geometry(_) => Properties::default().into(),
                     _ => return Some(Err(anyhow!(GEOM_FEAT_ONLY_MSG))),
                 };
-                Ok(GeoItem::props_only(Meta::from(PropsWrapper(meta))))
+                Ok(GeoItem::props_only(props))
             }
             (_, Err(err)) => Err(err),
         };
@@ -243,93 +241,37 @@ impl<I: GeoItemIterator> Iterator for NdjsonTransformer<I> {
     }
 }
 
-/// Newtype for enabling operations on json maps.
-struct PropsWrapper(Map<String, JsonValue>);
-
-impl From<PropsWrapper> for Meta {
-    fn from(value: PropsWrapper) -> Self {
-        value
-            .0
-            .into_iter()
-            .map(|(k, v)| {
-                let value = match v {
-                    JsonValue::String(s) => Value::String(s),
-                    // Always convert numbers to f64s rather than trying to parse more deeply
-                    // This failing will error the row
-                    // TODO: Consider Error (and TryFrom) rather than NAN
-                    JsonValue::Number(n) => Value::Float(n.as_f64().unwrap_or(f64::NAN)),
-                    JsonValue::Bool(b) => Value::Boolean(b),
-                    JsonValue::Null => Value::Null,
-                    // Don't support arrays and objects
-                    // TODO: Consider serializing as JSON
-                    JsonValue::Array(_) => Value::Null,
-                    JsonValue::Object(_) => Value::Null,
-                };
-
-                (k, value)
-            })
-            .collect()
-    }
-}
-
-impl From<Meta> for PropsWrapper {
-    fn from(value: Meta) -> Self {
-        let map: Map<String, JsonValue> = value
-            .into_iter()
-            .map(|(k, v)| {
-                let json_value = match v {
-                    Value::String(s) => JsonValue::String(s),
-                    Value::Float(f) => serde_json::Number::from_f64(f)
-                        .map(|n| JsonValue::Number(n))
-                        .unwrap_or(JsonValue::Null),
-                    Value::Integer(i) => JsonValue::Number(i.into()),
-                    Value::Boolean(b) => JsonValue::Bool(b),
-                    Value::Date(d) => JsonValue::String(d.to_string()),
-                    Value::DateTime(d) => JsonValue::String(d.to_string()),
-                    Value::Null => JsonValue::Null,
-                };
-
-                (k, json_value)
-            })
-            .collect();
-
-        PropsWrapper(map)
-    }
-}
-
 fn geoitem_from_geojson(geojson: GeoJson, preserve_meta: bool) -> Result<GeoItem> {
     match geojson {
         GeoJson::Feature(f) => {
             let geom = geo::Geometry::try_from(f.geometry.ok_or(anyhow!("Invalid geometry"))?)?;
-            let meta = match f.properties {
-                Some(p) if preserve_meta => Some(Meta::from(PropsWrapper(p))),
+            let props = match f.properties {
+                Some(p) if preserve_meta => Some(p),
                 _ => None,
             };
-            Ok(GeoItem::new(geom, meta))
+            Ok(GeoItem::new(geom, props))
         }
         GeoJson::Geometry(g) => Ok(geo::Geometry::try_from(g)?.into()),
         _ => Err(anyhow!(GEOM_FEAT_ONLY_MSG)),
     }
 }
 
-/// TODO: Should this be done with From on a parent object with the properties most likely
+/// Make the appropriate json output given the input and the [`ContentMode`].
+///
+/// The [GeoJSON Feature spec](https://datatracker.ietf.org/doc/html/rfc7946#section-3.2) says that a properties key
+/// must be present but can be an  Object or Null. For consistency in showing downstream that the conversion worked but
+/// there was nothing there, we always serialize an empty object.
 fn make_feature(item: GeoItem, mode: ContentMode) -> Vec<u8> {
     let vec = match mode {
         ContentMode::Full | ContentMode::Geometry => {
             let mut f = geojson::Feature::default();
             f.geometry = item.geom.as_ref().map(geojson::Geometry::from);
             if mode == ContentMode::Full {
-                f.properties = item.meta.map(|m| PropsWrapper::from(m).0)
+                f.properties = Some(item.props.unwrap_or_default());
             }
             serde_json::to_vec(&f)
         }
-        ContentMode::Properties => {
-            let json = item
-                .meta
-                .map(|m| PropsWrapper::from(m).0)
-                .unwrap_or_default();
-            serde_json::to_vec(&json)
-        }
+        ContentMode::Properties => serde_json::to_vec(&item.props.unwrap_or_default()),
     };
 
     vec.expect("Serialize succeeds")
@@ -338,6 +280,8 @@ fn make_feature(item: GeoItem, mode: ContentMode) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::format::Value;
 
     mod reader {
         use super::*;
@@ -377,12 +321,12 @@ mod tests {
             ));
 
             // Check that properties are preserved
-            let first_meta = features[0].meta.as_ref().unwrap();
+            let first_meta = features[0].props.as_ref().unwrap();
             assert_eq!(
                 first_meta.get("name"),
                 Some(&Value::String("point1".to_string()))
             );
-            assert_eq!(first_meta.get("value"), Some(&Value::Float(42.0)));
+            assert_eq!(first_meta.get("value"), Some(&Value::Number(42.into())));
         }
 
         #[test]
@@ -424,30 +368,27 @@ mod tests {
             ));
 
             // Check that properties are preserved
-            let first_meta = features[0].meta.as_ref().unwrap();
+            let first_meta = features[0].props.as_ref().unwrap();
             assert_eq!(
                 first_meta.get("name"),
                 Some(&Value::String("point1".to_string()))
             );
-            assert_eq!(first_meta.get("value"), Some(&Value::Float(42.0)));
+            assert_eq!(first_meta.get("value"), Some(&Value::Number(42.into())));
         }
     }
 
     mod transform {
         use super::*;
 
-        use std::collections::BTreeMap;
-
         fn pt(x: f64, y: f64) -> geo::Geometry {
             geo::Geometry::Point(geo::Point::new(x, y))
         }
 
         fn transform_test_data() -> Vec<Result<GeoItem>> {
-            let m1 = BTreeMap::from([
-                ("name".to_string(), Value::String("point1".to_string())),
-                ("value".to_string(), Value::Float(42.0)),
-                ("active".to_string(), Value::Boolean(true)),
-            ]);
+            let mut m1 = Properties::new();
+            m1.insert("name".to_string(), Value::String("point1".to_string()));
+            m1.insert("value".to_string(), Value::Number(42.into()));
+            m1.insert("active".to_string(), Value::Bool(true));
             vec![
                 Ok(GeoItem::with_props(pt(1.1, 1.2), m1)),
                 Ok(GeoItem::without_props(pt(2.1, 2.2))),
@@ -464,7 +405,6 @@ mod tests {
                 .flatten()
                 .collect();
             let output = std::str::from_utf8(&buf).unwrap();
-            eprintln!("{}", output);
 
             // Parse the output as GeoJSON
             let geojson: geojson::GeoJson = output.parse().unwrap();
@@ -482,12 +422,7 @@ mod tests {
                     props.get("name"),
                     Some(&serde_json::Value::String("point1".to_string()))
                 );
-                assert_eq!(
-                    props.get("value"),
-                    Some(&serde_json::Value::Number(
-                        serde_json::Number::from_f64(42.0).unwrap()
-                    ))
-                );
+                assert_eq!(props.get("value"), Some(&Value::Number(42.into())));
                 assert_eq!(props.get("active"), Some(&serde_json::Value::Bool(true)));
 
                 // Second feature should have null properties
@@ -496,7 +431,7 @@ mod tests {
                     second_feature.geometry.as_ref().unwrap().value,
                     geojson::Value::Point(_)
                 ));
-                assert!(second_feature.properties.is_none());
+                assert!(second_feature.properties.as_ref().unwrap().is_empty());
             } else {
                 panic!("Expected FeatureCollection");
             }
@@ -520,7 +455,7 @@ mod tests {
 
                 // First object has properties
                 assert_eq!(arr[0]["name"], "point1");
-                assert_eq!(arr[0]["value"], 42.0);
+                assert_eq!(arr[0]["value"], 42);
                 assert_eq!(arr[0]["active"], true);
 
                 // Second object is empty (without_props)
@@ -550,14 +485,14 @@ mod tests {
                 lines[0].contains("\"geometry\":{\"type\":\"Point\",\"coordinates\":[1.1,1.2]}")
             );
             assert!(lines[0]
-                .contains("\"properties\":{\"active\":true,\"name\":\"point1\",\"value\":42.0}"));
+                .contains("\"properties\":{\"active\":true,\"name\":\"point1\",\"value\":42}"));
 
             // Second line should have null properties
             assert!(lines[1].contains("\"type\":\"Feature\""));
             assert!(
                 lines[1].contains("\"geometry\":{\"type\":\"Point\",\"coordinates\":[2.1,2.2]}")
             );
-            assert!(lines[1].contains("\"properties\":null"));
+            assert!(lines[1].contains("\"properties\":{}"));
         }
 
         #[test]
@@ -578,7 +513,7 @@ mod tests {
             // First line has properties
             let first_json: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
             assert_eq!(first_json["name"], "point1");
-            assert_eq!(first_json["value"], 42.0);
+            assert_eq!(first_json["value"], 42);
             assert_eq!(first_json["active"], true);
 
             // Second line is empty object (without_props)

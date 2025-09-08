@@ -1,8 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use geolib::error::Error;
-
-use crate::Paths;
+use crate::{error::Error, Paths};
 
 /// Remove one specific run set and its associated build data.
 pub fn remove(name: &String, paths: &Paths) -> Result<(), Error> {

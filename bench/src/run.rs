@@ -1,9 +1,11 @@
 use std::{fs, path::PathBuf};
 
-use geolib::error::Error;
 use serde::Deserialize;
 
-use crate::write::{write_cmp, write_data};
+use crate::{
+    error::Error,
+    write::{write_cmp, write_data},
+};
 
 #[derive(Debug, Deserialize)]
 pub struct RunSet {

@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use geolib::error::Error;
+use crate::error::Error;
 
 /// Clear all the build assets from the builds folder.
 pub fn clean(build_path: &PathBuf) -> Result<(), Error> {

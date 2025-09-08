@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://earth.google.com/kml/2.2">
+  <Document>
+    <name>Folder Test Document</name>
+    <description>Test document for folder hierarchy</description>
+    <Folder>
+      <name>Top Level Folder</name>
+      <description>This is the top level folder</description>
+      <!-- Raw geometry in folder -->
+      <Point>
+        <coordinates>-73.984939,40.758874,0.000000</coordinates>
+      </Point>
+      <!-- Placemark in folder -->
+      <Placemark>
+        <name>Folder Placemark</name>
+        <description>A placemark inside the top folder</description>
+        <customField>folder_value</customField>
+        <Point>
+          <coordinates>-73.957845,40.800289,0.000000</coordinates>
+        </Point>
+      </Placemark>
+      <!-- Nested folder -->
+      <Folder>
+        <name>Nested Folder</name>
+        <description>This is a nested folder</description>
+        <Placemark>
+          <name>Nested Placemark</name>
+          <description>A placemark in the nested folder</description>
+          <nestedProperty>deep_value</nestedProperty>
+          <Point>
+            <coordinates>-73.973093,40.764732,0.000000</coordinates>
+          </Point>
+        </Placemark>
+      </Folder>
+    </Folder>
+  </Document>
+</kml>

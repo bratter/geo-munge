@@ -4,13 +4,12 @@ use rand::{
 };
 use std::path::PathBuf;
 
-use geolib::error::Error;
 use shapefile::{
     dbase::{Record, TableWriterBuilder},
     Point,
 };
 
-use crate::run::Run;
+use crate::{error::Error, run::Run};
 
 // TODO: It is probably safe to have the end user only require a shared reference, so could wrap in
 // a raw or something

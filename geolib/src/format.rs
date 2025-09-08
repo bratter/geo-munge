@@ -1,9 +1,8 @@
-use std::{borrow::Cow, collections::BTreeMap, fmt::Display, io::BufRead, path::PathBuf};
+use std::{borrow::Cow, io::BufRead, path::PathBuf};
 
 use anyhow::{anyhow, Error, Result};
 use clap::ValueEnum;
 use geo::Geometry;
-use shapefile::dbase::{Date as DbaseDate, DateTime as DbaseDateTime};
 
 use crate::{
     csv::{CsvReader, CsvTransformer},
@@ -19,39 +18,44 @@ pub enum ContentMode {
     Properties,
 }
 
+/// We use a json object as our intermediate property representation.
+pub type Properties = serde_json::Map<String, serde_json::Value>;
+
+pub use serde_json::Value;
+
 /// Wrapper object for a geometry and optional properties.
 #[derive(Debug, Default)]
 pub struct GeoItem {
     pub geom: Option<Geometry>,
-    pub meta: Option<Meta>,
+    pub props: Option<Properties>,
 }
 
 impl GeoItem {
-    pub fn new(geom: Geometry, meta: Option<Meta>) -> Self {
+    pub fn new(geom: Geometry, meta: Option<Properties>) -> Self {
         Self {
             geom: Some(geom),
-            meta,
+            props: meta,
         }
     }
 
     pub fn without_props(geom: Geometry) -> Self {
         Self {
             geom: Some(geom),
-            meta: None,
+            props: None,
         }
     }
 
-    pub fn with_props(geom: Geometry, meta: Meta) -> Self {
+    pub fn with_props(geom: Geometry, meta: Properties) -> Self {
         Self {
             geom: Some(geom),
-            meta: Some(meta),
+            props: Some(meta),
         }
     }
 
-    pub fn props_only(meta: Meta) -> Self {
+    pub fn props_only(meta: Properties) -> Self {
         Self {
             geom: None,
-            meta: Some(meta),
+            props: Some(meta),
         }
     }
 }
@@ -143,85 +147,7 @@ impl std::fmt::Display for Format {
     }
 }
 
-/// Intermediate representation for metadata.
-pub type Meta = BTreeMap<String, Value>;
-
-/// Abstract value for attribute data across GIS formats.
-///
-/// TODO: Upgrade handlilng for all types
-#[derive(Debug, PartialEq)]
-pub enum Value {
-    String(String),
-    Float(f64),
-    Integer(i64),
-    Boolean(bool),
-    // NOTE: Using naive dbase Date/Time representations as they are just simple transport and shapefile is going to be
-    // one of the few formats with these types - this avoids requiring a new dependency
-    Date(Date),
-    DateTime(DateTime),
-    // TODO: Null should be coercable into a non-null type to account for cases where something is missing in a
-    // permissive format in some records
-    Null,
-}
-
-#[derive(Debug, PartialEq)]
-pub struct Date(DbaseDate);
-
-impl Date {
-    pub fn into_inner(self) -> DbaseDate {
-        self.0
-    }
-}
-
-impl From<DbaseDate> for Date {
-    fn from(value: DbaseDate) -> Self {
-        Self(value)
-    }
-}
-
-impl Display for Date {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let inner = self.0;
-        write!(
-            f,
-            "{:04}-{:02}-{:02}",
-            inner.year(),
-            inner.month(),
-            inner.day()
-        )
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub struct DateTime(DbaseDateTime);
-
-impl DateTime {
-    pub fn into_inner(self) -> DbaseDateTime {
-        self.0
-    }
-}
-
-impl From<DbaseDateTime> for DateTime {
-    fn from(value: DbaseDateTime) -> Self {
-        Self(value)
-    }
-}
-
-impl Display for DateTime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let d = self.0.date();
-        let t = self.0.time();
-        write!(
-            f,
-            "{}T{:02}:{:02}:{:02}",
-            Date::from(d),
-            t.hours(),
-            t.minutes(),
-            t.seconds()
-        )
-    }
-}
-
+/// Trait indicating that a type is an Iterator over [`GeoItem`]s.
 pub trait GeoItemIterator: Iterator<Item = Result<GeoItem>> {}
 
 impl<T> GeoItemIterator for T where T: Iterator<Item = Result<GeoItem>> {}

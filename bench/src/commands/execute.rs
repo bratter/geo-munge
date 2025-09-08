@@ -4,9 +4,7 @@ use std::{
     time::Instant,
 };
 
-use geolib::error::Error;
-
-use crate::{run::RunSet, Paths};
+use crate::{error::Error, run::RunSet, Paths};
 
 use super::remove_build;
 

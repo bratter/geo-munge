@@ -1,8 +1,6 @@
 use std::fs;
 
-use geolib::error::Error;
-
-use crate::{run::RunSet, Paths};
+use crate::{error::Error, run::RunSet, Paths};
 
 pub fn build(name: &String, paths: &Paths) -> Result<(), Error> {
     // Open the run file and load

@@ -1,8 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use geolib::error::Error;
-
-use crate::run::RunSet;
+use crate::{error::Error, run::RunSet};
 
 /// Load the config at input_path into the runs directory.
 pub fn load(input_path: &PathBuf, run_path: &PathBuf) -> Result<(), Error> {

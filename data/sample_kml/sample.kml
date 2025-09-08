@@ -31,6 +31,7 @@
       <name>Time Square</name>
       <description><![CDATA[Times Square is a major commercial intersection and neighborhood in Midtown Manhattan, New York City.]]></description>
       <styleUrl>#style1</styleUrl>
+      <randomProperty>42</randomProperty>
       <Point>
         <coordinates>-73.984939,40.758874,0.000000</coordinates>
       </Point>
@@ -53,19 +54,14 @@
         </outerBoundaryIs>
       </Polygon>
     </Placemark>
-    <Placemark>
-      <name>Lincoln Tunnel</name>
-      <description><![CDATA[Traffic(under 10 minutes)]]></description>
-      <styleUrl>#style3</styleUrl>
-      <LineString>
-        <tessellate>1</tessellate>
-        <coordinates>
-          -74.022749,40.766578,0.000000
-          -74.021955,40.767206,0.000000
-          -74.020571,40.767279,0.000000
-          -74.000079,40.758980,0.000000
-        </coordinates>
-      </LineString>
-    </Placemark>
+    <LineString>
+      <tessellate>1</tessellate>
+      <coordinates>
+        -74.022749,40.766578,0.000000
+        -74.021955,40.767206,0.000000
+        -74.020571,40.767279,0.000000
+        -74.000079,40.758980,0.000000
+      </coordinates>
+    </LineString>
   </Document>
 </kml>

@@ -1,5 +1,6 @@
 mod args;
 mod commands;
+mod error;
 mod run;
 mod write;
 
@@ -11,7 +12,7 @@ use std::{
 
 use args::{Args, Command};
 use commands::{build, clean, execute, list, load, remove};
-use geolib::error::Error;
+use error::Error;
 
 use clap::Parser;
 

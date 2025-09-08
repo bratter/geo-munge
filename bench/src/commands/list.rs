@@ -2,9 +2,7 @@ use std::{fs, path::PathBuf};
 
 use csv::Writer;
 
-use geolib::error::Error;
-
-use crate::run::RunSet;
+use crate::{error::Error, run::RunSet};
 
 /// Outputs a list of currently stored runs to stdout. As this has to parse all the files it is
 /// relatively resource intensive.
