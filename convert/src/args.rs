@@ -1,18 +1,23 @@
-use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser};
+use std::path::PathBuf;
+
+use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser, ValueEnum};
 use geolib::{
     csv::{CsvGeom, CsvSettings},
-    format::{ContentMode, Format},
+    format::ContentMode,
 };
 
-use crate::{io::IO, stream::StreamKind};
+use crate::{
+    io::{FileOnlyFormat, InputSpec, OutputSpec, StreamableFormat},
+    stream::StreamKind,
+};
 
 /// Main CLI argument parser.
 ///
 /// Is not a clap parser itself, but calls clap and layers additional parsing on top.
 #[derive(Debug)]
 pub struct Cli {
-    pub input: IO,
-    pub output: IO,
+    pub input: InputSpec,
+    pub output: OutputSpec,
     pub mode: ContentMode,
     pub quiet: QuietLevel,
     pub csv_settings: CsvSettings,
@@ -25,8 +30,8 @@ impl Cli {
 
         Self {
             mode: args.mode(),
-            input: Self::parse_io("input", args.input, args.input_format),
-            output: Self::parse_io("output", args.output, args.output_format),
+            input: Self::parse_input("input", args.input, args.input_format),
+            output: Self::parse_output("output", args.output, args.output_format),
             quiet: args.quiet.into(),
             csv_settings: CsvSettings {
                 geom: args.csv_geom,
@@ -35,47 +40,143 @@ impl Cli {
         }
     }
 
-    /// Conduct argument validation that can't be done inside the clap instance.
-    fn parse_io(kind: &'static str, stream: StreamKind, format: Option<Format>) -> IO {
+    /// Parse input specification with validation.
+    fn parse_input(
+        kind: &'static str,
+        stream: StreamKind,
+        format: Option<InputFormat>,
+    ) -> InputSpec {
         match (stream, format) {
-            (stream @ StreamKind::StdIo, Some(format)) => IO::new(stream, format),
-            (StreamKind::StdIo, None) => {
-                let io = if kind == "input" { "StdIn" } else { "StdOut" };
-                Self::exit(
-                    ErrorKind::ArgumentConflict,
-                    format!(
-                        "When using {}, you must provide the {} format using the -i flag",
-                        io, kind
-                    ),
-                );
-            }
-            (StreamKind::File(file), None) => {
-                if let Ok(format) = Format::try_from(&file) {
-                    IO::new(StreamKind::File(file), format)
-                } else {
-                    Self::exit(
-                        ErrorKind::InvalidValue,
-                        format!(
-                            "File format for {} has a missing or invalid file extension",
-                            kind
-                        ),
-                    );
-                }
-            }
-            (StreamKind::File(file), Some(format)) => {
-                // Type erase the Error that doesn't impl PartialEq
-                if Format::try_from(&file).ok() == Some(format) {
-                    IO::new(StreamKind::File(file), format)
-                } else {
+            (StreamKind::StdIo, Some(format)) => match format {
+                InputFormat::Shp | InputFormat::Kml | InputFormat::Kmz => {
                     Self::exit(
                         ErrorKind::ArgumentConflict,
-                        format!(
-                            "Format in {} filename '{}' doesn't match '{}' which was specified using the -i flag", 
-                            kind, file.to_string_lossy(), format
-                        ),
+                        format!("File-only format '{:?}' cannot read from stdin", format),
                     );
                 }
-            } // Wildcard covers testing permutations
+                InputFormat::JsonStream => InputSpec::Streamable {
+                    format: StreamableFormat::JsonStream,
+                    stream: StreamKind::StdIo,
+                },
+                InputFormat::Ndjson => InputSpec::Streamable {
+                    format: StreamableFormat::Ndjson,
+                    stream: StreamKind::StdIo,
+                },
+                InputFormat::Csv => InputSpec::Streamable {
+                    format: StreamableFormat::Csv,
+                    stream: StreamKind::StdIo,
+                },
+            },
+            (StreamKind::StdIo, None) => {
+                Self::exit(
+                    ErrorKind::ArgumentConflict,
+                    "When using stdin, you must provide the input format using the -i flag",
+                );
+            }
+            (StreamKind::File(path), None) => match InputFormat::try_from_path(&path) {
+                Ok(format) => Self::build_input_spec(StreamKind::File(path), format),
+                Err(_) => Self::exit(
+                    ErrorKind::InvalidValue,
+                    format!(
+                        "File format for {} has a missing or invalid file extension",
+                        kind
+                    ),
+                ),
+            },
+            (StreamKind::File(path), Some(format)) => {
+                // Validate format matches file extension
+                match InputFormat::try_from_path(&path) {
+                    Ok(path_format) if path_format == format => {
+                        Self::build_input_spec(StreamKind::File(path), format)
+                    }
+                    _ => Self::exit(
+                        ErrorKind::ArgumentConflict,
+                        format!(
+                            "Format in {} filename '{}' doesn't match '{:?}' which was specified using the -i flag", 
+                            kind, path.to_string_lossy(), format
+                        ),
+                    ),
+                }
+            }
+            #[cfg(test)]
+            _ => unreachable!(),
+        }
+    }
+
+    /// Build InputSpec from InputFormat.
+    fn build_input_spec(stream: StreamKind, format: InputFormat) -> InputSpec {
+        match format {
+            InputFormat::JsonStream => InputSpec::Streamable {
+                format: StreamableFormat::JsonStream,
+                stream,
+            },
+            InputFormat::Ndjson => InputSpec::Streamable {
+                format: StreamableFormat::Ndjson,
+                stream,
+            },
+            InputFormat::Csv => InputSpec::Streamable {
+                format: StreamableFormat::Csv,
+                stream,
+            },
+            InputFormat::Shp => InputSpec::FileOnly {
+                format: FileOnlyFormat::Shp,
+                path: match stream {
+                    StreamKind::File(path) => path,
+                    _ => unreachable!("File-only formats require file path"),
+                },
+            },
+            InputFormat::Kml => InputSpec::FileOnly {
+                format: FileOnlyFormat::Kml,
+                path: match stream {
+                    StreamKind::File(path) => path,
+                    _ => unreachable!("File-only formats require file path"),
+                },
+            },
+            InputFormat::Kmz => InputSpec::FileOnly {
+                format: FileOnlyFormat::Kmz,
+                path: match stream {
+                    StreamKind::File(path) => path,
+                    _ => unreachable!("File-only formats require file path"),
+                },
+            },
+        }
+    }
+
+    /// Parse output specification with validation.
+    fn parse_output(
+        kind: &'static str,
+        stream: StreamKind,
+        format: Option<OutputFormat>,
+    ) -> OutputSpec {
+        match (stream, format) {
+            (stream, Some(format)) => {
+                let streamable_format = match format {
+                    OutputFormat::JsonStream => StreamableFormat::JsonStream,
+                    OutputFormat::Ndjson => StreamableFormat::Ndjson,
+                    OutputFormat::Csv => StreamableFormat::Csv,
+                };
+                OutputSpec::new(streamable_format, stream)
+            }
+            (StreamKind::StdIo, None) => {
+                Self::exit(
+                    ErrorKind::ArgumentConflict,
+                    "When using stdout, you must provide the output format using the -o flag",
+                );
+            }
+            (StreamKind::File(path), None) => match OutputFormat::try_from_path(&path) {
+                Ok(format) => {
+                    let streamable_format = match format {
+                        OutputFormat::JsonStream => StreamableFormat::JsonStream,
+                        OutputFormat::Ndjson => StreamableFormat::Ndjson,
+                        OutputFormat::Csv => StreamableFormat::Csv,
+                    };
+                    OutputSpec::new(streamable_format, StreamKind::File(path))
+                }
+                Err(err) => Self::exit(
+                    ErrorKind::InvalidValue,
+                    format!("File format for {}: {}", kind, err),
+                ),
+            },
             #[cfg(test)]
             _ => unreachable!(),
         }
@@ -99,11 +200,11 @@ struct Args {
 
     /// Select the type of the input format.
     #[arg(long = "input", short)]
-    input_format: Option<Format>,
+    input_format: Option<InputFormat>,
 
     /// Select the type of the output format.
     #[arg(long = "output", short)]
-    output_format: Option<Format>,
+    output_format: Option<OutputFormat>,
 
     /// Only output shapes, do not process any metadata.
     #[arg(long, short, conflicts_with = "meta")]
@@ -113,11 +214,12 @@ struct Args {
     #[arg(long, short, conflicts_with = "shapes")]
     meta: bool,
 
-    /// Override the delimiter for csv output. Must be single ASCII character.
+    /// Override the delimiter for csv processing. Must be single ASCII character.
     #[arg(short, long, default_value = ",", value_parser = Self::parse_delimiter)]
     delimiter: u8,
 
     /// Determine the type and name of the geometry input or output columns for CSV.
+    /// TODO: Document this
     #[arg(long, short = 'g', default_value = "wkt")]
     csv_geom: CsvGeom,
 
@@ -162,6 +264,116 @@ impl From<u8> for QuietLevel {
             1 => QuietLevel::NoErrors,
             2 => QuietLevel::NoMessages,
             _ => unreachable!("Clap restricts this to 0–2"),
+        }
+    }
+}
+
+/// Input formats available for conversion
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InputFormat {
+    /// JSON.
+    ///
+    /// Uses geojson's permissive, streaming parser and therefore only works on FeatureCollections or arrays of Features
+    /// at the top level.
+    JsonStream,
+
+    /// Newline delimited JSON.
+    ///
+    /// Streamable, with individual features separated by `\n` (input also supports \r\n`). Each underlying feature must
+    /// be a valid geojson Feature, we do not support FeatureCollections or GeometryCollections for simplicity and
+    /// compatibility.
+    Ndjson,
+
+    /// CSV.
+    ///
+    /// Streamable, with features mapping to individual rows in the csv. The csv format has further configuration
+    /// options that are shared between inputs and outputs (we don't anticipate input and output formats being the
+    /// same!). These are captured in the delimiter and csv-geom fields.
+    ///
+    /// When reading, input csv files/streams must have a header row to enable property keys - we do not support
+    /// anonymous keys.
+    Csv,
+
+    /// Shapefile.
+    ///
+    /// Streamable, reading and writing can be done by feature. .dbf file contents are read into a common properties
+    /// value format based on JSON, so some type fidelity will be lost, but fields will be converted to their nearest
+    /// valid JSON type.
+    Shp,
+
+    /// KML, uncompressed.
+    ///
+    /// Not streamable, requires buffering and parsing the whole file in memory for input. KML is heirarchical, with
+    /// geometries able to be at multiple levels, which we flatten in our processing.
+    ///
+    /// We attempt to extract property data from KML as follows, with all properties exracted as strings:
+    ///
+    /// - `name` and `description` elements in `Placemark` objects are extracted into properties.
+    /// - Other element in `Placemark` objects are extracted with theit element name as the key and the content as the
+    ///   value. We do not recurse into child-elements.
+    /// - Nested `Folder` objects have their `name` and `description` recursively captured and added to an array. Each
+    ///   geometry inside a folder has this array pushed onto its properties with deeper descendants at the top.
+    Kml,
+
+    /// KMZ, compressed KML.
+    ///
+    /// Not streamable, requires buffering and parsing the whole file in memory for input or output. See KML for futher
+    /// notes on parsing.
+    Kmz,
+}
+
+impl InputFormat {
+    pub fn try_from_path(path: &PathBuf) -> Result<Self, &'static str> {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("json") | Some("geojson") => Ok(InputFormat::JsonStream),
+            Some("ndjson") => Ok(InputFormat::Ndjson),
+            Some("csv") => Ok(InputFormat::Csv),
+            Some("shp") => Ok(InputFormat::Shp),
+            Some("kml") => Ok(InputFormat::Kml),
+            Some("kmz") => Ok(InputFormat::Kmz),
+            _ => Err("Unknown or missing file extension"),
+        }
+    }
+}
+
+/// Output formats available for conversion (streamable formats only)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    /// JSON.
+    ///
+    /// Uses geojson's permissive, streaming parser and therefore only works on FeatureCollections or arrays of Features
+    /// at the top level.
+    JsonStream,
+
+    /// Newline delimited JSON.
+    ///
+    /// Streamable, with individual features separated by `\n` (input also supports \r\n`). Each underlying feature must
+    /// be a valid geojson Feature, we do not support FeatureCollections or GeometryCollections for simplicity and
+    /// compatibility.
+    Ndjson,
+
+    /// CSV.
+    ///
+    /// Streamable, with features mapping to individual rows in the csv. The csv format has further configuration
+    /// options that are shared between inputs and outputs (we don't anticipate input and output formats being the
+    /// same!). These are captured in the delimiter and csv-geom fields.
+    ///
+    /// When writing, the transformer is permissive, with headers defined by the fields in the first row. If an
+    /// output field is missing in the properties it is serialized as an empty string. Extra ouput fields not present
+    /// in the headers are ignored.
+    Csv,
+}
+
+impl OutputFormat {
+    pub fn try_from_path(path: &PathBuf) -> Result<Self, &'static str> {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("json") | Some("geojson") => Ok(OutputFormat::JsonStream),
+            Some("ndjson") => Ok(OutputFormat::Ndjson),
+            Some("csv") => Ok(OutputFormat::Csv),
+            Some("shp") | Some("kml") | Some("kmz") => {
+                Err("File-only format not supported for output")
+            }
+            _ => Err("Unknown or missing file extension"),
         }
     }
 }

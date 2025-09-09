@@ -1,284 +1,26 @@
-use std::{collections::HashMap, io::BufRead, iter::FlatMap, path::PathBuf};
+use std::path::Path;
 
-use anyhow::{anyhow, Error, Result};
-use kml::types::*;
-use quadtree::{Geometry, ToRadians};
+use anyhow::{anyhow, bail, Context, Error, Result};
+use kml::types::{Geometry as KmlGeom, *};
 
-use crate::{
-    error::{Error as GeoError, UnsupportedGeoType},
-    format::{ContentMode, GeoItem, Meta, Value},
-};
+use crate::format::{ContentMode, GeoItem, Properties, Value};
 
-/// Return a [`kml::Kml`] object loaded from a `.kml` or `.kmz` file.
-pub fn read_kml(path: &PathBuf) -> std::result::Result<kml::Kml, GeoError> {
-    let ext = path
-        .extension()
-        .ok_or(GeoError::CannotParseFileExtension(path.clone()))?;
-
-    if ext == "kml" {
-        kml::KmlReader::<_, f64>::from_path(path.clone())
-            .map_err(|_| GeoError::CannotReadFile(path.clone()))
-            .and_then(|mut r| {
-                r.read()
-                    .map_err(|_| GeoError::CannotParseFile(path.clone()))
-            })
-    } else if ext == "kmz" {
-        kml::KmlReader::<_, f64>::from_kmz_path(path.clone())
-            .map_err(|_| GeoError::CannotReadFile(path.clone()))
-            .and_then(|mut r| {
-                r.read()
-                    .map_err(|_| GeoError::CannotParseFile(path.clone()))
-            })
-    } else {
-        Err(GeoError::UnsupportedFileType)
-    }
-}
-
-/// Helper function to convert kml geometries into geo-type geometries when kml geomerties are
-/// available from a MultiGeomety field.
-pub fn convert_kml_geom(
-    item: kml::types::Geometry,
-) -> std::result::Result<(Geometry<f64>, KmlItem), GeoError> {
-    match item {
-        kml::types::Geometry::Point(p) => {
-            let mut geo = geo::Point::from(p.clone());
-            geo.to_radians_in_place();
-            Ok((Geometry::Point(geo), KmlItem::Point(p)))
-        }
-        kml::types::Geometry::Polygon(p) => {
-            let mut geo = geo::Polygon::from(p.clone());
-            geo.to_radians_in_place();
-            Ok((Geometry::Polygon(geo), KmlItem::Polygon(p)))
-        }
-        kml::types::Geometry::LineString(l) => {
-            let mut geo = geo::LineString::from(l.clone());
-            geo.to_radians_in_place();
-
-            Ok((Geometry::LineString(geo), KmlItem::LineString(l)))
-        }
-        kml::types::Geometry::LinearRing(l) => {
-            let mut geo = geo::LineString::from(l.clone());
-            geo.to_radians_in_place();
-
-            Ok((Geometry::LineString(geo), KmlItem::LinearRing(l)))
-        }
-        kml::types::Geometry::MultiGeometry(_) => Err(GeoError::UnsupportedGeometry(
-            UnsupportedGeoType::NestedKmlMulti,
-        )),
-        kml::types::Geometry::Element(_) => Err(GeoError::UnsupportedGeometry(
-            UnsupportedGeoType::KmlElement,
-        )),
-        _ => Err(GeoError::UnsupportedGeometry(
-            UnsupportedGeoType::UnknownKml,
-        )),
-    }
-}
-
-/// Wrapper around a Kml enum for custom iterators. These custom iterators only emit the kml
-/// components that are useful for proximity processing - i.e. the ones that contain geometries.
-pub struct Kml {
-    kml: kml::Kml,
-}
-
-// TODO: The only place iter() is used seems to be in the Meta create, if this is going away, then we should delete it
-// and all the underlying ref implementations
-impl Kml {
-    /// Build a new Kml document from the path to a KML or KMZ file.
-    pub fn from_path(path: &PathBuf) -> std::result::Result<Self, GeoError> {
-        Ok(Self {
-            kml: read_kml(path)?,
-        })
-    }
-
-    pub fn iter(&self) -> KmlRefIterator {
-        self.into_iter()
-    }
-}
-
-impl From<kml::Kml> for Kml {
-    fn from(kml: kml::Kml) -> Self {
-        Kml { kml }
-    }
-}
-
-// TODO: Should this iterator cover the Element type? Look into it more
-impl IntoIterator for Kml {
-    type Item = KmlItem;
-    type IntoIter = KmlIterator;
-
-    fn into_iter(self) -> Self::IntoIter {
-        match self.kml {
-            kml::Kml::KmlDocument(d) => KmlIterator::Iter(Box::new(
-                d.elements
-                    .into_iter()
-                    .flat_map(|k| Kml::from(k).into_iter()),
-            )),
-            kml::Kml::Document { attrs: _, elements } | kml::Kml::Folder { attrs: _, elements } => {
-                KmlIterator::Iter(Box::new(
-                    elements.into_iter().flat_map(|k| Kml::from(k).into_iter()),
-                ))
-            }
-            kml::Kml::MultiGeometry(d) => KmlIterator::Once(KmlItem::MultiGeometry(d)),
-            kml::Kml::LinearRing(d) => KmlIterator::Once(KmlItem::LinearRing(d)),
-            kml::Kml::LineString(d) => KmlIterator::Once(KmlItem::LineString(d)),
-            kml::Kml::Location(d) => KmlIterator::Once(KmlItem::Location(d)),
-            kml::Kml::Point(d) => KmlIterator::Once(KmlItem::Point(d)),
-            kml::Kml::Placemark(d) => KmlIterator::Once(KmlItem::Placemark(d)),
-            kml::Kml::Polygon(d) => KmlIterator::Once(KmlItem::Polygon(d)),
-            // Ignore all else
-            _ => KmlIterator::Empty,
-        }
-    }
-}
-
-/// Holds a subset of Kml members that might be emitted by the iterator.
-#[derive(Debug)]
-pub enum KmlItem {
-    MultiGeometry(MultiGeometry),
-    LinearRing(LinearRing),
-    LineString(LineString),
-    Location(Location),
-    Placemark(Placemark),
-    Point(Point),
-    Polygon(Polygon),
-}
-
-// TODO: As this also contains attrs, may want to do a version of this that also emits attrs
-impl TryFrom<KmlItem> for geo::Geometry {
-    type Error = Error;
-
-    fn try_from(value: KmlItem) -> Result<Self> {
-        match value {
-            KmlItem::Placemark(p) => match p
-                .geometry
-                .ok_or(anyhow!("Placemark doesn't have geometry"))?
-            {
-                kml::types::Geometry::Point(p) => Self::try_from(KmlItem::Point(p)),
-                kml::types::Geometry::LineString(l) => Self::try_from(KmlItem::LineString(l)),
-                kml::types::Geometry::LinearRing(l) => Self::try_from(KmlItem::LinearRing(l)),
-                kml::types::Geometry::Polygon(p) => Self::try_from(KmlItem::Polygon(p)),
-                kml::types::Geometry::MultiGeometry(mg) => {
-                    Self::try_from(KmlItem::MultiGeometry(mg))
-                }
-                _ => unreachable!("Will not be passed through the iterator"),
-            },
-            KmlItem::Point(p) => Ok(geo::Geometry::Point(geo::Point::try_from(p)?)),
-            KmlItem::Location(p) => Ok(geo::Geometry::Point(geo::Point::new(
-                p.longitude,
-                p.latitude,
-            ))),
-            KmlItem::LineString(l) => Ok(geo::Geometry::LineString(geo::LineString::try_from(l)?)),
-            KmlItem::LinearRing(l) => Ok(geo::Geometry::LineString(geo::LineString::try_from(l)?)),
-            KmlItem::Polygon(p) => Ok(geo::Geometry::Polygon(geo::Polygon::try_from(p)?)),
-            // TODO: Support multi-geometry?
-            KmlItem::MultiGeometry(_) => Err(anyhow!("MultiGeometry currently not supported")),
-        }
-    }
-}
-
-/// The owned Kml iterator.
-pub enum KmlIterator {
-    Iter(Box<FlatIter>),
-    Once(KmlItem),
-    Empty,
-}
-
-impl Iterator for KmlIterator {
-    type Item = KmlItem;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            KmlIterator::Iter(iter) => iter.next(),
-            // Swap out the borrowed IntoIter for the new empty state
-            // But the compiler "forgets" that we've already matched,
-            // hence requiring the if-let
-            once @ KmlIterator::Once(_) => {
-                if let KmlIterator::Once(item) = std::mem::replace(once, KmlIterator::Empty) {
-                    Some(item)
-                } else {
-                    unreachable!()
-                }
-            }
-            KmlIterator::Empty => None,
-        }
-    }
-}
-
-/// Convenience type for an inner KML iterator of owned objects
-type FlatIter = FlatMap<std::vec::IntoIter<kml::Kml>, KmlIterator, fn(kml::Kml) -> KmlIterator>;
-
-impl<'a> IntoIterator for &'a Kml {
-    type Item = KmlItemRef<'a>;
-    type IntoIter = KmlRefIterator<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        KmlRefIterator::new(&self.kml)
-    }
-}
-
-/// Holds a subset of Kml members that might be emitted by a reference iterator
-#[derive(Debug, Clone)]
-pub enum KmlItemRef<'a> {
-    MultiGeometry(&'a MultiGeometry),
-    LinearRing(&'a LinearRing),
-    LineString(&'a LineString),
-    Location(&'a Location),
-    Placemark(&'a Placemark),
-    Point(&'a Point),
-    Polygon(&'a Polygon),
-}
-
-pub enum KmlRefIterator<'a> {
-    Iter(Box<FlatIterRef<'a>>),
-    Once(KmlItemRef<'a>),
-    Empty,
-}
-
-impl<'a> KmlRefIterator<'a> {
-    fn new(kml: &'a kml::Kml) -> Self {
-        match kml {
-            kml::Kml::KmlDocument(d) => KmlRefIterator::Iter(Box::new(
-                d.elements.iter().flat_map(|k| KmlRefIterator::new(&k)),
-            )),
-            kml::Kml::Document { attrs: _, elements } | kml::Kml::Folder { attrs: _, elements } => {
-                KmlRefIterator::Iter(Box::new(
-                    elements.iter().flat_map(|k| KmlRefIterator::new(k)),
-                ))
-            }
-            kml::Kml::MultiGeometry(d) => KmlRefIterator::Once(KmlItemRef::MultiGeometry(d)),
-            // Ignore all else
-            _ => KmlRefIterator::Empty,
-        }
-    }
-}
-
-impl<'a> Iterator for KmlRefIterator<'a> {
-    type Item = KmlItemRef<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            KmlRefIterator::Iter(iter) => iter.next(),
-            KmlRefIterator::Once(item) => Some(item.clone()),
-            KmlRefIterator::Empty => None,
-        }
-    }
-}
-
-/// Convenience type for an inner KML iterator of borrowed objects
-type FlatIterRef<'a> =
-    FlatMap<std::slice::Iter<'a, kml::Kml>, KmlRefIterator<'a>, fn(&kml::Kml) -> KmlRefIterator>;
-
-// TODO: New conversion implementation starts here
-// TODO: Contemplate capturing nested attrs in the iterator
+/// Reader for KML and KMZ data.
 pub struct KmlReader {
     kml: KmlIterator,
     mode: ContentMode,
 }
 
 impl KmlReader {
-    pub fn try_new<R: BufRead>(reader: R, mode: ContentMode) -> Result<Self> {
-        let raw_kml = kml::KmlReader::<_, f64>::from_reader(reader).read()?;
-        let kml = Kml::from(raw_kml).into_iter();
+    /// Create a new [`KmlReader`].
+    ///
+    /// The KML reader reads both .kml and .kmz files.
+    ///
+    /// This method will eagerly load the file in `file` and parse it immediately in a blocking manner. Subsequent
+    /// iteration through the contained items will be lazy, but not the initial creation of the KML tree.
+    pub fn try_new(file: impl AsRef<Path>, mode: ContentMode) -> Result<Self> {
+        let raw_kml = read_kml(file)?;
+        let kml = KmlIterator::new(raw_kml);
 
         Ok(Self { kml, mode })
     }
@@ -287,10 +29,10 @@ impl KmlReader {
         let geoitem = match self.mode {
             ContentMode::Geometry => GeoItem::without_props(geo::Geometry::try_from(item)?),
             ContentMode::Full => {
-                let meta = Meta::from(take_attrs(&mut item));
-                GeoItem::with_props(geo::Geometry::try_from(item)?, meta)
+                let props = extract_properties(&mut item);
+                GeoItem::with_props(geo::Geometry::try_from(item)?, props)
             }
-            ContentMode::Properties => GeoItem::props_only(Meta::from(take_attrs(&mut item))),
+            ContentMode::Properties => GeoItem::props_only(extract_properties(&mut item)),
         };
 
         Ok(geoitem)
@@ -306,28 +48,401 @@ impl Iterator for KmlReader {
     }
 }
 
-struct KmlMeta(HashMap<String, String>);
+/// The owned KML iterator.
+///
+/// This iterator only emits the kml components that are useful for proximity processing - i.e. the ones that contain
+/// geometries. It attemps to flatten nested KML structures into a single stream of features in line with other formats
+/// such as geojson and shapefiles.
+#[derive(Default)]
+enum KmlIterator {
+    Iter(Box<dyn Iterator<Item = KmlItem>>),
+    Once(KmlItem),
+    #[default]
+    Empty,
+}
 
-impl From<KmlMeta> for Meta {
-    fn from(value: KmlMeta) -> Self {
-        value
-            .0
+impl KmlIterator {
+    /// Recursively build an iterator through the KML document.
+    fn new(kml: kml::Kml) -> Self {
+        Self::new_with_hierarchy(kml, Vec::new())
+    }
+
+    /// Recursively build an iterator with folder hierarchy context.
+    fn new_with_hierarchy(kml: kml::Kml, hierarchy: Vec<FolderInfo>) -> Self {
+        match kml {
+            kml::Kml::KmlDocument(d) => Self::with_elements(d.elements, hierarchy),
+            kml::Kml::Document { attrs: _, elements } => Self::with_elements(elements, hierarchy),
+            kml::Kml::Folder(f) => {
+                let mut folder_hierarchy = hierarchy;
+                folder_hierarchy.push(FolderInfo {
+                    name: f.name.clone(),
+                    description: f.description.clone(),
+                });
+                Self::with_elements(f.elements, folder_hierarchy)
+            }
+            kml::Kml::MultiGeometry(d) => Self::Once(KmlItem::MultiGeometry(d, hierarchy)),
+            kml::Kml::LinearRing(d) => Self::Once(KmlItem::LinearRing(d, hierarchy)),
+            kml::Kml::LineString(d) => Self::Once(KmlItem::LineString(d, hierarchy)),
+            kml::Kml::Location(d) => Self::Once(KmlItem::Location(d, hierarchy)),
+            kml::Kml::Point(d) => Self::Once(KmlItem::Point(d, hierarchy)),
+            kml::Kml::Placemark(d) => Self::Once(KmlItem::Placemark(d, hierarchy)),
+            kml::Kml::Polygon(d) => Self::Once(KmlItem::Polygon(d, hierarchy)),
+            // Ignore all else
+            _ => KmlIterator::Empty,
+        }
+    }
+
+    /// Create a [`KmlIterator::Iter`] variant from a vec of [`kml::Kml`]s that are present in documents and folders.
+    fn with_elements(elements: Vec<kml::Kml>, hierarchy: Vec<FolderInfo>) -> Self {
+        let flat_iter = elements
             .into_iter()
-            .map(|(k, v)| (k, Value::String(v)))
-            .collect()
+            .flat_map(move |k| KmlIterator::new_with_hierarchy(k, hierarchy.clone()));
+
+        KmlIterator::Iter(Box::new(flat_iter))
     }
 }
 
-fn take_attrs(item: &mut KmlItem) -> KmlMeta {
-    let attrs = match item {
-        KmlItem::LinearRing(l) => std::mem::take(&mut l.attrs),
-        KmlItem::LineString(l) => std::mem::take(&mut l.attrs),
-        KmlItem::Location(l) => std::mem::take(&mut l.attrs),
-        KmlItem::Placemark(p) => std::mem::take(&mut p.attrs),
-        KmlItem::Point(p) => std::mem::take(&mut p.attrs),
-        KmlItem::Polygon(p) => std::mem::take(&mut p.attrs),
-        KmlItem::MultiGeometry(m) => std::mem::take(&mut m.attrs),
+impl Iterator for KmlIterator {
+    type Item = KmlItem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            KmlIterator::Iter(iter) => iter.next(),
+            // Swap out the borrowed IntoIter for the new empty state
+            // But the compiler "forgets" that we've already matched,
+            // hence requiring the if-let
+            once @ KmlIterator::Once(_) => {
+                if let KmlIterator::Once(item) = std::mem::take(once) {
+                    Some(item)
+                } else {
+                    unreachable!()
+                }
+            }
+            KmlIterator::Empty => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FolderInfo {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+/// Holds a subset of Kml members that might be emitted by the iterator.
+#[derive(Debug)]
+enum KmlItem {
+    MultiGeometry(MultiGeometry, Vec<FolderInfo>),
+    LinearRing(LinearRing, Vec<FolderInfo>),
+    LineString(LineString, Vec<FolderInfo>),
+    Location(Location, Vec<FolderInfo>),
+    Placemark(Placemark, Vec<FolderInfo>),
+    Point(Point, Vec<FolderInfo>),
+    Polygon(Polygon, Vec<FolderInfo>),
+}
+const MULTIGEOMETRY_FAILURE: &str = "Could not convert kml MultiGeometry to a geometry collection";
+
+impl TryFrom<KmlItem> for geo::Geometry {
+    type Error = Error;
+
+    fn try_from(value: KmlItem) -> Result<Self> {
+        let geom = match value {
+            KmlItem::Placemark(p, _) => match p
+                .geometry
+                .ok_or(anyhow!("Placemark doesn't have geometry"))?
+            {
+                KmlGeom::Point(pt) => geo::Geometry::Point(geo::Point::from(pt)),
+                KmlGeom::LineString(l) => geo::Geometry::LineString(geo::LineString::from(l)),
+                KmlGeom::LinearRing(l) => geo::Geometry::LineString(geo::LineString::from(l)),
+                KmlGeom::Polygon(poly) => geo::Geometry::Polygon(geo::Polygon::from(poly)),
+                KmlGeom::MultiGeometry(mg) => geo::Geometry::GeometryCollection(
+                    geo::GeometryCollection::try_from(mg).context(MULTIGEOMETRY_FAILURE)?,
+                ),
+                _ => bail!("Extensions are not supported"),
+            },
+            KmlItem::Point(p, _) => geo::Geometry::Point(geo::Point::from(p)),
+            KmlItem::Location(p, _) => {
+                geo::Geometry::Point(geo::Point::new(p.longitude, p.latitude))
+            }
+            KmlItem::LineString(l, _) => geo::Geometry::LineString(geo::LineString::from(l)),
+            KmlItem::LinearRing(l, _) => geo::Geometry::LineString(geo::LineString::from(l)),
+            KmlItem::Polygon(p, _) => geo::Geometry::Polygon(geo::Polygon::from(p)),
+            KmlItem::MultiGeometry(mg, _) => geo::Geometry::GeometryCollection(
+                geo::GeometryCollection::try_from(mg).context(MULTIGEOMETRY_FAILURE)?,
+            ),
+        };
+
+        Ok(geom)
+    }
+}
+
+/// Return a [`kml::Kml`] object loaded from a `.kml` or `.kmz` file.
+fn read_kml(file: impl AsRef<Path>) -> Result<kml::Kml> {
+    let path = file.as_ref();
+    let ext = path.extension().ok_or_else(|| {
+        anyhow!(
+            "Can't parse file extension for file {}",
+            path.to_string_lossy()
+        )
+    })?;
+
+    let kml = match ext.to_str() {
+        Some("kml") => kml::KmlReader::<_, f64>::from_path(path)?.read()?,
+        Some("kmz") => kml::KmlReader::<_, f64>::from_kmz_path(path)?.read()?,
+        _ => bail!("Unsupported file extension for kml/kmz files"),
     };
 
-    KmlMeta(attrs)
+    Ok(kml)
+}
+
+/// Convert properties of KML items into JSON values.
+///
+/// Only Placemarks have relevant property data that we want to extract, all others don't have any properties of their
+/// own. However all items should emit their "Folder" structure if it exists.
+///
+/// All KML fields are typeless text, so are passed through as JSON [`Value::String`] types.
+///
+/// TODO: Autoparse option for this as well as csv, noting that description is explicitly allowed to contain html
+/// TODO: Determine if we want to extract attr and style data from all items, consider keeping it as an option
+/// Can search through git history for take_attrs function for methodology
+fn extract_properties(item: &mut KmlItem) -> Properties {
+    let mut props = Properties::new();
+
+    match item {
+        KmlItem::Placemark(p, hierarchy) => {
+            // Extract standard KML fields using take to avoid clones
+            if let Some(name) = p.name.take() {
+                props.insert("name".to_string(), Value::String(name));
+            }
+            if let Some(description) = p.description.take() {
+                props.insert("description".to_string(), Value::String(description));
+            }
+
+            // Extract custom elements from children
+            for element in std::mem::take(&mut p.children) {
+                if let Some(content) = element.content {
+                    props.insert(element.name, Value::String(content));
+                }
+            }
+
+            add_folder_hierarchy_to_props(&mut props, hierarchy);
+        }
+
+        // For geometry types, only add folder hierarchy if present
+        KmlItem::Point(_, hierarchy)
+        | KmlItem::LineString(_, hierarchy)
+        | KmlItem::LinearRing(_, hierarchy)
+        | KmlItem::Location(_, hierarchy)
+        | KmlItem::Polygon(_, hierarchy)
+        | KmlItem::MultiGeometry(_, hierarchy) => {
+            add_folder_hierarchy_to_props(&mut props, hierarchy);
+        }
+    };
+
+    props
+}
+
+fn add_folder_hierarchy_to_props(props: &mut Properties, hierarchy: &[FolderInfo]) {
+    if !hierarchy.is_empty() {
+        let folder_hierarchy: Vec<Value> = hierarchy
+            .iter()
+            .map(|folder| {
+                let mut folder_obj = Properties::new();
+                if let Some(name) = &folder.name {
+                    folder_obj.insert("name".to_string(), Value::String(name.clone()));
+                }
+                if let Some(description) = &folder.description {
+                    folder_obj.insert(
+                        "description".to_string(),
+                        Value::String(description.clone()),
+                    );
+                }
+                Value::Object(folder_obj)
+            })
+            .collect();
+        props.insert("folders".to_string(), Value::Array(folder_hierarchy));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+
+    fn kml_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/sample_kml/sample.kml")
+    }
+
+    #[test]
+    fn kml_reader_emits_features_full_mode() {
+        let kml_reader = KmlReader::try_new(kml_path(), ContentMode::Full).unwrap();
+        let features: Vec<_> = kml_reader.map(|result| result.unwrap()).collect();
+
+        assert_eq!(features.len(), 3);
+
+        let first_feature = &features[0];
+        assert!(matches!(
+            first_feature.geom,
+            Some(geo::Geometry::Point(geo::Point(_)))
+        ));
+
+        // Check properties - should have name, description, and custom randomProperty
+        let first_props = first_feature.props.as_ref().unwrap();
+        assert_eq!(first_props.len(), 3);
+        assert_eq!(
+            first_props.get("name").unwrap(),
+            &Value::String("Time Square".to_string())
+        );
+        assert!(matches!(
+            first_props.get("description").unwrap(),
+            &Value::String(_)
+        ));
+        assert_eq!(
+            first_props.get("randomProperty").unwrap(),
+            &Value::String("42".to_string())
+        );
+
+        // Confirm that the second feature is correct too
+        assert_eq!(features[1].props.as_ref().unwrap().len(), 2);
+
+        // Third feature should be a LineString with no properties
+        let third_feature = &features[2];
+        assert!(matches!(
+            third_feature.geom,
+            Some(geo::Geometry::LineString(_))
+        ));
+        assert_eq!(third_feature.props.as_ref().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn kml_reader_emits_features_properties_mode() {
+        let kml_reader = KmlReader::try_new(kml_path(), ContentMode::Properties).unwrap();
+        let features: Vec<_> = kml_reader.map(|result| result.unwrap()).collect();
+
+        assert_eq!(features.len(), 3);
+
+        // First item should have no geometry but properties
+        let first_feature = &features[0];
+        assert!(first_feature.geom.is_none());
+
+        // Check properties - should have name, description, and custom randomProperty
+        let first_props = first_feature.props.as_ref().unwrap();
+        assert_eq!(first_props.len(), 3);
+        assert_eq!(
+            first_props.get("name").unwrap(),
+            &Value::String("Time Square".to_string())
+        );
+        assert!(matches!(
+            first_props.get("description").unwrap(),
+            &Value::String(_)
+        ));
+        assert_eq!(
+            first_props.get("randomProperty").unwrap(),
+            &Value::String("42".to_string())
+        );
+
+        // Confirm that the second feature is correct too
+        assert_eq!(features[1].props.as_ref().unwrap().len(), 2);
+    }
+
+    // Test the folder structure. Note that the negative test - that there will be no folder key when there are no
+    // folders, is tested in the above tests as we ensure that the property length is correct.
+    #[test]
+    fn kml_reader_folder_hierarchy() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/sample_kml/folders.kml");
+        let kml_reader = KmlReader::try_new(path, ContentMode::Full).unwrap();
+        let features: Vec<_> = kml_reader.map(|result| result.unwrap()).collect();
+
+        assert_eq!(features.len(), 3);
+
+        // First feature: raw Point geometry in top folder
+        // Should have folder hierarchy even though it's not a Placemark
+        let first_feature = &features[0];
+        assert!(matches!(first_feature.geom, Some(geo::Geometry::Point(_))));
+        let first_props = first_feature.props.as_ref().unwrap();
+
+        // Check folder hierarchy for standalone geometry (should have one level)
+        let hierarchy = first_props.get("folders").unwrap();
+        if let Value::Array(folders) = hierarchy {
+            assert_eq!(folders.len(), 1);
+            if let Value::Object(folder) = &folders[0] {
+                assert_eq!(
+                    folder.get("name").unwrap(),
+                    &Value::String("Top Level Folder".to_string())
+                );
+            } else {
+                panic!("Expected folder to be an object");
+            }
+        } else {
+            panic!("Expected folder_hierarchy to be an array");
+        }
+
+        // Second feature: Placemark in top folder
+        let second_feature = &features[1];
+        assert!(matches!(second_feature.geom, Some(geo::Geometry::Point(_))));
+        let second_props = second_feature.props.as_ref().unwrap();
+        assert_eq!(
+            second_props.get("name").unwrap(),
+            &Value::String("Folder Placemark".to_string())
+        );
+        assert_eq!(
+            second_props.get("customField").unwrap(),
+            &Value::String("folder_value".to_string())
+        );
+
+        // Check folder hierarchy for second feature (should have one level)
+        let hierarchy = second_props.get("folders").unwrap();
+        if let Value::Array(folders) = hierarchy {
+            assert_eq!(folders.len(), 1);
+            if let Value::Object(folder) = &folders[0] {
+                assert_eq!(
+                    folder.get("name").unwrap(),
+                    &Value::String("Top Level Folder".to_string())
+                );
+            } else {
+                panic!("Expected folder to be an object");
+            }
+        } else {
+            panic!("Expected folder_hierarchy to be an array");
+        }
+
+        // Third feature: Placemark in nested folder
+        let third_feature = &features[2];
+        let third_props = third_feature.props.as_ref().unwrap();
+        assert_eq!(
+            third_props.get("name").unwrap(),
+            &Value::String("Nested Placemark".to_string())
+        );
+        assert_eq!(
+            third_props.get("nestedProperty").unwrap(),
+            &Value::String("deep_value".to_string())
+        );
+
+        // Check folder hierarchy for third feature (should have two levels)
+        let nested_hierarchy = third_props.get("folders").unwrap();
+        if let Value::Array(folders) = nested_hierarchy {
+            assert_eq!(folders.len(), 2);
+            // First level (outermost)
+            if let Value::Object(folder) = &folders[0] {
+                assert_eq!(
+                    folder.get("name").unwrap(),
+                    &Value::String("Top Level Folder".to_string())
+                );
+            } else {
+                panic!("Expected first folder to be an object");
+            }
+            // Second level (nested)
+            if let Value::Object(folder) = &folders[1] {
+                assert_eq!(
+                    folder.get("name").unwrap(),
+                    &Value::String("Nested Folder".to_string())
+                );
+            } else {
+                panic!("Expected second folder to be an object");
+            }
+        } else {
+            panic!("Expected folder_hierarchy to be an array");
+        }
+    }
 }

@@ -241,13 +241,16 @@ impl<I: GeoItemIterator> CsvTransformer<I> {
     fn build_headers(&mut self) -> ByteRecord {
         let mut header_record = ByteRecord::new();
 
-        match &self.settings.geom {
-            CsvGeom::LngLat(lng, lat) => {
-                header_record.push_field(lng.as_bytes());
-                header_record.push_field(lat.as_bytes());
-            }
-            CsvGeom::Wkt(s) | CsvGeom::Wkb(s) | CsvGeom::Json(s) => {
-                header_record.push_field(s.as_bytes())
+        // Don't need geom headers if in properties only mode
+        if self.mode != ContentMode::Properties {
+            match &self.settings.geom {
+                CsvGeom::LngLat(lng, lat) => {
+                    header_record.push_field(lng.as_bytes());
+                    header_record.push_field(lat.as_bytes());
+                }
+                CsvGeom::Wkt(s) | CsvGeom::Wkb(s) | CsvGeom::Json(s) => {
+                    header_record.push_field(s.as_bytes())
+                }
             }
         }
 
@@ -303,7 +306,7 @@ impl<I: GeoItemIterator> CsvTransformer<I> {
     ///
     /// This method is forgiving, it ignores members not present in the headers list and inserts missing members as
     /// empty strings.
-    fn push_meta(&self, record: &mut ByteRecord, meta: Properties) {
+    fn push_props(&self, record: &mut ByteRecord, meta: Properties) {
         // Loop through the headers just in case the order in each item is different
         for h in self
             .headers
@@ -373,10 +376,10 @@ impl<I: GeoItemIterator> Iterator for CsvTransformer<I> {
                 }
             }
 
-            // Then emit the Meta if required, using get to ensure that everything is in the correct order
+            // Then emit the properties if required, using get to ensure that everything is in the correct order
             // Empty fields are not errors, they are left blank
             if self.mode == ContentMode::Full || self.mode == ContentMode::Properties {
-                self.push_meta(&mut byte_record, item.props.unwrap_or_default());
+                self.push_props(&mut byte_record, item.props.unwrap_or_default());
             }
 
             self.write_record(&byte_record)
@@ -594,6 +597,39 @@ mod tests {
                 std::str::from_utf8(&buf).unwrap(),
                 "geom,f1,f2\nPOINT(0 0),v1,v2\nPOINT(1 0),v4,v3\n"
             );
+        }
+
+        #[test]
+        fn headers_determined_by_first_row_missing_and_extra_properties_handled() {
+            // First item defines the headers
+            let mut m1 = Properties::new();
+            m1.insert("a".to_string(), Value::String("1".to_string()));
+            m1.insert("b".to_string(), Value::String("2".to_string()));
+
+            // Second item is missing "b" property
+            let mut m2 = Properties::new();
+            m2.insert("a".to_string(), Value::String("3".to_string()));
+
+            // Third item has extra "c" property that should be ignored
+            let mut m3 = Properties::new();
+            m3.insert("a".to_string(), Value::String("4".to_string()));
+            m3.insert("b".to_string(), Value::String("5".to_string()));
+            m3.insert("c".to_string(), Value::String("6".to_string())); // This should be ignored
+
+            let iter = vec![
+                Ok(GeoItem::props_only(m1)),
+                Ok(GeoItem::props_only(m2)),
+                Ok(GeoItem::props_only(m3)),
+            ];
+
+            let settings = CsvSettings::default();
+            let csv = CsvTransformer::new(iter.into_iter(), ContentMode::Properties, settings);
+            let buf: Vec<u8> = csv.map(|i| i.unwrap().to_vec()).flatten().collect();
+
+            // Headers are based on first row: "a,b"
+            // Second row has missing "b" -> empty string
+            // Third row has extra "c" -> ignored
+            assert_eq!(std::str::from_utf8(&buf).unwrap(), "a,b\n1,2\n3,\n4,5\n");
         }
     }
 }

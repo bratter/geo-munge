@@ -279,7 +279,9 @@ dependencies = [
  "anyhow",
  "clap",
  "geo",
+ "geojson",
  "geolib",
+ "serde_json",
 ]
 
 [[package]]

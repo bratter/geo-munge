@@ -16,6 +16,8 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
 
+use anyhow::Result;
+
 #[derive(Debug, Clone)]
 pub enum StreamKind {
     StdIo,
@@ -49,25 +51,19 @@ pub enum InputStream {
 }
 
 impl InputStream {
-    pub fn new(stream: StreamKind) -> Self {
-        match stream {
+    pub fn try_new(stream: StreamKind) -> Result<Self> {
+        let input_stream = match stream {
             StreamKind::StdIo => InputStream::Stdin(BufReader::new(stdin())),
             StreamKind::File(path) => {
-                // TODO: Make this fallible?
-                let file = File::open(path).expect("Failed to open file");
+                let file = File::open(path)?;
                 InputStream::File(BufReader::new(file))
             }
             #[cfg(test)]
             StreamKind::String(s) => InputStream::String(BufReader::new(Cursor::new(s))),
             #[cfg(test)]
             StreamKind::OutputString(_) => unreachable!("Should not be used"),
-        }
-    }
-}
-
-impl From<StreamKind> for InputStream {
-    fn from(stream: StreamKind) -> Self {
-        InputStream::new(stream)
+        };
+        Ok(input_stream)
     }
 }
 
@@ -110,25 +106,19 @@ pub enum OutputStream {
 }
 
 impl OutputStream {
-    pub fn new(stream: StreamKind) -> Self {
-        match stream {
+    pub fn try_new(stream: StreamKind) -> Result<Self> {
+        let output_stream = match stream {
             StreamKind::StdIo => OutputStream::Stdout(stdout()),
             StreamKind::File(path) => {
-                // TODO: Make this fallible?
-                let file = File::open(path).expect("Failed to open file");
+                let file = File::open(path)?;
                 OutputStream::File(file)
             }
             #[cfg(test)]
             StreamKind::String(_) => unimplemented!("Should not be used"),
             #[cfg(test)]
             StreamKind::OutputString(s) => OutputStream::String(s),
-        }
-    }
-}
-
-impl From<StreamKind> for OutputStream {
-    fn from(stream: StreamKind) -> Self {
-        OutputStream::new(stream)
+        };
+        Ok(output_stream)
     }
 }
 
