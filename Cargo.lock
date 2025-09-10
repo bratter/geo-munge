@@ -122,7 +122,7 @@ checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 
 [[package]]
 name = "bench"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "csv",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "convert"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "gm-proximity"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1262,7 +1262,7 @@ dependencies = [
 
 [[package]]
 name = "spatial"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "approx",

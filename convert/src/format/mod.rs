@@ -133,7 +133,6 @@ impl<I: GeoItemIterator> Iterator for FormatTransformer<I> {
     }
 }
 
-// FIX: Pipe this into the args
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamableFormat {
     JsonStream,

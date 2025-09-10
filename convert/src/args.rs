@@ -148,7 +148,7 @@ impl Cli {
         match (stream, format) {
             (stream, Some(format)) => {
                 let streamable_format = match format {
-                    OutputFormat::JsonStream => StreamableFormat::JsonStream,
+                    OutputFormat::Json => StreamableFormat::JsonStream,
                     OutputFormat::Ndjson => StreamableFormat::Ndjson,
                     OutputFormat::Csv => StreamableFormat::Csv,
                 };
@@ -163,7 +163,7 @@ impl Cli {
             (StreamKind::File(path), None) => match OutputFormat::try_from_path(&path) {
                 Ok(format) => {
                     let streamable_format = match format {
-                        OutputFormat::JsonStream => StreamableFormat::JsonStream,
+                        OutputFormat::Json => StreamableFormat::JsonStream,
                         OutputFormat::Ndjson => StreamableFormat::Ndjson,
                         OutputFormat::Csv => StreamableFormat::Csv,
                     };
@@ -204,12 +204,12 @@ struct Args {
     output_format: Option<OutputFormat>,
 
     /// Only output shapes, do not process any properties.
-    #[arg(long, conflicts_with = "meta")]
-    shapes: bool,
+    #[arg(long, conflicts_with = "properties")]
+    geometries: bool,
 
     /// Only output metadata, do not process shapes.
-    #[arg(long, conflicts_with = "shapes")]
-    meta: bool,
+    #[arg(long, alias = "props", conflicts_with = "geometries")]
+    properties: bool,
 
     /// Override the delimiter for csv processing. Must be single ASCII character.
     #[arg(long, default_value = ",", value_parser = Self::parse_delimiter)]
@@ -219,7 +219,7 @@ struct Args {
     ///
     /// By default, this assumes that the csv contains a column labelled 'geom' that contains WKT encoded geometries.
     ///
-    /// TO override this, first pass the name of the format. Supported formats are: 'wkt', 'wkb', 'json', and 'pt'. The
+    /// To override this, first pass the name of the format. Supported formats are: 'wkt', 'wkb', 'json', and 'pt'. The
     /// first three expect a single column in the appropriate format, with a column name that defaults to 'geom'. To
     /// override the column name, pass an alternative separated by a comma, e.g., 'json,my_field'. The 'pt' option
     /// expects two columns each contains numbers in decimal degrees. The default lolmn names are 'lng' and 'lat'. The
@@ -245,7 +245,7 @@ impl Args {
     }
 
     fn mode(&self) -> ContentMode {
-        match (self.shapes, self.meta) {
+        match (self.geometries, self.properties) {
             (false, false) => ContentMode::Full,
             (true, false) => ContentMode::Geometry,
             (false, true) => ContentMode::Properties,
@@ -257,26 +257,26 @@ impl Args {
 /// Input formats available for conversion
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum InputFormat {
-    /// JSON Stream.
+    /// JSON Stream (streamed, file or pipe).
     ///
     /// Uses geojson's permissive, streaming parser and therefore only works on FeatureCollections or arrays of Features
     /// at the top level.
     Json,
 
-    /// JSON String.
+    /// JSON String (fully loaded, file or pipe).
     ///
     /// Loads and parses the entire file or stream as a string, requiring additional memory and overhead, but enforces
     /// proper geojson and works for inputs other than FeatureCollection.
     JsonString,
 
-    /// Newline delimited JSON.
+    /// Newline delimited JSON (streamed, file or pipe).
     ///
     /// Streamable, with individual features separated by `\n` (input also supports \r\n`). Each underlying feature must
     /// be a valid geojson Feature, we do not support FeatureCollections or GeometryCollections for simplicity and
     /// compatibility.
     Ndjson,
 
-    /// CSV.
+    /// CSV (streamed, file or pipe).
     ///
     /// Streamable, with features mapping to individual rows in the csv. The csv format has further configuration
     /// options that are shared between inputs and outputs (we don't anticipate input and output formats being the
@@ -286,14 +286,14 @@ enum InputFormat {
     /// anonymous keys.
     Csv,
 
-    /// Shapefile.
+    /// Shapefile (streamed, file only).
     ///
     /// Streamable, reading and writing can be done by feature. .dbf file contents are read into a common properties
     /// value format based on JSON, so some type fidelity will be lost, but fields will be converted to their nearest
     /// valid JSON type.
     Shp,
 
-    /// KML, uncompressed.
+    /// KML, uncompressed (fully loaded, file only).
     ///
     /// Not streamable, requires buffering and parsing the whole file in memory for input. KML is heirarchical, with
     /// geometries able to be at multiple levels, which we flatten in our processing.
@@ -307,7 +307,7 @@ enum InputFormat {
     ///   geometry inside a folder has this array pushed onto its properties with deeper descendants at the top.
     Kml,
 
-    /// KMZ, compressed KML.
+    /// KMZ, compressed KML (fully loaded, file only).
     ///
     /// Not streamable, requires buffering and parsing the whole file in memory for input or output. See KML for futher
     /// notes on parsing.
@@ -341,7 +341,7 @@ enum OutputFormat {
     /// JSON.
     ///
     /// Streams out as bytes. Wraps the output stream of Features in a FeatureCollection.
-    JsonStream,
+    Json,
 
     /// Newline delimited JSON.
     ///
@@ -364,7 +364,7 @@ enum OutputFormat {
 impl OutputFormat {
     pub fn try_from_path(path: &PathBuf) -> Result<Self, &'static str> {
         match path.extension().and_then(|ext| ext.to_str()) {
-            Some("json") | Some("geojson") => Ok(OutputFormat::JsonStream),
+            Some("json") | Some("geojson") => Ok(OutputFormat::Json),
             Some("ndjson") => Ok(OutputFormat::Ndjson),
             Some("csv") => Ok(OutputFormat::Csv),
             Some("shp") | Some("kml") | Some("kmz") => {
