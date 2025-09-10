@@ -5,6 +5,8 @@ use kml::types::{Geometry as KmlGeom, *};
 
 use crate::format::{ContentMode, GeoItem, Properties, Value};
 
+use super::html_parser;
+
 /// Reader for KML and KMZ data.
 pub struct KmlReader {
     kml: KmlIterator,
@@ -200,9 +202,10 @@ fn read_kml(file: impl AsRef<Path>) -> Result<kml::Kml> {
 /// Only Placemarks have relevant property data that we want to extract, all others don't have any properties of their
 /// own. However all items should emit their "Folder" structure if it exists.
 ///
-/// All KML fields are typeless text, so are passed through as JSON [`Value::String`] types.
+/// All KML fields are typeless text, so are passed through as JSON [`Value::String`] types, with the exception of
+/// 'description' elements that may result in a parsed 'descriptionData' key being added.
 ///
-/// TODO: Autoparse option for this as well as csv, noting that description is explicitly allowed to contain html
+/// TODO: Autoparse option for this as well as csv
 /// TODO: Determine if we want to extract attr and style data from all items, consider keeping it as an option
 /// Can search through git history for take_attrs function for methodology
 fn extract_properties(item: &mut KmlItem) -> Properties {
@@ -214,8 +217,9 @@ fn extract_properties(item: &mut KmlItem) -> Properties {
             if let Some(name) = p.name.take() {
                 props.insert("name".to_string(), Value::String(name));
             }
+            // Attempt to parse out html from the description element
             if let Some(description) = p.description.take() {
-                props.insert("description".to_string(), Value::String(description));
+                parse_description(&mut props, description);
             }
 
             // Extract custom elements from children
@@ -242,26 +246,39 @@ fn extract_properties(item: &mut KmlItem) -> Properties {
     props
 }
 
-fn add_folder_hierarchy_to_props(props: &mut Properties, hierarchy: &[FolderInfo]) {
+fn add_folder_hierarchy_to_props(props: &mut Properties, hierarchy: &mut [FolderInfo]) {
     if !hierarchy.is_empty() {
         let folder_hierarchy: Vec<Value> = hierarchy
-            .iter()
+            .iter_mut()
             .map(|folder| {
                 let mut folder_obj = Properties::new();
                 if let Some(name) = &folder.name {
                     folder_obj.insert("name".to_string(), Value::String(name.clone()));
                 }
-                if let Some(description) = &folder.description {
-                    folder_obj.insert(
-                        "description".to_string(),
-                        Value::String(description.clone()),
-                    );
+                // Attempt to parse out html from the description element
+                if let Some(description) = folder.description.take() {
+                    parse_description(&mut folder_obj, description);
                 }
                 Value::Object(folder_obj)
             })
             .collect();
         props.insert("folders".to_string(), Value::Array(folder_hierarchy));
     }
+}
+
+/// Attempt to parse contents of description element as HTML content.
+///
+/// Captures limited permutations of structured data as explained in [`parse_html`]. Will always preserve the original
+/// text on the description key in the output, and will potentially add a "descriptionData" key with the data extracted.
+///
+/// We pass an owned String rather than an &str as we always preserve the string, so we leave it up to the caller to
+/// determine the most efficient way to get an owned String.
+fn parse_description(props: &mut Properties, description: String) {
+    if let Some(structured_data) = html_parser::parse_html(&description) {
+        props.insert("descriptionData".to_string(), structured_data);
+    }
+    // Always store the original description
+    props.insert("description".to_string(), Value::String(description));
 }
 
 #[cfg(test)]
@@ -444,5 +461,133 @@ mod tests {
         } else {
             panic!("Expected folder_hierarchy to be an array");
         }
+    }
+
+    #[test]
+    fn kml_reader_parses_html_descriptions() {
+        let kml_content = r#"<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <name>Key-Value Table</name>
+      <description><![CDATA[<table><tr><td>Name</td><td>John Doe</td></tr><tr><td>Age</td><td>30</td></tr></table>]]></description>
+      <Point>
+        <coordinates>-74.006,40.7128,0</coordinates>
+      </Point>
+    </Placemark>
+    <Placemark>
+      <name>Unparseable</name>
+      <description>Just regular text with no tables or lists.</description>
+      <Point>
+        <coordinates>-74.007,40.7129,0</coordinates>
+      </Point>
+    </Placemark>
+  </Document>
+</kml>"#;
+
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("test_html_descriptions.kml");
+        std::fs::write(&temp_file, kml_content).expect("Failed to write test file");
+
+        let kml_reader = KmlReader::try_new(&temp_file, ContentMode::Full).unwrap();
+        let features: Vec<_> = kml_reader.map(|result| result.unwrap()).collect();
+
+        assert_eq!(features.len(), 2);
+
+        // Test key-value table parsing
+        let first_feature = &features[0];
+        let first_props = first_feature.props.as_ref().unwrap();
+
+        assert!(first_props.contains_key("descriptionData"));
+        if let Some(Value::Object(table)) = first_props.get("descriptionData") {
+            assert_eq!(
+                table.get("Name").unwrap(),
+                &Value::String("John Doe".to_string())
+            );
+            assert_eq!(table.get("Age").unwrap(), &Value::String("30".to_string()));
+        } else {
+            panic!("Expected descriptionData to be an Object");
+        }
+        assert!(first_props.contains_key("description"));
+
+        // Test unparseable description - should only have description, no structured data
+        let second_feature = &features[1];
+        let second_props = second_feature.props.as_ref().unwrap();
+
+        assert!(second_props.contains_key("description"));
+        assert!(!second_props.contains_key("descriptionData"));
+        assert!(!second_props.contains_key("descriptionData"));
+
+        std::fs::remove_file(&temp_file).ok();
+    }
+
+    #[test]
+    fn test_html_entities_vs_cdata() {
+        // Test with HTML entities
+        let kml_entities = r#"<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <name>Entity Test</name>
+      <description>&lt;table&gt;&lt;tr&gt;&lt;td&gt;Name&lt;/td&gt;&lt;td&gt;Jane&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;td&gt;Age&lt;/td&gt;&lt;td&gt;25&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</description>
+      <Point><coordinates>0,0,0</coordinates></Point>
+    </Placemark>
+  </Document>
+</kml>"#;
+
+        // Test with CDATA
+        let kml_cdata = r#"<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <name>CDATA Test</name>
+      <description><![CDATA[<table><tr><td>Name</td><td>John</td></tr><tr><td>Age</td><td>30</td></tr></table>]]></description>
+      <Point><coordinates>0,0,0</coordinates></Point>
+    </Placemark>
+  </Document>
+</kml>"#;
+
+        let temp_dir = std::env::temp_dir();
+
+        // Test entities version
+        let temp_file_entities = temp_dir.join("test_entities.kml");
+        std::fs::write(&temp_file_entities, kml_entities).unwrap();
+
+        let kml_reader = KmlReader::try_new(&temp_file_entities, ContentMode::Full).unwrap();
+        let features: Vec<_> = kml_reader.map(|r| r.unwrap()).collect();
+
+        println!(
+            "Entity description: {:?}",
+            features[0].props.as_ref().unwrap().get("description")
+        );
+
+        assert_eq!(features.len(), 1);
+        let props = features[0].props.as_ref().unwrap();
+        assert!(
+            props.contains_key("descriptionData"),
+            "Entities should parse table"
+        );
+
+        // Test CDATA version
+        let temp_file_cdata = temp_dir.join("test_cdata.kml");
+        std::fs::write(&temp_file_cdata, kml_cdata).unwrap();
+
+        let kml_reader = KmlReader::try_new(&temp_file_cdata, ContentMode::Full).unwrap();
+        let features: Vec<_> = kml_reader.map(|r| r.unwrap()).collect();
+
+        println!(
+            "CDATA description: {:?}",
+            features[0].props.as_ref().unwrap().get("description")
+        );
+
+        assert_eq!(features.len(), 1);
+        let props = features[0].props.as_ref().unwrap();
+        assert!(
+            props.contains_key("descriptionData"),
+            "CDATA should parse table"
+        );
+
+        std::fs::remove_file(&temp_file_entities).ok();
+        std::fs::remove_file(&temp_file_cdata).ok();
     }
 }

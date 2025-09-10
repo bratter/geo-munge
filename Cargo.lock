@@ -283,6 +283,7 @@ dependencies = [
  "geo-traits",
  "geojson",
  "kml",
+ "quick-xml",
  "serde_json",
  "shapefile",
  "wkb",

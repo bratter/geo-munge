@@ -1,5 +1,6 @@
 pub mod csv;
 pub mod geojson;
+pub mod html_parser;
 pub mod kml;
 pub mod shp;
 
