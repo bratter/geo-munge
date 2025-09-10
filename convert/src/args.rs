@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 
 use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser, ValueEnum};
-use geolib::{
-    csv::{CsvGeom, CsvSettings},
-    format::ContentMode,
-};
 
 use crate::{
-    io::{FileOnlyFormat, InputSpec, OutputSpec, StreamableFormat},
+    format::{
+        csv::{CsvGeom, CsvSettings},
+        *,
+    },
     stream::StreamKind,
+    QuietLevel,
 };
 
 /// Main CLI argument parser.
@@ -35,7 +35,7 @@ impl Cli {
             quiet: args.quiet.into(),
             csv_settings: CsvSettings {
                 geom: args.csv_geom,
-                delimiter: args.delimiter,
+                delimiter: args.csv_delimiter,
             },
         }
     }
@@ -54,18 +54,7 @@ impl Cli {
                         format!("File-only format '{:?}' cannot read from stdin", format),
                     );
                 }
-                InputFormat::JsonStream => InputSpec::Streamable {
-                    format: StreamableFormat::JsonStream,
-                    stream: StreamKind::StdIo,
-                },
-                InputFormat::Ndjson => InputSpec::Streamable {
-                    format: StreamableFormat::Ndjson,
-                    stream: StreamKind::StdIo,
-                },
-                InputFormat::Csv => InputSpec::Streamable {
-                    format: StreamableFormat::Csv,
-                    stream: StreamKind::StdIo,
-                },
+                format => Self::build_input_spec(StreamKind::StdIo, format),
             },
             (StreamKind::StdIo, None) => {
                 Self::exit(
@@ -89,10 +78,15 @@ impl Cli {
                     Ok(path_format) if path_format == format => {
                         Self::build_input_spec(StreamKind::File(path), format)
                     }
+                    // Special affordance for the two json variants
+                    // TODO: Should we either abandon this entirely, or set a default
+                    Ok(path_format) if path_format.is_json() && format.is_json() => {
+                        Self::build_input_spec(StreamKind::File(path), format)
+                    }
                     _ => Self::exit(
                         ErrorKind::ArgumentConflict,
                         format!(
-                            "Format in {} filename '{}' doesn't match '{:?}' which was specified using the -i flag", 
+                            "Format in {} filename '{}' doesn't match '{:?}' which was specified using the -I flag", 
                             kind, path.to_string_lossy(), format
                         ),
                     ),
@@ -103,11 +97,14 @@ impl Cli {
         }
     }
 
-    /// Build InputSpec from InputFormat.
     fn build_input_spec(stream: StreamKind, format: InputFormat) -> InputSpec {
         match format {
-            InputFormat::JsonStream => InputSpec::Streamable {
+            InputFormat::Json => InputSpec::Streamable {
                 format: StreamableFormat::JsonStream,
+                stream,
+            },
+            InputFormat::JsonString => InputSpec::Streamable {
+                format: StreamableFormat::JsonString,
                 stream,
             },
             InputFormat::Ndjson => InputSpec::Streamable {
@@ -190,37 +187,44 @@ impl Cli {
 /// Command line utility to convert between GIS encodings.
 #[derive(Parser, Debug)]
 struct Args {
-    /// Input file path.
-    #[arg(value_parser, default_value = "-")]
+    /// Input file path, will use stdin when not provided.
+    #[arg(long, short, value_parser, default_value = "-")]
     input: StreamKind,
 
-    /// Output file path.
-    #[arg(value_parser, default_value = "-")]
+    /// Output file path, will use stdout when not provided.
+    #[arg(long, short, value_parser, default_value = "-")]
     output: StreamKind,
 
     /// Select the type of the input format.
-    #[arg(long = "input", short)]
+    #[arg(long, short = 'I')]
     input_format: Option<InputFormat>,
 
     /// Select the type of the output format.
-    #[arg(long = "output", short)]
+    #[arg(long, short = 'O')]
     output_format: Option<OutputFormat>,
 
-    /// Only output shapes, do not process any metadata.
-    #[arg(long, short, conflicts_with = "meta")]
+    /// Only output shapes, do not process any properties.
+    #[arg(long, conflicts_with = "meta")]
     shapes: bool,
 
     /// Only output metadata, do not process shapes.
-    #[arg(long, short, conflicts_with = "shapes")]
+    #[arg(long, conflicts_with = "shapes")]
     meta: bool,
 
     /// Override the delimiter for csv processing. Must be single ASCII character.
-    #[arg(short, long, default_value = ",", value_parser = Self::parse_delimiter)]
-    delimiter: u8,
+    #[arg(long, default_value = ",", value_parser = Self::parse_delimiter)]
+    csv_delimiter: u8,
 
     /// Determine the type and name of the geometry input or output columns for CSV.
-    /// TODO: Document this
-    #[arg(long, short = 'g', default_value = "wkt")]
+    ///
+    /// By default, this assumes that the csv contains a column labelled 'geom' that contains WKT encoded geometries.
+    ///
+    /// TO override this, first pass the name of the format. Supported formats are: 'wkt', 'wkb', 'json', and 'pt'. The
+    /// first three expect a single column in the appropriate format, with a column name that defaults to 'geom'. To
+    /// override the column name, pass an alternative separated by a comma, e.g., 'json,my_field'. The 'pt' option
+    /// expects two columns each contains numbers in decimal degrees. The default lolmn names are 'lng' and 'lat'. The
+    /// override, pass both separated by commas, e.g., 'pt,x,y'. The x-value name must be first.
+    #[arg(long, default_value = "wkt")]
     csv_geom: CsvGeom,
 
     /// Run in quiet mode. No errors or messages will be emitted to stdout.
@@ -250,32 +254,20 @@ impl Args {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
-pub enum QuietLevel {
-    Normal,
-    NoErrors,
-    NoMessages,
-}
-
-impl From<u8> for QuietLevel {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => QuietLevel::Normal,
-            1 => QuietLevel::NoErrors,
-            2 => QuietLevel::NoMessages,
-            _ => unreachable!("Clap restricts this to 0–2"),
-        }
-    }
-}
-
 /// Input formats available for conversion
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum InputFormat {
-    /// JSON.
+enum InputFormat {
+    /// JSON Stream.
     ///
     /// Uses geojson's permissive, streaming parser and therefore only works on FeatureCollections or arrays of Features
     /// at the top level.
-    JsonStream,
+    Json,
+
+    /// JSON String.
+    ///
+    /// Loads and parses the entire file or stream as a string, requiring additional memory and overhead, but enforces
+    /// proper geojson and works for inputs other than FeatureCollection.
+    JsonString,
 
     /// Newline delimited JSON.
     ///
@@ -325,7 +317,7 @@ pub enum InputFormat {
 impl InputFormat {
     pub fn try_from_path(path: &PathBuf) -> Result<Self, &'static str> {
         match path.extension().and_then(|ext| ext.to_str()) {
-            Some("json") | Some("geojson") => Ok(InputFormat::JsonStream),
+            Some("json") | Some("geojson") => Ok(InputFormat::Json),
             Some("ndjson") => Ok(InputFormat::Ndjson),
             Some("csv") => Ok(InputFormat::Csv),
             Some("shp") => Ok(InputFormat::Shp),
@@ -334,22 +326,27 @@ impl InputFormat {
             _ => Err("Unknown or missing file extension"),
         }
     }
+
+    fn is_json(&self) -> bool {
+        match self {
+            Self::Json | Self::JsonString => true,
+            _ => false,
+        }
+    }
 }
 
 /// Output formats available for conversion (streamable formats only)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum OutputFormat {
+enum OutputFormat {
     /// JSON.
     ///
-    /// Uses geojson's permissive, streaming parser and therefore only works on FeatureCollections or arrays of Features
-    /// at the top level.
+    /// Streams out as bytes. Wraps the output stream of Features in a FeatureCollection.
     JsonStream,
 
     /// Newline delimited JSON.
     ///
-    /// Streamable, with individual features separated by `\n` (input also supports \r\n`). Each underlying feature must
-    /// be a valid geojson Feature, we do not support FeatureCollections or GeometryCollections for simplicity and
-    /// compatibility.
+    /// Streams individual Features separated by `\n` (input also supports \r\n`). Each underlying feature is a valid
+    /// geojson Feature.
     Ndjson,
 
     /// CSV.

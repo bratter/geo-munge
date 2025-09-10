@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use anyhow::Result;
+use encoding_rs_io::{DecodeReaderBytes, DecodeReaderBytesBuilder};
 
 #[derive(Debug, Clone)]
 pub enum StreamKind {
@@ -44,8 +45,8 @@ impl FromStr for StreamKind {
 }
 
 pub enum InputStream {
-    Stdin(BufReader<Stdin>),
-    File(BufReader<File>),
+    Stdin(BufReader<DecodeReaderBytes<Stdin, Vec<u8>>>),
+    File(BufReader<DecodeReaderBytes<File, Vec<u8>>>),
     #[cfg(test)]
     String(BufReader<Cursor<String>>),
 }
@@ -53,10 +54,10 @@ pub enum InputStream {
 impl InputStream {
     pub fn try_new(stream: StreamKind) -> Result<Self> {
         let input_stream = match stream {
-            StreamKind::StdIo => InputStream::Stdin(BufReader::new(stdin())),
+            StreamKind::StdIo => InputStream::Stdin(Self::make_buf_decoder(stdin())),
             StreamKind::File(path) => {
                 let file = File::open(path)?;
-                InputStream::File(BufReader::new(file))
+                InputStream::File(Self::make_buf_decoder(file))
             }
             #[cfg(test)]
             StreamKind::String(s) => InputStream::String(BufReader::new(Cursor::new(s))),
@@ -64,6 +65,14 @@ impl InputStream {
             StreamKind::OutputString(_) => unreachable!("Should not be used"),
         };
         Ok(input_stream)
+    }
+
+    fn make_buf_decoder<T: Read>(reader: T) -> BufReader<DecodeReaderBytes<T, Vec<u8>>> {
+        let decoder = DecodeReaderBytesBuilder::new()
+            .bom_sniffing(true)
+            .strip_bom(true)
+            .build(reader);
+        BufReader::new(decoder)
     }
 }
 

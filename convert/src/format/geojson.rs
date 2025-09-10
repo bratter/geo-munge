@@ -10,6 +10,7 @@ use geojson::{FeatureReader, GeoJson};
 
 use crate::format::{ContentMode, GeoItem, GeoItemIterator, Properties};
 
+// TODO: Process FeatureCollection types?
 const GEOM_FEAT_ONLY_MSG: &str = "Can only process Feature and Geometry types";
 
 type FeatureResult = geojson::Result<geojson::Feature>;
@@ -56,6 +57,64 @@ impl Iterator for JsonStreamReader {
                 let props = f?.properties.unwrap_or_default();
                 Ok(GeoItem::props_only(props))
             }),
+        }
+    }
+}
+
+/// Read and iterate over a GeoJson document by first reading it entirely into a string.
+///
+/// This reader is less permissive than [`JsonStreamReader`] but supports all valid GeoJSON types:
+/// [`FeatureCollection`], single [`Feature`], [`Geometry`], and [`GeometryCollection`].
+/// It's more memory intensive as it loads the entire input before parsing.
+pub struct JsonStringReader {
+    geojson_items: std::vec::IntoIter<GeoJson>,
+    mode: ContentMode,
+}
+
+impl JsonStringReader {
+    pub fn try_new<R: Read>(mut reader: R, mode: ContentMode) -> Result<Self> {
+        let mut content = String::new();
+        reader.read_to_string(&mut content)?;
+
+        let geojson: GeoJson = content.parse()?;
+        let geojson_items = Self::extract_geojson_items(geojson)?;
+
+        Ok(JsonStringReader {
+            geojson_items: geojson_items.into_iter(),
+            mode,
+        })
+    }
+
+    fn extract_geojson_items(geojson: GeoJson) -> Result<Vec<GeoJson>> {
+        match geojson {
+            GeoJson::FeatureCollection(fc) => {
+                let items = fc.features.into_iter().map(GeoJson::Feature).collect();
+                Ok(items)
+            }
+            GeoJson::Feature(_) => Ok(vec![geojson]),
+            GeoJson::Geometry(_) => Ok(vec![geojson]),
+        }
+    }
+}
+
+impl Iterator for JsonStringReader {
+    type Item = Result<GeoItem>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.geojson_items.next();
+
+        match (next, self.mode) {
+            (Some(geojson), ContentMode::Full) => Some(geoitem_from_geojson(geojson, true)),
+            (Some(geojson), ContentMode::Geometry) => Some(geoitem_from_geojson(geojson, false)),
+            (Some(geojson), ContentMode::Properties) => match geojson {
+                GeoJson::Feature(f) => {
+                    let props = f.properties.unwrap_or_default();
+                    Some(Ok(GeoItem::props_only(props)))
+                }
+                GeoJson::Geometry(_) => Some(Ok(GeoItem::props_only(Properties::default()))),
+                _ => Some(Err(anyhow!(GEOM_FEAT_ONLY_MSG))),
+            },
+            (None, _) => None,
         }
     }
 }
@@ -346,6 +405,34 @@ mod tests {
 
             assert_eq!(features.len(), 1);
             assert!(matches!(features[0], Err(_)));
+        }
+
+        #[test]
+        fn string_reader_handles_single_feature() {
+            let f = r#"
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [1.1, 1.2]
+            },
+            "properties": { "name": "single_point" }
+          }
+        "#;
+            let feature_reader =
+                JsonStringReader::try_new(f.as_bytes(), ContentMode::Full).unwrap();
+            let features: Vec<_> = feature_reader.map(|result| result.unwrap()).collect();
+
+            assert_eq!(features.len(), 1);
+            assert!(matches!(
+                features[0].geom,
+                Some(geo::Geometry::Point(geo::Point(_)))
+            ));
+            let props = features[0].props.as_ref().unwrap();
+            assert_eq!(
+                props.get("name"),
+                Some(&Value::String("single_point".to_string()))
+            );
         }
 
         #[test]

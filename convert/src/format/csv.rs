@@ -7,14 +7,17 @@ use csv::{ByteRecord, Reader, ReaderBuilder, WriterBuilder};
 use geo::{Geometry, Point};
 use geo_traits::to_geo::ToGeoGeometry;
 use wkb::{
-    reader::read_wkb,
-    writer::{geometry_wkb_size, write_geometry},
+    reader::Wkb,
+    writer::{geometry_wkb_size, write_geometry, WriteOptions},
 };
 use wkt::{ToWkt, Wkt};
 
 use crate::format::{ContentMode, GeoItem, GeoItemIterator, Properties, Value};
 
 const EAGER_PARSE_MSG: &str = "Indices eagerly parsed";
+const WKB_WRITE_OPS: WriteOptions = WriteOptions {
+    endianness: wkb::Endianness::LittleEndian,
+};
 
 /// Geometry field extraction options for CSV
 /// TODO: These options need good defaults and assembly
@@ -157,7 +160,7 @@ impl<R: Read> CsvReader<R> {
             CsvGeom::Wkb(_) => {
                 let idx = self.wk_idx.expect(EAGER_PARSE_MSG);
                 let wkb_bytes = record.get(idx).ok_or(anyhow!("Geom field not found"))?;
-                read_wkb(wkb_bytes)?
+                Wkb::try_new(wkb_bytes)?
                     .try_to_geometry()
                     .ok_or(anyhow!("Unable to read WKB geometry"))
             }
@@ -290,7 +293,7 @@ impl<I: GeoItemIterator> CsvTransformer<I> {
             CsvGeom::Wkt(_) => record.push_field(geom.wkt_string().as_bytes()),
             CsvGeom::Wkb(_) => {
                 let mut bytes: Vec<u8> = Vec::with_capacity(geometry_wkb_size(&geom));
-                write_geometry(&mut bytes, &geom, wkb::Endianness::LittleEndian)?;
+                write_geometry(&mut bytes, &geom, &WKB_WRITE_OPS)?;
                 record.push_field(&bytes);
             }
             CsvGeom::Json(_) => {
@@ -536,9 +539,9 @@ mod tests {
             let buf: Vec<u8> = csv.map(|i| i.unwrap().to_vec()).flatten().collect();
 
             let mut check_buf = Vec::from(b"geom\n");
-            write_geometry(&mut check_buf, &pt(0., 0.), wkb::Endianness::LittleEndian).unwrap();
+            write_geometry(&mut check_buf, &pt(0., 0.), &WKB_WRITE_OPS).unwrap();
             check_buf.push(b'\n');
-            write_geometry(&mut check_buf, &pt(1., 0.), wkb::Endianness::LittleEndian).unwrap();
+            write_geometry(&mut check_buf, &pt(1., 0.), &WKB_WRITE_OPS).unwrap();
             check_buf.push(b'\n');
 
             assert_eq!(buf, check_buf);

@@ -3,35 +3,31 @@
 //! Convert between basic GIS formats, optionally preserving metadata.
 
 mod args;
-pub(crate) mod io;
-pub(crate) mod stream;
+mod format;
+mod stream;
 
 use anyhow::Result;
 
-use args::{Cli, QuietLevel};
-use io::InputSpec;
+use args::Cli;
+use format::InputSpec;
 
-// TODO: Work out how this is going to work
-// - What is the full list of formats?
-//   And which formats support buffer-based/incremental parsing vs having to load the whole file
-//   Do we want to support FeatureCollections in anything other than the outermost type?
-// - Can conversion just work with geozero?
-// - Should there be a trait that manages all the main methods?
-// - Where should this be implemented? In geolib?
-// - What should the methods be on the reader?
-//      - iter: iterates through shapes and metadata
-//      - iter_shapes: iterates through shapes only
-//      - iter_meta: iterates through the metadata
-// - What should the methods be on the writer?
-//      - Does it need anything other than write?
-// - Should we attempt to stream everything, so we don't have to worry about memory?
-//   But then how to manage things like shapefile output when the metafields or shape type changes? Just error?
-//   Perhaps there can be an option that buffers a certain amount of data?
-//   Also how to manage what gets emitted per iteration? Ideally a complete shape so we can leverage it elsewhere
-// - Can we preserve some form of id?
-// - If yes do we need to capture it in the CLI input?
-// - Should we have a flatten option that just flattens nexted geoms or collections if it needs to?
-// - Probably needs some form of permissiveness control that decides when to abort vs log an issue
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
+enum QuietLevel {
+    Normal,
+    NoErrors,
+    NoMessages,
+}
+
+impl From<u8> for QuietLevel {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => QuietLevel::Normal,
+            1 => QuietLevel::NoErrors,
+            2 => QuietLevel::NoMessages,
+            _ => unreachable!("Clap restricts this to 0–2"),
+        }
+    }
+}
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -67,10 +63,10 @@ fn run(args: Cli) -> Result<(usize, usize)> {
     // transformer as long as they are GeoItemIterators
     // TODO: This should have the option to flatten if not done in the reader
     // TODO: Also want a seek setting to pre-pull fields for unstructured metadata formats like json
+    // TODO: Some form of permissiveness control that decides when to log vs. abort
 
     // Prepare the reader and writer
     let reader = args.input.create_reader(args.mode)?;
-    // TODO: the create methods should probably live on the Cli struct so other settings don't have to be passed
     let transformer = args
         .output
         .create_transformer(reader, args.mode, args.csv_settings)?;
@@ -94,11 +90,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use geolib::{
+    use crate::format::{
         csv::{CsvGeom, CsvSettings},
-        format::ContentMode,
+        ContentMode,
     };
-    use io::{InputSpec, OutputSpec, StreamableFormat};
+    use format::{OutputSpec, StreamableFormat};
 
     const JSON: &'static str = r#"
       {

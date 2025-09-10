@@ -16,6 +16,8 @@ use error::Error;
 
 use clap::Parser;
 
+// FIX: This is not currently in a working state, but is compiling
+// It should be revisted after other improvements before profiling
 // TODO: See notes in execute command file on further improvements
 #[derive(Debug)]
 pub struct Paths {
