@@ -1,10 +1,7 @@
 use anyhow::Result;
+use protocol::prelude::*;
 
-use crate::{
-    args::KnnArgs,
-    input_io::Input,
-    message::{dispatch_counted_batches, prelude::*},
-};
+use crate::{args::KnnArgs, input_io::Input, message::dispatch_counted_batches};
 
 use super::{
     print_and_filter_err, CommandHandler, Res, MAX_BATCH_BYTES, MAX_FEATURE_COUNT,

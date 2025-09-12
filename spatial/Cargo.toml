@@ -8,8 +8,8 @@ prop-tests = []
 debug-print = []
 
 [dependencies]
-anyhow = { workspace = true }
-geo = { workspace = true }
+anyhow.workspace = true
+geo.workspace = true
 
 [dev-dependencies]
 approx = "0.5.1"

@@ -5,8 +5,6 @@
 mod args;
 mod bench;
 mod client;
-mod connection;
-mod ctrlc;
 mod input_io;
 mod message;
 mod server;
@@ -14,15 +12,10 @@ mod server;
 use anyhow::Result;
 use clap::Parser;
 use crossbeam::channel::Sender;
-use ctrlc::{set_ctrlc_handler, RunToken};
+use network::signals::{set_ctrlc_handler, RunToken};
 use tracing_subscriber::EnvFilter;
 
 use crate::args::{Args, ClientCommandWrapper, Command};
-
-#[cfg(unix)]
-const UNIX_SOCKET_NAME: &str = "/tmp/gm-proximity";
-#[cfg(windows)]
-const TCP_SOCKET_ADDR: &str = "127.0.0.1:6378";
 
 /// The maximum connection pool size for client connections - required to ensure that the SERVER token stays separated
 pub const MAX_CONNECTIONS: usize = 8;

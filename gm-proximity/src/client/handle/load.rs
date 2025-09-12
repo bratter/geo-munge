@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use protocol::prelude::*;
 
-use crate::{input_io::Input, message::prelude::*};
+use crate::input_io::Input;
 
 use super::{CommandHandler, Res, MAX_BATCH_BYTES, MAX_FEATURE_COUNT};
 

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::{message::prelude::*, server::geo_store::GeoStore};
+use protocol::prelude::*;
+
+use crate::server::geo_store::GeoStore;
 
 use super::Context;
 

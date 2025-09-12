@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["gm-proximity", "bench", "convert", "spatial"]
+members = ["gm-proximity", "convert", "spatial", "network", "protocol", "bench"]
 exclude = ["data/*"]
 
 [workspace.package]
@@ -10,9 +10,13 @@ version = "0.3.0"
 [workspace.dependencies]
 anyhow = "1.0.97"
 clap = { version = "^4.5", features = ["derive"] }
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 encoding_rs_io = "0.1"
 geo = "^0.29"
 geojson = { version = "^0.24", features = ["geo-types"] }
+network = { path = "network" }
+protocol = { path = "protocol" }
+tracing = "0.1.41"
 serde_json = "^1.0"
 spatial = { path = "spatial" }
 

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::message::prelude::*;
+use protocol::prelude::*;
 
 use super::Context;
 

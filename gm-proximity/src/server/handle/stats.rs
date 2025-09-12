@@ -1,4 +1,5 @@
-use crate::{connection::Traffic, message::prelude::*};
+use network::connection::Traffic;
+use protocol::prelude::*;
 
 use super::Context;
 

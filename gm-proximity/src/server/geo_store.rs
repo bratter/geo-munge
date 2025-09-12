@@ -9,9 +9,11 @@ use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use geo::{Geometry, Rect};
+// TODO: Should we remove uid, custom key, and properties from geo_store and map the type somewhere?
+use protocol::{prelude::Properties, CustomKey, Uid};
 use spatial::{earth_bbox, BasicQuadTree, Identified, ProximitySearch, RegionQuery, SpatialIndex};
 
-use crate::message::{prelude::*, CustomKey, NodeId, Properties};
+use crate::message::Feature;
 
 /// Storage wrapper around Feature with server-specific metadata.
 pub struct RecordInner {
@@ -49,8 +51,8 @@ impl AsRef<Geometry<f64>> for RecordInner {
     }
 }
 
-impl PartialEq<NodeId> for RecordInner {
-    fn eq(&self, other: &NodeId) -> bool {
+impl PartialEq<Uid> for RecordInner {
+    fn eq(&self, other: &Uid) -> bool {
         &self.data.id == other
     }
 }
@@ -80,7 +82,7 @@ impl RecordInner {
 /// TODO: Hash function? Consider AHash
 /// TODO: Other options for custom key, or make it generic to save space when not used
 pub struct GeoStore {
-    id_index: DashMap<NodeId, Record, FxBuildHasher>,
+    id_index: DashMap<Uid, Record, FxBuildHasher>,
     custom_key: DashMap<CustomKey, Record, FxBuildHasher>,
     spatial_index: BasicQuadTree<Record>,
     custom_key_pointer: Option<String>,
@@ -187,7 +189,7 @@ impl GeoStore {
     /// Soft-delete a record by ID.
     ///
     /// Returns true if something was freshly deleted, false otherwise.
-    pub fn delete(&self, id: &NodeId) -> bool {
+    pub fn delete(&self, id: &Uid) -> bool {
         if let Some((_, record)) = self.id_index.remove(id) {
             let is_deleted = record.is_deleted.fetch_or(true, Ordering::Release);
             self.spatial_index.remove(id);
@@ -226,7 +228,7 @@ impl GeoStore {
     ///
     /// This does not check the deletion status, which introduces a small race condition, but is still eventually
     /// consistent.
-    pub fn get(&self, id: &NodeId) -> Option<Record> {
+    pub fn get(&self, id: &Uid) -> Option<Record> {
         self.id_index.get(&id).map(|r| Arc::clone(&r))
     }
 

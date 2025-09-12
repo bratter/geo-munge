@@ -1,10 +1,7 @@
-use crate::{
-    args::GetArgs,
-    input_io::Input,
-    message::{dispatch_counted_batches, prelude::*},
-};
-
 use anyhow::Result;
+use protocol::prelude::*;
+
+use crate::{args::GetArgs, input_io::Input, message::dispatch_counted_batches};
 
 use super::{print_and_filter_err, CommandHandler, Res, MAX_ID_BATCH_SIZE};
 

@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
 use dialoguer::Confirm;
+use protocol::prelude::*;
 
-use crate::{args::ResetArgs, message::prelude::*};
+use crate::args::ResetArgs;
 
 use super::{CommandHandler, Res};
 

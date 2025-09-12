@@ -6,11 +6,7 @@ use anyhow::Result;
 use bincode::{Decode, Encode};
 use geojson::JsonValue;
 
-use super::{
-    encode::IoCodec,
-    request::{DegreeBbox, KeyMode},
-    JsonFeature, NodeId, Properties,
-};
+use super::prelude::*;
 
 #[derive(Encode, Decode)]
 #[non_exhaustive]
@@ -148,7 +144,7 @@ impl ContentType {
 #[derive(Debug, Encode, Decode)]
 pub struct BasicResult {
     /// The unique identifier of the node.
-    pub id: NodeId,
+    pub id: Uid,
 
     /// The content to return with this result.
     pub content: ContentType,
@@ -161,10 +157,10 @@ pub struct ProximityResult {
     pub input_index: usize,
 
     /// When the query was a reference to an id or a filter, return the uid of the retrieved input item.
-    pub input_uid: Option<NodeId>,
+    pub input_uid: Option<Uid>,
 
     /// The unique identifier of the retrieved node.
-    pub id: NodeId,
+    pub id: Uid,
 
     /// The distance from the query geometry in meters.
     pub distance_meters: f64,

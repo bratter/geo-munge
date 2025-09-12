@@ -9,17 +9,16 @@ debug-print = ["spatial/debug-print"]
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+crossbeam.workspace = true
+encoding_rs_io.workspace = true
 geo.workspace = true
 geojson.workspace = true
+network.workspace = true
+protocol.workspace = true
 spatial.workspace = true
-encoding_rs_io.workspace = true
-bincode = "2.0.1"
-ctrlc = "3.4.6"
+tracing.workspace = true
 dialoguer = "0.11.0"
 atty = "0.2.14"
-mio = { version = "1.0.3", features = ["net", "os-ext"] }
-crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
-tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 dashmap = "6.1.0"
 fxhash = "0.2.1"

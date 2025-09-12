@@ -1,4 +1,6 @@
-use crate::message::{dispatch_counted_batches, prelude::*};
+use protocol::prelude::*;
+
+use crate::message::dispatch_counted_batches;
 
 use super::{feature_to_basic_result, Context, MAX_GEOM_BATCH_SIZE, MAX_ID_BATCH_SIZE};
 

@@ -1,7 +1,6 @@
 use geo::{Rect, ToRadians};
+use protocol::prelude::*;
 use spatial::RegionQuery;
-
-use crate::message::prelude::*;
 
 use super::{feature_to_basic_result, Context, MAX_GEOM_BATCH_SIZE, MAX_ID_BATCH_SIZE};
 

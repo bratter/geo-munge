@@ -12,8 +12,9 @@ use std::{
 
 use anyhow::{bail, Error, Result};
 use crossbeam::channel::{self, Receiver, Sender};
+use protocol::prelude::*;
 
-use crate::{args::ClientCommand, message::prelude::*};
+use crate::args::ClientCommand;
 
 use super::{handlers, Res, Tracker};
 
@@ -431,6 +432,12 @@ fn write_response<W: Write>(
         }
         Response::Error(msg) => writeln_with_preamble!(stderr, meta, "error: {}", msg),
         Response::Bench(_) => unreachable!(),
+        // TODO: Change error print of unknown response types
+        _ => writeln!(
+            stderr,
+            "Unknown response type for req={}, res={}",
+            meta.req_id, meta.res_id
+        ),
     }
 }
 

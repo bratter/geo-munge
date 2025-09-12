@@ -10,9 +10,7 @@ use anyhow::{anyhow, bail, Error, Ok, Result};
 use bincode::{Decode, Encode};
 use geo::{Point, Rect, ToDegrees, ToRadians};
 
-use super::{
-    encode::IoCodec, feature::Feature, response::ContentType, CustomKey, JsonFeature, NodeId,
-};
+use super::prelude::*;
 
 #[derive(Encode, Decode)]
 #[non_exhaustive]
@@ -288,7 +286,7 @@ pub struct GetReq {
 
 #[derive(Encode, Decode)]
 pub enum KeySet {
-    Uid(Vec<NodeId>),
+    Uid(Vec<Uid>),
     Custom(Vec<CustomKey>),
 }
 
@@ -328,8 +326,8 @@ impl KeySet {
     }
 }
 
-impl From<Vec<NodeId>> for KeySet {
-    fn from(value: Vec<NodeId>) -> Self {
+impl From<Vec<Uid>> for KeySet {
+    fn from(value: Vec<Uid>) -> Self {
         KeySet::Uid(value)
     }
 }
@@ -398,19 +396,6 @@ pub enum ContentMode {
 }
 
 impl ContentMode {
-    /// Convert a [`Feature`] to the correct [`ContentType`] for responses based on this mode.
-    pub fn with_feature(&self, feature: &Feature) -> ContentType {
-        match self {
-            Self::None => ContentType::None,
-            Self::Full => ContentType::FullFeature(geojson::Feature::from(feature).into()),
-            Self::Geometry => {
-                let geom: geojson::Feature = geojson::Geometry::from(feature.as_ref()).into();
-                ContentType::GeometryOnly(geom.into())
-            }
-            Self::Properties => ContentType::PropertiesOnly(feature.into()),
-        }
-    }
-
     fn as_str(&self) -> &str {
         match self {
             Self::None => "None",

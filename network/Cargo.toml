@@ -1,0 +1,12 @@
+[package]
+name = "network"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+crossbeam.workspace = true
+protocol.workspace = true
+tracing.workspace = true
+ctrlc = "3.5"
+mio = { version = "1.0.4", features = ["net", "os-ext"] }

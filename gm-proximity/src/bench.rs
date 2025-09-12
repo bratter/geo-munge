@@ -2,11 +2,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use crossbeam::channel;
+use network::signals::RunToken;
 
-use crate::{
-    args::{Bench, BenchClient, ClientCommand},
-    ctrlc::RunToken,
-};
+use crate::args::{Bench, BenchClient, ClientCommand};
 
 /// TODO: Improve bench routine
 /// - More parameters for the configs

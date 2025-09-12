@@ -1,6 +1,7 @@
 use anyhow::Result;
+use protocol::prelude::*;
 
-use crate::{args::WindowArgs, message::prelude::*};
+use crate::args::WindowArgs;
 
 use super::{CommandHandler, Res};
 

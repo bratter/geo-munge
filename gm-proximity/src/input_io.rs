@@ -7,8 +7,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Result};
 use encoding_rs_io::{DecodeReaderBytes, DecodeReaderBytesBuilder};
-
-use crate::message::{prelude::*, CustomKey};
+use protocol::prelude::*;
 
 /// An abstraction layer over file or stdin input streams, useful for abstracting over input types in the client CLI.
 pub enum Input {
@@ -53,11 +52,11 @@ impl Input {
     }
 
     /// Convert the Input into an iterator of line-oriented [`NodeId`] types.
-    pub fn into_uid_iter(self) -> impl Iterator<Item = Result<NodeId>> {
+    pub fn into_uid_iter(self) -> impl Iterator<Item = Result<Uid>> {
         self.lines().map(|line_result| {
             line_result
                 .map_err(Into::into)
-                .and_then(|line| line.parse::<NodeId>().map_err(Into::into))
+                .and_then(|line| line.parse::<Uid>().map_err(Into::into))
         })
     }
 

@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use crossbeam::channel::Sender;
+use network::connection::{MsgToken, Traffic};
+use protocol::prelude::*;
 
-use crate::connection::{MsgToken, Traffic};
-use crate::message::prelude::*;
+use crate::message::{Feature, KeyGenerator};
 use crate::server::geo_store::GeoStore;
 
 use super::handlers;
@@ -54,6 +55,8 @@ impl Handler {
             Request::Knn(knn_data) => handlers::knn(context, knn_data),
             Request::Window(window_data) => handlers::window(context, window_data),
             Request::Bench(bench_data) => handlers::bench(context, bench_data),
+            // TODO: Change black hole of unknown request types
+            _ => {}
         }
     }
 }
@@ -89,7 +92,7 @@ impl<'a> Context<'a> {
 
 #[inline]
 pub fn feature_to_basic_result(content_mode: ContentMode, record: &Feature) -> BasicResult {
-    let content = content_mode.with_feature(record);
+    let content = record.generate_content(content_mode);
 
     BasicResult {
         id: record.id,

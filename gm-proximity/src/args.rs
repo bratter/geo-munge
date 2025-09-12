@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{Args as ArgsTrait, Parser, Subcommand};
+use protocol::prelude::*;
 
 use crate::client::{OutputFormat, OutputOptions};
-use crate::message::prelude::*;
 
 /// Command line client and server for proximity-based geospatial operations.
 #[derive(Debug, Parser)]

@@ -7,8 +7,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::{anyhow, Result};
 use geo::{Geometry, ToDegrees, ToRadians};
-
-use super::{request::KeyMode, NodeId, Properties};
+use protocol::prelude::*;
 
 pub enum KeyGenerator {
     AutoIncrement(AtomicU32),
@@ -64,9 +63,24 @@ pub struct ParsedFeature {
 /// to radians during parsing for efficient distance calculations.
 #[derive(Debug, Clone)]
 pub struct Feature {
-    pub id: NodeId,
+    pub id: Uid,
     pub geometry: Geometry<f64>,
     pub properties: Option<Properties>,
+}
+
+impl Feature {
+    /// Convert a [`Feature`] to the correct [`ContentType`] for responses based on this mode.
+    pub fn generate_content(&self, content_mode: ContentMode) -> ContentType {
+        match content_mode {
+            ContentMode::None => ContentType::None,
+            ContentMode::Full => ContentType::FullFeature(geojson::Feature::from(self).into()),
+            ContentMode::Geometry => {
+                let geom: geojson::Feature = geojson::Geometry::from(self.as_ref()).into();
+                ContentType::GeometryOnly(geom.into())
+            }
+            ContentMode::Properties => ContentType::PropertiesOnly(self.into()),
+        }
+    }
 }
 
 impl TryFrom<geojson::Feature> for ParsedFeature {
@@ -113,7 +127,7 @@ impl ParsedFeature {
     ///
     /// Because it handles side effects, this means that it should not be called arbitrarily and is therefore a private
     /// function.
-    fn resolve_id(&self, key_gen: &KeyGenerator) -> Result<NodeId> {
+    fn resolve_id(&self, key_gen: &KeyGenerator) -> Result<Uid> {
         match key_gen {
             KeyGenerator::AutoIncrement(counter) => Ok(counter.fetch_add(1, Ordering::Relaxed)),
             KeyGenerator::U32Pointer(pointer) => self.extract_u32_from_properties(&pointer),
@@ -122,7 +136,7 @@ impl ParsedFeature {
         }
     }
 
-    fn extract_u32_from_properties(&self, pointer: &str) -> Result<NodeId> {
+    fn extract_u32_from_properties(&self, pointer: &str) -> Result<Uid> {
         let properties = self
             .properties
             .as_ref()
@@ -144,7 +158,7 @@ impl ParsedFeature {
         }
     }
 
-    fn extract_from_native_id(&self) -> Result<NodeId> {
+    fn extract_from_native_id(&self) -> Result<Uid> {
         match &self.native_id {
             Some(geojson::feature::Id::Number(n)) => {
                 let num = n

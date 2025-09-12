@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Result};
+use protocol::prelude::*;
 
 use crate::args::BenchClient;
 use crate::client::handle::ResponseHandler;
-use crate::message::prelude::*;
 
 use super::CommandHandler;
 

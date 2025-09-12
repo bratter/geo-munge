@@ -47,8 +47,6 @@ pub fn set_ctrlc_handler() -> Result<RunToken> {
 ///
 /// Primarily used as the return value from the ctrl-c handler, but can also be used to shutdown manually by using the
 /// `.shutdown()` method.
-///
-/// TODO: Are both access methods needed?
 #[derive(Clone)]
 pub struct RunToken(Arc<AtomicBool>);
 

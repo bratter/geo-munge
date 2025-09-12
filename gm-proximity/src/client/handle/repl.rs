@@ -11,11 +11,9 @@ use std::{
 
 use anyhow::{bail, Error, Result};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
+use protocol::prelude::*;
 
-use crate::{
-    args::{KnnArgs, ReplArgs, ResetArgs},
-    message::prelude::*,
-};
+use crate::args::{KnnArgs, ReplArgs, ResetArgs};
 
 use super::{handlers, CommandHandler, OutputFormat, OutputOptions, ResponseHandler};
 

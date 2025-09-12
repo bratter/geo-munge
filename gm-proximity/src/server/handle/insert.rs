@@ -1,4 +1,6 @@
-use crate::message::prelude::*;
+use protocol::prelude::*;
+
+use crate::message::ParsedFeature;
 
 use super::Context;
 
@@ -33,21 +35,30 @@ pub fn insert(handler: Context, insert: Vec<JsonFeature>) {
 
 #[cfg(test)]
 mod test {
-    use std::{path::PathBuf, time::Duration};
+    use std::{
+        path::{Path, PathBuf},
+        time::Duration,
+    };
 
     use super::*;
 
-    use crate::{connection::MsgToken, input_io::Input};
+    use crate::connection::MsgToken;
+
+    const MANIFEST: &str = env!("CARGO_MANIFEST_DIR");
+
+    fn get_test_ndjson(path: impl AsRef<Path>) -> Vec<JsonFeature> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .trim()
+            .split("\n")
+            .map(|s| JsonFeature(s.trim().parse::<geojson::Feature>().unwrap()))
+            .collect()
+    }
 
     #[test]
     fn inserts_ndjson_requests() {
-        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("../data/sample_geojson/sample.ndjson");
-        let insert_val = Input::try_new(Some(path))
-            .unwrap()
-            .into_feature_iter()
-            .filter_map(|res| if let Ok((_, f)) = res { Some(f) } else { None })
-            .collect();
+        let path = PathBuf::from(MANIFEST).join("../data/sample_geojson/sample.ndjson");
+        let insert_val = get_test_ndjson(path);
         let ctx = Context::make_store();
         let (rx, handler) = Context::test_new(&ctx, MsgToken::new(0, 0));
 
@@ -65,13 +76,8 @@ mod test {
 
     #[test]
     fn insert_with_custom_id() {
-        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("../data/sample_geojson/sample_with_id.ndjson");
-        let insert_val = Input::try_new(Some(path))
-            .unwrap()
-            .into_feature_iter()
-            .filter_map(|res| if let Ok((_, f)) = res { Some(f) } else { None })
-            .collect();
+        let path = PathBuf::from(MANIFEST).join("../data/sample_geojson/sample_with_id.ndjson");
+        let insert_val = get_test_ndjson(path);
         let ctx = Context::make_store();
         let (rx, handler) = Context::test_new(&ctx, MsgToken::new(0, 0));
 

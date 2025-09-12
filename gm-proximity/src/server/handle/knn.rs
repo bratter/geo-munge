@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use geo::Geometry;
+use protocol::prelude::*;
 use spatial::{ProximitySearch, EARTH_RADIUS_METERS};
 
 use crate::{
-    message::prelude::*,
+    message::ParsedFeature,
     server::geo_store::{GeoStore, Record},
 };
 
@@ -103,7 +104,7 @@ fn process_keys(
     // NOTE: We have to manually batch here rather than using the helping in message/batch.rs as the nested iterator
     // structure cannot be flattened due to lifetime issues, preventing us from passing a flat iterator to the batch
     // Instead we set up a helper closure here to manage the additional complexity
-    let mut process_record = |record: &Record, i: usize, input_uid: NodeId| {
+    let mut process_record = |record: &Record, i: usize, input_uid: Uid| {
         let geom = &record.data.geometry;
         for neighbor in exec_neighbor_search(&store, content_mode, i, Some(input_uid), r, geom)
             .filter(|item| item.id != input_uid)
@@ -149,14 +150,14 @@ fn exec_neighbor_search<'a>(
     store: &'a Arc<GeoStore>,
     content_mode: ContentMode,
     input_index: usize,
-    input_uid: Option<NodeId>,
+    input_uid: Option<Uid>,
     r: Option<f64>,
     geom: &Geometry,
 ) -> impl Iterator<Item = ProximityResult> {
     store
         .within_radius(geom, r.unwrap_or(std::f64::MAX))
         .map(move |(record, distance)| {
-            let content = content_mode.with_feature(&record.data);
+            let content = record.data.generate_content(content_mode);
 
             ProximityResult {
                 input_index,

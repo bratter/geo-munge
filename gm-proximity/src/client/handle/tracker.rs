@@ -8,8 +8,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Error, Result};
-
-use crate::message::prelude::*;
+use protocol::prelude::*;
 
 use super::{handle::ResponseMeta, OutputOptions, ResponseHandler};
 
