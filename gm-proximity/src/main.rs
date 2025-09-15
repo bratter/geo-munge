@@ -13,6 +13,10 @@ use anyhow::Result;
 use clap::Parser;
 use crossbeam::channel::Sender;
 use network::signals::{set_ctrlc_handler, RunToken};
+#[cfg(windows)]
+use proximity_ipc::DEFAULT_TCP_SOCKET_ADDR;
+#[cfg(unix)]
+use proximity_ipc::DEFAULT_UNIX_SOCKET_NAME;
 use tracing_subscriber::EnvFilter;
 
 use crate::args::{Args, ClientCommandWrapper, Command};
@@ -37,18 +41,29 @@ fn main() -> Result<()> {
     // Set up graceful ctrl-c handling
     let running = set_ctrlc_handler()?;
 
+    // Get the right socket name
+    let socket;
+    #[cfg(unix)]
+    {
+        socket = DEFAULT_UNIX_SOCKET_NAME;
+    }
+    #[cfg(windows)]
+    {
+        socket = DEFAULT_TCP_SOCKET_ADDR;
+    }
+
     let args = Args::parse();
 
     match args.command {
         Command::Server => crate::server::run(Context {
-            config: crate::server::Config::default(),
+            config: crate::server::Config::default().set_socket_name(socket),
             ready: None,
             running,
         }),
         Command::Client(ClientCommandWrapper { command }) => crate::client::run(
             command,
             Context {
-                config: crate::client::Config::default(),
+                config: crate::client::Config::default().set_socket_name(socket),
                 ready: None,
                 running,
             },

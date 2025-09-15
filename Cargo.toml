@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["gm-proximity", "convert", "spatial", "network", "protocol", "bench"]
+members = ["gm-proximity", "convert", "spatial", "proximity-ipc", "network", "protocol", "bench"]
 exclude = ["data/*"]
 
 [workspace.package]
@@ -16,6 +16,7 @@ geo = "^0.29"
 geojson = { version = "^0.24", features = ["geo-types"] }
 network = { path = "network" }
 protocol = { path = "protocol" }
+proximity-ipc = { path = "proximity-ipc" }
 tracing = "0.1.41"
 serde_json = "^1.0"
 spatial = { path = "spatial" }

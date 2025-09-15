@@ -1,12 +1,11 @@
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 
 use anyhow::{anyhow, Result};
-use crossbeam::channel::{self, RecvTimeoutError};
 use network::{
     client::{run_io_loop, IoLoopConfig},
-    connection::{MsgToken, Traffic},
+    connection::Traffic,
 };
-use protocol::prelude::*;
+use proximity_ipc::channel::{ClientChannels, RecvTimeoutError};
 
 use super::{CommandHandler, Tracker};
 use crate::{args::ClientCommand, Context};
@@ -45,24 +44,44 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    pub fn set_socket_name(mut self, s: impl Into<Cow<'static, str>>) -> Self {
+        #[cfg(unix)]
+        {
+            self.io.unix_socket_name = s.into();
+        }
+
+        #[cfg(windows)]
+        {
+            self.io.tcp_socket_addr = s.into()
+        }
+
+        self
+    }
+}
+
 pub fn run(cmd: ClientCommand, context: Context<Config>) -> Result<()> {
     let run_span = tracing::error_span!("client");
     let _enter = run_span.enter();
 
     // Set up message channels and instrumentation
     let config: &_ = Box::leak(Box::new(context.config));
-    let (request_tx, request_rx) = channel::bounded::<(u32, Request)>(config.request_capacity);
-    let (response_tx, response_rx) =
-        channel::bounded::<(MsgToken, Response)>(config.response_capacity);
+    let channels = ClientChannels::new(config.request_capacity, config.response_capacity);
     let traffic: &_ = Box::leak(Box::new(Traffic::default()));
     let mut tracker = Tracker::default();
-    let (cmd_handler, done) = CommandHandler::new(request_tx, tracker.clone());
+    let (cmd_handler, done) = CommandHandler::new(channels.request_tx, tracker.clone());
 
     let r = context.running.clone();
     let io_run_span = run_span.clone();
     let io_handle = std::thread::spawn(move || {
         let _enter = io_run_span.enter();
-        match run_io_loop(r.clone(), &config.io, traffic, request_rx, response_tx) {
+        match run_io_loop(
+            r.clone(),
+            &config.io,
+            traffic,
+            channels.request_rx,
+            channels.response_tx,
+        ) {
             Ok(_) => tracing::trace!("Client IO loop exit success"),
             Err(err) => tracing::error!("Client IO loop exit error: {}", err),
         }
@@ -88,7 +107,7 @@ pub fn run(cmd: ClientCommand, context: Context<Config>) -> Result<()> {
     // spuriously.
     let mut done_requesting = false;
     while context.running.is_running() {
-        match response_rx.recv_timeout(config.shutdown_timeout) {
+        match channels.response_rx.recv_timeout(config.shutdown_timeout) {
             Ok((msg_token, res)) => tracker.handle(msg_token.msg(), res)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,

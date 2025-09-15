@@ -40,9 +40,10 @@ mod test {
         time::Duration,
     };
 
-    use super::*;
+    use network::connection::MsgToken;
+    use proximity_ipc::codec::IpcResponse;
 
-    use crate::connection::MsgToken;
+    use super::*;
 
     const MANIFEST: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -65,7 +66,7 @@ mod test {
         insert(handler, insert_val);
 
         match rx.recv_timeout(Duration::from_millis(0)) {
-            Ok((_, Response::ResultCounts { success, fail })) => {
+            Ok((_, IpcResponse(Response::ResultCounts { success, fail }))) => {
                 assert_eq!(success, 3);
                 assert_eq!(fail, 0);
             }
@@ -84,7 +85,7 @@ mod test {
         insert(handler, insert_val);
 
         match rx.recv_timeout(Duration::from_millis(0)) {
-            Ok((_, Response::ResultCounts { success, fail })) => {
+            Ok((_, IpcResponse(Response::ResultCounts { success, fail }))) => {
                 assert_eq!(success, 3);
                 assert_eq!(fail, 0);
             }

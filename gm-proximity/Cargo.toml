@@ -15,6 +15,7 @@ geo.workspace = true
 geojson.workspace = true
 network.workspace = true
 protocol.workspace = true
+proximity-ipc.workspace = true
 spatial.workspace = true
 tracing.workspace = true
 dialoguer = "0.11.0"

@@ -10,8 +10,19 @@ pub mod connection;
 pub mod server;
 pub mod signals;
 
-// TODO: Can we remove or change these?
+use anyhow::Result;
+
 #[cfg(unix)]
-const UNIX_SOCKET_NAME: &str = "/tmp/gm-proximity";
+const DEFAULT_UNIX_SOCKET_NAME: &str = "/tmp/net_lib_socket";
 #[cfg(windows)]
-const TCP_SOCKET_ADDR: &str = "127.0.0.1:6378";
+const DEFAULT_TCP_SOCKET_ADDR: &str = "127.0.0.1:6378";
+
+/// Codec trait to ensure that the connection can serialize and deserialize types on the wire
+pub trait IoCodec
+where
+    Self: Sized,
+{
+    fn decode_from_slice(buf: &[u8]) -> Result<Self>;
+
+    fn encode_to_vec(&self) -> Result<Vec<u8>>;
+}

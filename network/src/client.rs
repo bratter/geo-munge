@@ -1,6 +1,6 @@
 //! Client io event loop and configuration.
 
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 
 use anyhow::{bail, Result};
 use crossbeam::channel::{Receiver, Sender};
@@ -9,11 +9,11 @@ use mio::net::TcpStream;
 #[cfg(unix)]
 use mio::net::UnixStream;
 use mio::{Events, Interest, Poll, Token};
-use protocol::IoCodec;
 
 use super::{
     connection::{Connection, MsgToken, ReadResult, Traffic, WriteResult},
     signals::RunToken,
+    IoCodec,
 };
 
 const SERVER: Token = Token(0);
@@ -35,11 +35,11 @@ pub struct IoLoopConfig {
 
     #[cfg(unix)]
     /// Name of the socket to connect to.
-    pub unix_socket_name: &'static str,
+    pub unix_socket_name: Cow<'static, str>,
 
     #[cfg(windows)]
     /// Address of the TCP socket to connect to.
-    pub tcp_socket_addr: &'static str,
+    pub tcp_socket_addr: Cow<'static, str>,
 }
 
 impl IoLoopConfig {
@@ -50,9 +50,9 @@ impl IoLoopConfig {
             response_reenable_limit: limit,
             event_capacity: 16,
             #[cfg(unix)]
-            unix_socket_name: super::UNIX_SOCKET_NAME,
+            unix_socket_name: Cow::Borrowed(super::DEFAULT_UNIX_SOCKET_NAME),
             #[cfg(windows)]
-            tcp_socket_addr: super::TCP_SOCKET_ADDR,
+            tcp_socket_addr: Cow::Borrowed(super::DEFAULT_TCP_SOCKET_ADDR),
         }
     }
 }
@@ -72,10 +72,10 @@ pub fn run_io_loop<Req: IoCodec, Res: IoCodec>(
 ) -> Result<()> {
     // TODO: On linux have option of stream or TCP?
     #[cfg(unix)]
-    let stream = UnixStream::connect(config.unix_socket_name)?;
+    let stream = UnixStream::connect(config.unix_socket_name.as_ref())?;
 
     #[cfg(windows)]
-    let stream = TcpStream::connect(config.tcp_socket_addr.parse()?)?;
+    let stream = TcpStream::connect(config.tcp_socket_addr.as_ref().parse()?)?;
 
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(config.event_capacity);

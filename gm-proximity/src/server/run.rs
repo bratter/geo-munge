@@ -1,15 +1,15 @@
 //! Server handler for GM-Proximity.
 
-use std::{sync::Arc, time::Duration};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
-use crossbeam::channel::{self, RecvTimeoutError};
+use crossbeam::channel::RecvTimeoutError;
 use network::{
-    connection::{MsgToken, Traffic},
+    connection::Traffic,
     server::{run_io_loop, IoLoopConfig},
 };
-use protocol::prelude::*;
+use proximity_ipc::channel::ServerChannels;
 
 use crate::Context;
 
@@ -43,6 +43,22 @@ pub struct Config {
     pub response_capacity: usize,
 }
 
+impl Config {
+    pub fn set_socket_name(mut self, s: impl Into<Cow<'static, str>>) -> Self {
+        #[cfg(unix)]
+        {
+            self.io.unix_socket_name = s.into();
+        }
+
+        #[cfg(windows)]
+        {
+            self.io.tcp_socket_addr = s.into();
+        }
+
+        self
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -61,10 +77,7 @@ pub fn run(context: Context<Config>) -> Result<()> {
     let running = context.running;
     let config: &_ = Box::leak(Box::new(context.config));
     let traffic: &_ = Box::leak(Box::new(Traffic::default()));
-
-    let (request_tx, request_rx) = channel::bounded::<(MsgToken, Request)>(config.request_capacity);
-    let (response_tx, response_rx) =
-        channel::bounded::<(MsgToken, Response)>(config.response_capacity);
+    let server_channels = ServerChannels::new(config.request_capacity, config.response_capacity);
 
     // Start the IO loop
     let io_run_span = run_span.clone();
@@ -76,8 +89,8 @@ pub fn run(context: Context<Config>) -> Result<()> {
             &context.ready,
             &config.io,
             traffic,
-            request_tx,
-            response_rx,
+            server_channels.request_tx,
+            server_channels.response_rx,
         ) {
             Ok(_) => tracing::trace!("Server IO loop exited success"),
             Err(err) => tracing::error!("Server IO loop exit error: {}", err),
@@ -86,9 +99,9 @@ pub fn run(context: Context<Config>) -> Result<()> {
     });
 
     #[cfg(unix)]
-    let listen_on = config.io.unix_socket_name;
+    let listen_on = &config.io.unix_socket_name;
     #[cfg(windows)]
-    let listen_on = config.io.tcp_socket_addr;
+    let listen_on = &config.io.tcp_socket_addr;
     tracing::info!("Geo Munge Proximity server listening on: {}", listen_on);
 
     // Initialize the GeoStore and start the main processing loop
@@ -99,12 +112,15 @@ pub fn run(context: Context<Config>) -> Result<()> {
     // TODO: Initializing with the default GeoStore options. This should be considered and aligned with bounding box and
     // key mode before finalizing (esp. given key mode is stored in the handler)
     let geo_store = ArcSwap::from(Arc::new(GeoStore::default()));
-    let handler = Handler::new(geo_store, response_tx);
+    let handler = Handler::new(geo_store, server_channels.response_tx);
 
     // TODO: Add parallelism back with better threading mechanism, note need to keep handler lightweight and clonable
     // TODO: Improve and instrument this loop - should the handler be cloned? Should we ignore channel shutdown?
     while running.is_running() {
-        match request_rx.recv_timeout(config.shutdown_timeout) {
+        match server_channels
+            .request_rx
+            .recv_timeout(config.shutdown_timeout)
+        {
             Ok(req) => handler.handle(req, traffic),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {

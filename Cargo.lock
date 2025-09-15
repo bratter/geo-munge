@@ -645,6 +645,7 @@ dependencies = [
  "geojson",
  "network",
  "protocol",
+ "proximity-ipc",
  "spatial",
  "tracing",
  "tracing-subscriber",
@@ -1030,6 +1031,17 @@ dependencies = [
  "bincode",
  "geo",
  "geojson",
+]
+
+[[package]]
+name = "proximity-ipc"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "crossbeam",
+ "network",
+ "protocol",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@ mod connection;
 mod connection_pool;
 mod traffic;
 
-use protocol::prelude::IoCodec;
+use super::IoCodec;
 
 pub use connection::Connection;
 pub use connection_pool::{AddStreamResult, ConnectionPool, MAX_POOL_CONNECTIONS};

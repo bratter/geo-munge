@@ -12,7 +12,11 @@ use std::{
 
 use anyhow::{bail, Error, Result};
 use crossbeam::channel::{self, Receiver, Sender};
-use protocol::prelude::*;
+use protocol::{
+    content::{ContentMode, ContentType},
+    Request, Response,
+};
+use proximity_ipc::channel::RequestSender;
 
 use crate::args::ClientCommand;
 
@@ -28,14 +32,14 @@ pub struct ResponseMeta {
 
 /// Client command handler. Translates client commands into requests.
 pub struct CommandHandler {
-    request_tx: Sender<(u32, Request)>,
+    request_tx: RequestSender<u32>,
     tracker: Tracker,
     done_send: Sender<()>,
     next_req_id: AtomicU32,
 }
 
 impl CommandHandler {
-    pub fn new(request_tx: Sender<(u32, Request)>, tracker: Tracker) -> (Self, Receiver<()>) {
+    pub fn new(request_tx: RequestSender<u32>, tracker: Tracker) -> (Self, Receiver<()>) {
         let (done_send, done_recv) = channel::bounded::<()>(1);
         let handler = Self {
             request_tx,

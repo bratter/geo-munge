@@ -1,0 +1,11 @@
+[package]
+name = "proximity-ipc"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+crossbeam.workspace = true
+network.workspace = true
+protocol.workspace = true
+bincode = "2.0.1"

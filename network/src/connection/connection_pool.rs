@@ -9,9 +9,7 @@ use anyhow::{bail, Result};
 use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use mio::{event::Source, Interest, Poll, Token};
 
-use protocol::prelude::IoCodec;
-
-use super::{Connection, MsgToken, ReadResult, Traffic, WriteQueueState};
+use super::{Connection, IoCodec, MsgToken, ReadResult, Traffic, WriteQueueState};
 
 /// The maximum connection pool size for client connections - required to ensure that the SERVER token stays separated
 pub const MAX_POOL_CONNECTIONS: usize = 8;

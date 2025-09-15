@@ -1,50 +1,31 @@
 //! Geo-munge protocol library.
 //!
 //! Contains shared types and conversion logic for client-server communication. Includes request and response types and
-//! wire encoding logic. To be shared between the server and all clients.
+//! wire encoding logic. To be shared between the server and all clients, and is agnostic to transport mechanism.
 
-mod feature;
-mod properties;
-mod request;
-mod response;
+pub mod content;
+pub mod feature;
+pub mod properties;
+pub mod request;
+pub mod response;
 
 pub mod prelude {
+    pub use super::content::*;
     pub use super::feature::JsonFeature;
     pub use super::properties::Properties;
     pub use super::request::*;
     pub use super::response::*;
     pub use super::CustomKey;
-    pub use super::IoCodec;
     pub use super::Uid;
 }
+
+pub use request::Request;
+pub use response::Response;
 
 use std::fmt::LowerHex;
 
 use anyhow::{anyhow, bail, Result};
 use bincode::{Decode, Encode};
-
-/// Request/response encoding and decoding trait.
-///
-/// TODO: Revisit this when we change transport formats, maybe we don't need a trait at all
-/// If we do want a trait, then see if we can arrange it such that it is built in the network crate
-pub trait IoCodec
-where
-    Self: Decode<()> + Encode + Sized,
-{
-    fn decode_from_slice(buf: &[u8]) -> Result<Self> {
-        let config = bincode::config::standard();
-        let (res, _) = bincode::decode_from_slice::<Self, _>(&buf, config)?;
-
-        Ok(res)
-    }
-
-    fn encode_to_vec(&self) -> Result<Vec<u8>> {
-        let config = bincode::config::standard();
-        let bytes = bincode::encode_to_vec(self, config)?;
-
-        Ok(bytes)
-    }
-}
 
 /// Representation of a unique identifier for a record.
 ///

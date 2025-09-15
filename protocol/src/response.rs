@@ -4,9 +4,12 @@ use std::fmt::Debug;
 
 use anyhow::Result;
 use bincode::{Decode, Encode};
-use geojson::JsonValue;
 
-use super::prelude::*;
+use crate::{
+    content::ContentType,
+    request::{DegreeBbox, KeyMode},
+    Uid,
+};
 
 #[derive(Encode, Decode)]
 #[non_exhaustive]
@@ -55,9 +58,6 @@ pub enum Response {
     Bench(BenchRes),
 }
 
-// Use default encode and decode impls
-impl IoCodec for Response {}
-
 impl From<anyhow::Error> for Response {
     fn from(err: anyhow::Error) -> Self {
         Response::Error(err.to_string().into())
@@ -102,42 +102,6 @@ pub struct Stats {
     pub len: usize,
     pub bytes_sent: usize,
     pub bytes_recv: usize,
-}
-
-/// Content type for query results - determines what additional data is returned with the ID.
-/// TODO: Move these common things out into a different file
-#[derive(Debug, Encode, Decode)]
-pub enum ContentType {
-    /// Full GeoJSON feature with properties and geometry.
-    FullFeature(JsonFeature),
-
-    /// GeoJSON geometry only, without properties.
-    GeometryOnly(JsonFeature),
-
-    /// Properties only as JSON value.
-    PropertiesOnly(Properties),
-
-    /// No additional content, ID only.
-    None,
-}
-
-impl ContentType {
-    /// Set a property on the content type.
-    ///
-    /// When the content type is None, this will change the content type to properties only, enabling the addition of
-    /// properties in a mutable manner downstream from origination. This lets us inject results data in the response.
-    pub fn set_property(&mut self, key: impl Into<String>, value: impl Into<JsonValue>) {
-        match self {
-            ContentType::FullFeature(feature) => feature.0.set_property(key, value),
-            ContentType::GeometryOnly(feature) => feature.0.set_property(key, value),
-            ContentType::PropertiesOnly(properties) => properties.set_property(key, value),
-            ContentType::None => {
-                let mut new_properties = Properties::default();
-                new_properties.set_property(key, value);
-                let _ = std::mem::replace(self, ContentType::PropertiesOnly(new_properties));
-            }
-        }
-    }
 }
 
 /// Basic query result without distance information.

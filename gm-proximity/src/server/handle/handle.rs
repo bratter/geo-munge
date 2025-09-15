@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use crossbeam::channel::Sender;
 use network::connection::{MsgToken, Traffic};
 use protocol::prelude::*;
+use proximity_ipc::channel::ResponseSender;
 
 use crate::message::{Feature, KeyGenerator};
 use crate::server::geo_store::GeoStore;
@@ -12,12 +12,12 @@ use super::handlers;
 
 pub struct Handler {
     store: ArcSwap<GeoStore>,
-    response_tx: Sender<(MsgToken, Response)>,
+    response_tx: ResponseSender,
     key_gen: ArcSwap<KeyGenerator>,
 }
 
 impl Handler {
-    pub fn new(store: ArcSwap<GeoStore>, response_tx: Sender<(MsgToken, Response)>) -> Self {
+    pub fn new(store: ArcSwap<GeoStore>, response_tx: ResponseSender) -> Self {
         let key_gen = ArcSwap::from(Arc::new(KeyGenerator::default()));
 
         Self {
@@ -65,7 +65,7 @@ impl Handler {
 pub struct Context<'a> {
     pub store: &'a ArcSwap<GeoStore>,
     pub key_gen: &'a ArcSwap<KeyGenerator>,
-    response_tx: Sender<(MsgToken, Response)>,
+    response_tx: ResponseSender,
     msg_token: MsgToken,
 }
 
@@ -73,7 +73,7 @@ impl<'a> Context<'a> {
     pub fn new(
         store: &'a ArcSwap<GeoStore>,
         key_gen: &'a ArcSwap<KeyGenerator>,
-        response_tx: Sender<(MsgToken, Response)>,
+        response_tx: ResponseSender,
         msg_token: MsgToken,
     ) -> Self {
         Self {
@@ -102,7 +102,8 @@ pub fn feature_to_basic_result(content_mode: ContentMode, record: &Feature) -> B
 
 #[cfg(test)]
 mod test {
-    use crossbeam::channel::{self, Receiver};
+    use crossbeam::channel::Receiver;
+    use proximity_ipc::{channel::ServerChannels, codec::IpcResponse};
 
     use super::*;
 
@@ -119,11 +120,11 @@ mod test {
         pub fn test_new(
             (store, key_gen): &'a (ArcSwap<GeoStore>, ArcSwap<KeyGenerator>),
             token: MsgToken,
-        ) -> (Receiver<(MsgToken, Response)>, Self) {
-            let (tx, rx) = channel::unbounded();
-            let context = Self::new(&store, &key_gen, tx, token);
+        ) -> (Receiver<(MsgToken, IpcResponse)>, Self) {
+            let channels = ServerChannels::new(1024, 1024);
+            let context = Self::new(&store, &key_gen, channels.response_tx, token);
 
-            (rx, context)
+            (channels.response_rx, context)
         }
     }
 }

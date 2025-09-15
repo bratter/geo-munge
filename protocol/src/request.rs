@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail, Error, Ok, Result};
 use bincode::{Decode, Encode};
 use geo::{Point, Rect, ToDegrees, ToRadians};
 
-use super::prelude::*;
+use crate::{content::ContentMode, feature::JsonFeature, CustomKey, Uid};
 
 #[derive(Encode, Decode)]
 #[non_exhaustive]
@@ -88,9 +88,6 @@ impl Request {
         }
     }
 }
-
-// Use default encode and decode impls
-impl IoCodec for Request {}
 
 impl Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -375,74 +372,5 @@ impl Debug for BenchReq {
             .field("size", &self.size)
             .field("ratio", &self.ratio)
             .finish_non_exhaustive()
-    }
-}
-
-/// Content mode for query response output.
-#[derive(Debug, Clone, Copy, Default, Encode, Decode)]
-pub enum ContentMode {
-    /// Return no additional content, IDs only.
-    #[default]
-    None,
-
-    /// Return full GeoJSON features with properties and geometry.
-    Full,
-
-    /// Return GeoJSON geometry only, without properties.
-    Geometry,
-
-    /// Return properties only as JSON.
-    Properties,
-}
-
-impl ContentMode {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::None => "None",
-            Self::Full => "Full Feature",
-            Self::Geometry => "Geometry",
-            Self::Properties => "Properties",
-        }
-    }
-
-    pub fn list() -> [&'static str; 4] {
-        [
-            Self::None.as_str(),
-            Self::Full.as_str(),
-            Self::Geometry.as_str(),
-            Self::Properties.as_str(),
-        ]
-    }
-}
-
-impl FromStr for ContentMode {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s.to_lowercase().as_str() {
-            "none" | "id" | "ids" => Ok(Self::None),
-            "full" | "feature" => Ok(Self::Full),
-            "geometry" | "geom" => Ok(Self::Geometry),
-            "properties" | "props" | "meta" => Ok(Self::Properties),
-            _ => bail!(
-                "Invalid content mode '{}'. Valid options: full, geometry, properties, none",
-                s
-            ),
-        }
-    }
-}
-
-// TODO: Should these be moved into a newtype in the repl module, or should the setting types all be moved into a common mod
-impl TryFrom<usize> for ContentMode {
-    type Error = Error;
-
-    fn try_from(value: usize) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::None),
-            1 => Ok(Self::Full),
-            2 => Ok(Self::Geometry),
-            3 => Ok(Self::Properties),
-            _ => bail!("Invalid index for ContentMode"),
-        }
     }
 }

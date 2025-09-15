@@ -10,9 +10,7 @@ use anyhow::{anyhow, Result};
 use crossbeam::channel::{Receiver, Sender, TryRecvError, TrySendError};
 use mio::{event::Source, Interest, Poll, Token};
 
-use protocol::prelude::IoCodec;
-
-use super::{MsgToken, ReadResult, Traffic, WriteQueueState, WriteResult};
+use super::{IoCodec, MsgToken, ReadResult, Traffic, WriteQueueState, WriteResult};
 
 pub struct Connection<'a, S, T: IoCodec, U: IoCodec> {
     pub(super) id: u32,
