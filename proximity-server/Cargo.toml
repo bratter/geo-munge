@@ -1,0 +1,28 @@
+[package]
+name = "proximity-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "gm-server"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+crossbeam.workspace = true
+geo.workspace = true
+network.workspace = true
+protocol.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+proximity-ipc.workspace = true
+spatial.workspace = true
+arc-swap = "1.7.1"
+dashmap = "6.1.0"
+fxhash = "0.2.1"
+# FIX: For deletion
+geojson.workspace = true

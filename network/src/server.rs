@@ -48,7 +48,7 @@ pub struct IoLoopConfig {
 impl Default for IoLoopConfig {
     fn default() -> Self {
         Self {
-            pool_size: 8,
+            pool_size: MAX_POOL_CONNECTIONS,
             io_poll_timeout: Duration::from_millis(10),
             write_queue_soft_cap: 256,
             event_capacity: 128,

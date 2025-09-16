@@ -1,0 +1,24 @@
+[package]
+name = "proximity-client"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "gm-client"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+crossbeam.workspace = true
+encoding_rs_io.workspace = true
+protocol.workspace = true
+proximity-ipc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+network.workspace = true
+atty = "0.2.14"
+dialoguer = "0.11.0"

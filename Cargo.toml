@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["gm-proximity", "convert", "spatial", "proximity-ipc", "network", "protocol", "bench"]
+members = ["proximity-server", "proximity-client", "proximity-ipc", "proximity-bench", "convert", "spatial", "network", "protocol", "bench"]
 exclude = ["data/*"]
 
 [workspace.package]
@@ -18,6 +18,7 @@ network = { path = "network" }
 protocol = { path = "protocol" }
 proximity-ipc = { path = "proximity-ipc" }
 tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 serde_json = "^1.0"
 spatial = { path = "spatial" }
 

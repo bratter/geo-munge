@@ -1,0 +1,19 @@
+[package]
+name = "proximity-bench"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "proximity-bench"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+crossbeam.workspace = true
+network.workspace = true
+proximity-ipc.workspace = true
+proximity-client = { path = "../proximity-client" }
+proximity-server = { path = "../proximity-server" }
+tracing.workspace = true
+tracing-subscriber.workspace = true

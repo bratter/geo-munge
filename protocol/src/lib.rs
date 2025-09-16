@@ -3,22 +3,21 @@
 //! Contains shared types and conversion logic for client-server communication. Includes request and response types and
 //! wire encoding logic. To be shared between the server and all clients, and is agnostic to transport mechanism.
 
-pub mod content;
-pub mod feature;
-pub mod properties;
+mod content;
+mod feature;
+mod properties;
 pub mod request;
 pub mod response;
 
 pub mod prelude {
-    pub use super::content::*;
-    pub use super::feature::JsonFeature;
-    pub use super::properties::Properties;
     pub use super::request::*;
     pub use super::response::*;
-    pub use super::CustomKey;
-    pub use super::Uid;
+    pub use super::{ContentMode, ContentType, CustomKey, JsonFeature, Properties, Uid};
 }
 
+pub use content::{ContentMode, ContentType};
+pub use feature::JsonFeature;
+pub use properties::Properties;
 pub use request::Request;
 pub use response::Response;
 
