@@ -1,18 +1,17 @@
 //! Client io event loop and configuration.
 
-use std::{borrow::Cow, time::Duration};
+use std::time::Duration;
 
 use anyhow::{bail, Result};
 use crossbeam::channel::{Receiver, Sender};
-#[cfg(windows)]
-use mio::net::TcpStream;
 #[cfg(unix)]
 use mio::net::UnixStream;
-use mio::{Events, Interest, Poll, Token};
+use mio::{net::TcpStream, Events, Interest, Poll, Token};
 
 use super::{
     connection::{Connection, MsgToken, ReadResult, Traffic, WriteResult},
     signals::RunToken,
+    stream::SocketMode,
     IoCodec,
 };
 
@@ -33,13 +32,8 @@ pub struct IoLoopConfig {
     // Number of Mio events to buffer.
     pub event_capacity: usize,
 
-    #[cfg(unix)]
-    /// Name of the socket to connect to.
-    pub unix_socket_name: Cow<'static, str>,
-
-    #[cfg(windows)]
-    /// Address of the TCP socket to connect to.
-    pub tcp_socket_addr: Cow<'static, str>,
+    /// Socket configuration for the client.
+    pub socket_mode: SocketMode,
 }
 
 impl IoLoopConfig {
@@ -49,10 +43,7 @@ impl IoLoopConfig {
             io_poll_timeout: Duration::from_millis(50),
             response_reenable_limit: limit,
             event_capacity: 16,
-            #[cfg(unix)]
-            unix_socket_name: Cow::Borrowed(super::DEFAULT_UNIX_SOCKET_NAME),
-            #[cfg(windows)]
-            tcp_socket_addr: Cow::Borrowed(super::DEFAULT_TCP_SOCKET_ADDR),
+            socket_mode: SocketMode::default(),
         }
     }
 }
@@ -70,12 +61,11 @@ pub fn run_io_loop<Req: IoCodec, Res: IoCodec>(
     request_rx: Receiver<(u32, Req)>,
     response_tx: Sender<(MsgToken, Res)>,
 ) -> Result<()> {
-    // TODO: On linux have option of stream or TCP?
-    #[cfg(unix)]
-    let stream = UnixStream::connect(config.unix_socket_name.as_ref())?;
-
-    #[cfg(windows)]
-    let stream = TcpStream::connect(config.tcp_socket_addr.as_ref().parse()?)?;
+    let stream = match &config.socket_mode {
+        #[cfg(unix)]
+        SocketMode::Unix(path) => super::stream::Stream::Unix(UnixStream::connect(path.as_ref())?),
+        SocketMode::Tcp(addr) => super::stream::Stream::Tcp(TcpStream::connect(*addr)?),
+    };
 
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(config.event_capacity);

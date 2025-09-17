@@ -1,6 +1,9 @@
-use std::{borrow::Cow, time::Duration};
+#[cfg(unix)]
+use std::borrow::Cow;
+use std::time::Duration;
 
-use network::server::IoLoopConfig;
+use anyhow::Result;
+use network::{server::IoLoopConfig, stream::SocketMode};
 
 /// Proximity server configuration.
 pub struct Config {
@@ -32,18 +35,15 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn set_socket_name(mut self, s: impl Into<Cow<'static, str>>) -> Self {
-        #[cfg(unix)]
-        {
-            self.io.unix_socket_name = s.into();
-        }
+    #[cfg(unix)]
+    pub fn set_unix_socket(&mut self, path: impl Into<Cow<'static, str>>) -> Result<()> {
+        self.io.socket_mode = SocketMode::unix(path)?;
+        Ok(())
+    }
 
-        #[cfg(windows)]
-        {
-            self.io.tcp_socket_addr = s.into();
-        }
-
-        self
+    pub fn set_tcp_socket(&mut self, addr: impl AsRef<str>) -> Result<()> {
+        self.io.socket_mode = SocketMode::tcp(addr)?;
+        Ok(())
     }
 }
 

@@ -9,13 +9,9 @@ pub mod client;
 pub mod connection;
 pub mod server;
 pub mod signals;
+pub mod stream;
 
 use anyhow::Result;
-
-#[cfg(unix)]
-const DEFAULT_UNIX_SOCKET_NAME: &str = "/tmp/net_lib_socket";
-#[cfg(windows)]
-const DEFAULT_TCP_SOCKET_ADDR: &str = "127.0.0.1:6378";
 
 /// Codec trait to ensure that the connection can serialize and deserialize types on the wire
 pub trait IoCodec

@@ -40,11 +40,10 @@ pub fn run(context: Context<Config>) -> Result<()> {
         r.shutdown();
     });
 
-    #[cfg(unix)]
-    let listen_on = &config.io.unix_socket_name;
-    #[cfg(windows)]
-    let listen_on = &config.io.tcp_socket_addr;
-    tracing::info!("Geo Munge Proximity server listening on: {}", listen_on);
+    tracing::info!(
+        "Geo Munge Proximity server listening on: {}",
+        config.io.socket_mode
+    );
 
     // Initialize the GeoStore and start the main processing loop
     // On the main thread we block on listening for messages on the request channel with a timeout to capture the

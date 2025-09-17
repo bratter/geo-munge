@@ -15,25 +15,35 @@ fn main() -> Result<()> {
     // Set up graceful ctrl-c handling
     let running = set_ctrlc_handler()?;
 
-    // TODO: Parse here? Need to fix the arguments, add socket handling at least
-    // The args can also basically take a reset option too
+    // Read CLI arguments and create config
     let args = Args::parse();
+    let mut config = Config::default();
 
-    // Get the right socket name
-    // TODO: Improve socket handling - add manual option in CLI interface
-    let socket;
+    // Configure socket based on args
     #[cfg(unix)]
     {
-        socket = proximity_ipc::DEFAULT_UNIX_SOCKET_NAME;
+        if args.tcp {
+            // TCP mode on Unix
+            match args.socket {
+                Some(addr) => config.set_tcp_socket(addr)?,
+                None => config.set_tcp_socket(proximity_ipc::DEFAULT_TCP_SOCKET_ADDR)?,
+            }
+        } else {
+            // Unix socket mode (default on Unix)
+            match args.socket {
+                Some(path) => config.set_unix_socket(path)?,
+                None => config.set_unix_socket(proximity_ipc::DEFAULT_UNIX_SOCKET_NAME)?,
+            }
+        }
     }
     #[cfg(windows)]
     {
-        socket = proximity_ipc::DEFAULT_TCP_SOCKET_ADDR;
+        // Windows always uses TCP
+        match args.socket {
+            Some(addr) => config.set_tcp_socket(addr)?,
+            None => config.set_tcp_socket(proximity_ipc::DEFAULT_TCP_SOCKET_ADDR)?,
+        }
     }
-
-    // TODO: We will want to be able to put the server in bench mode, that will likely need to inject at least ready
-    // into context
-    let config = Config::default().set_socket_name(socket);
 
     let context = Context {
         config,

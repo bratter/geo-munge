@@ -14,7 +14,6 @@ pub use network::signals::{set_ctrlc_handler, RunToken};
 /// The default Unix socket name to use for a proximity server/client.
 pub const DEFAULT_UNIX_SOCKET_NAME: &str = "/tmp/gm-proximity";
 
-#[cfg(windows)]
 /// The default TCP socket to use for a proximity server/client.
 pub const DEFAULT_TCP_SOCKET_ADDR: &str = "127.0.0.1:6378";
 

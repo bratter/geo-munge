@@ -1,16 +1,12 @@
 //! Server io event loop and configuration.
 
-use std::{borrow::Cow, io::ErrorKind, time::Duration};
+use std::{io::ErrorKind, time::Duration};
 
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
-#[cfg(windows)]
-use mio::net::TcpListener;
-#[cfg(unix)]
-use mio::net::UnixListener;
 use mio::{Events, Interest, Poll, Token};
 
-use super::{connection::*, signals::RunToken, IoCodec};
+use super::{connection::*, signals::RunToken, stream::SocketMode, IoCodec};
 
 /// Set the listener to be the next index above the max connections to avoid collisions
 /// With a fixed connection pool this is easier than making the first connection 1
@@ -35,14 +31,8 @@ pub struct IoLoopConfig {
     /// The size of the Mio event queue.
     pub event_capacity: usize,
 
-    #[cfg(unix)]
-    /// Name of the socket to listen on.
-    /// TODO: In test and bench can have a separate config item for an unnamed socket half that can be used in testing
-    pub unix_socket_name: Cow<'static, str>,
-
-    #[cfg(windows)]
-    /// Address of the socket to listen on.
-    pub tcp_socket_addr: Cow<'static, str>,
+    /// Socket configuration for the server.
+    pub socket_mode: SocketMode,
 }
 
 impl Default for IoLoopConfig {
@@ -52,10 +42,7 @@ impl Default for IoLoopConfig {
             io_poll_timeout: Duration::from_millis(10),
             write_queue_soft_cap: 256,
             event_capacity: 128,
-            #[cfg(unix)]
-            unix_socket_name: Cow::Borrowed(super::DEFAULT_UNIX_SOCKET_NAME),
-            #[cfg(windows)]
-            tcp_socket_addr: Cow::Borrowed(super::DEFAULT_TCP_SOCKET_ADDR),
+            socket_mode: SocketMode::default(),
         }
     }
 }
@@ -79,24 +66,9 @@ pub fn run_io_loop<Req: IoCodec, Res: IoCodec>(
         ConnectionPool::new(config.pool_size, traffic, config.write_queue_soft_cap)?;
 
     // Set up the socket server and register
-    // Remove the socket file before binding, ignoring errors (its fine if it doesn't exist)
-    // TODO: Custom fd on linux as a setting, ability to do anonymous for testing
-    #[cfg(unix)]
-    let listener = {
-        let _ = std::fs::remove_file(config.unix_socket_name.as_ref());
-        let mut listener = UnixListener::bind(config.unix_socket_name.as_ref())?;
-        poll.registry()
-            .register(&mut listener, ACCEPT, Interest::READABLE)?;
-        listener
-    };
-
-    #[cfg(windows)]
-    let listener = {
-        let mut listener = TcpListener::bind(config.tcp_socket_addr.as_ref().parse()?)?;
-        poll.registry()
-            .register(&mut listener, ACCEPT, Interest::READABLE)?;
-        listener
-    };
+    let listener = config
+        .socket_mode
+        .bind_listener_and_register(&poll, ACCEPT)?;
 
     let io_span = tracing::error_span!("io");
     let _io_guard = io_span.enter();
@@ -120,7 +92,7 @@ pub fn run_io_loop<Req: IoCodec, Res: IoCodec>(
                     tracing::trace!("ACCEPT token received");
                     loop {
                         match listener.accept() {
-                            Ok((stream, _)) => {
+                            Ok(stream) => {
                                 // When we have an incoming stream, test if there is room in the connection pool to
                                 // accept it, otherwise reject; If there is no room or the registration fails no
                                 // slots are taken up and the returned stream is dropped which rejects the
