@@ -1,7 +1,7 @@
 //! Module for main concurrent access data structures.
 
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     Arc,
 };
 
@@ -9,10 +9,42 @@ use anyhow::{anyhow, bail, Result};
 use dashmap::DashMap;
 use fxhash::FxBuildHasher;
 use geo::{Geometry, Rect};
-use protocol::{CustomKey, Properties, Uid};
+use protocol::{request::KeyMode, CustomKey, Properties, Uid};
 use spatial::{earth_bbox, BasicQuadTree, Identified, ProximitySearch, RegionQuery, SpatialIndex};
 
-use super::feature::Feature;
+use super::{Feature, ParsedFeature};
+
+#[derive(Debug)]
+enum UidManager {
+    AutoIncrement(AtomicU32),
+    ProvidedNumeric,
+}
+
+impl UidManager {
+    fn new(mode: &KeyMode) -> Self {
+        match mode {
+            KeyMode::AutoIncrement | KeyMode::CustomBytes(_) => {
+                Self::AutoIncrement(AtomicU32::new(0))
+            }
+            KeyMode::ProvidedNumeric => Self::ProvidedNumeric,
+        }
+    }
+
+    fn generate_id(&self, provided_key: Option<Uid>) -> Result<Uid> {
+        match (self, provided_key) {
+            (UidManager::AutoIncrement(counter), None) => {
+                Ok(counter.fetch_add(1, Ordering::Relaxed))
+            }
+            (UidManager::AutoIncrement(_), Some(_)) => {
+                bail!("Cannot provide key in AutoIncrement mode")
+            }
+            (UidManager::ProvidedNumeric, Some(key)) => Ok(key),
+            (UidManager::ProvidedNumeric, None) => {
+                bail!("Must provide key in ProvidedNumeric mode")
+            }
+        }
+    }
+}
 
 /// Storage wrapper around Feature with server-specific metadata.
 pub struct RecordInner {
@@ -84,29 +116,40 @@ pub struct GeoStore {
     id_index: DashMap<Uid, Record, FxBuildHasher>,
     custom_key: DashMap<CustomKey, Record, FxBuildHasher>,
     spatial_index: BasicQuadTree<Record>,
+    uid_manager: UidManager,
     custom_key_pointer: Option<String>,
 }
 
-// TODO: Should the bbox struct be pulled into this module instead?
 impl GeoStore {
-    pub fn new(bbox: Rect) -> Self {
+    /// Create a new [`GeoStore`].
+    ///
+    /// Will generate the appropriate key management strategy based on the provided key_mode. If the [`KeyMode`] is
+    /// custom bytes, it is extracted from each record's metadata using JSON Pointer passed with this call. This means
+    /// that all entries using a custom key must have metadata. See https://datatracker.ietf.org/doc/html/rfc6901 for
+    /// details on JSON pointer syntax.
+    pub fn new(bbox: Rect, key_mode: KeyMode) -> Self {
         GeoStore {
             id_index: DashMap::with_hasher(FxBuildHasher::new()),
             custom_key: DashMap::with_hasher(FxBuildHasher::new()),
             spatial_index: BasicQuadTree::new(bbox),
-            custom_key_pointer: None,
+            uid_manager: UidManager::new(&key_mode),
+            custom_key_pointer: if let KeyMode::CustomBytes(ptr) = key_mode {
+                Some(ptr)
+            } else {
+                None
+            },
         }
     }
 
-    /// Create a new [`GeoStore`] that also stores a custom index.
-    ///
-    /// The custom index is extracted from each record's metadata using JSON Pointer passed with this call. This means
-    /// that all entries using a custom key must have metadata. See https://datatracker.ietf.org/doc/html/rfc6901 for
-    /// details on JSON pointer syntax.
-    pub fn with_custom_key(bbox: Rect, key_ptr: String) -> Self {
-        let mut store = Self::new(bbox);
-        store.custom_key_pointer = Some(key_ptr);
-        store
+    pub fn key_mode(&self) -> KeyMode {
+        if let Some(ptr) = &self.custom_key_pointer {
+            KeyMode::CustomBytes(ptr.clone())
+        } else {
+            match self.uid_manager {
+                UidManager::AutoIncrement(_) => KeyMode::AutoIncrement,
+                UidManager::ProvidedNumeric => KeyMode::ProvidedNumeric,
+            }
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -117,18 +160,28 @@ impl GeoStore {
         self.spatial_index.bbox()
     }
 
-    /// Insert a new feature.
+    /// Insert a new feature, generating the appropriate ID based on the store's key strategy.
     ///
     /// If using an additional custom key, metadata must be provided or the insert will fail.
     ///
-    /// Will error if the key already exists.
+    /// Will error if the key already exists or if there's a mismatch between the key strategy
+    /// and the provided_key field.
     ///
     /// WARN: Revisit prevention of race conditions on inserts - id_index should be primary, and everything else synced,
     /// but need to work through how to synchronize? We should be able to assume that the primary key will always be
     /// correct - impose that condition on the caller, and should also be the first check that happens, so if the caller
     /// ensures this we don't need anything, if we want to be defensive, just need to manage time-of-check, time-of-use
     /// on the id_index insert. Will also need to be able to rollback if a later insert fails.
-    pub fn insert(&self, feature: Feature) -> Result<()> {
+    pub fn insert(&self, parsed_feature: ParsedFeature) -> Result<()> {
+        // Generate the primary key based on the strategy
+        let id = self.uid_manager.generate_id(parsed_feature.provided_key)?;
+
+        // Create the feature with the assigned ID
+        let feature = Feature {
+            id,
+            geometry: parsed_feature.geometry,
+            properties: parsed_feature.properties,
+        };
         let record = Arc::new(RecordInner::new(feature));
 
         // Do this after the record to avoid a double conditional
@@ -170,7 +223,7 @@ impl GeoStore {
     /// TODO: Consider adding failure reasons and/or ids instead of just a count
     pub fn bulk_insert<I>(&self, records: I) -> (usize, usize)
     where
-        I: IntoIterator<Item = Feature>,
+        I: IntoIterator<Item = ParsedFeature>,
     {
         let mut insert_count: usize = 0;
         let mut error_count: usize = 0;
@@ -266,7 +319,7 @@ impl GeoStore {
 
 impl Default for GeoStore {
     fn default() -> Self {
-        Self::new(earth_bbox())
+        Self::new(earth_bbox(), KeyMode::default())
     }
 }
 

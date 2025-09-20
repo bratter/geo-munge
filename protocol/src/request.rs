@@ -124,14 +124,13 @@ impl ResetReq {
 
 /// Key type setting request data.
 ///
-/// Likely to be used in [`Request::Reset`].
+/// Used in [`Request::Reset`] and for stats responses.
 #[derive(Debug, Default, Clone, Encode, Decode)]
 pub enum KeyMode {
     #[default]
     AutoIncrement,
-    U32Pointer(String),
-    MetaPointer(String),
-    GeoJsonId,
+    ProvidedNumeric,
+    CustomBytes(String),
 }
 
 /// Bounding box for client use in degrees.

@@ -8,7 +8,7 @@ pub fn stats(context: Context, traffic: &Traffic) {
     let store = context.store.load();
 
     let stats = Stats {
-        key_mode: (&**context.key_gen.load()).into(),
+        key_mode: store.key_mode(),
         bbox: store.bbox().into(),
         len: store.len(),
         bytes_sent: traffic.sent(),

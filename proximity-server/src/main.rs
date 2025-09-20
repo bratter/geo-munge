@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use protocol::request::KeyMode;
 use proximity_ipc::{set_ctrlc_handler, Context};
 use proximity_server::{args::Args, config::Config};
 use tracing_subscriber::EnvFilter;
@@ -18,6 +19,14 @@ fn main() -> Result<()> {
     // Read CLI arguments and create config
     let args = Args::parse();
     let mut config = Config::default();
+    config.initial_bbox = args.initial_config.bbox.unwrap_or_default();
+    config.initial_key_mode = if let Some(ptr) = args.initial_config.byte_keys {
+        KeyMode::CustomBytes(ptr)
+    } else if args.initial_config.provided_keys {
+        KeyMode::ProvidedNumeric
+    } else {
+        KeyMode::AutoIncrement
+    };
 
     // Configure socket based on args
     #[cfg(unix)]

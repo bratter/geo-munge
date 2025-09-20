@@ -105,32 +105,19 @@ pub struct ResetArgs {
     #[clap(long, short)]
     pub bbox: Option<DegreeBbox>,
 
-    /// Use a u32 key from metadata instead of an auto-increment.
+    /// Use provided numeric keys instead of auto-increment.
     ///
-    /// The key must exist and be within the range of a u32 for all items or operations will fail.
-    ///
-    /// The argument takes a string that contains the JSON Pointer definition to a numeric field.
-    #[clap(
-        long,
-        short = 'k',
-        conflicts_with = "key_bytes",
-        conflicts_with = "key_json_id"
-    )]
-    pub key_int: Option<String>,
+    /// When this flag is set, clients must provide a numeric key with each feature.
+    #[clap(long, conflicts_with = "key_bytes")]
+    pub provided_keys: bool,
 
-    /// Use an arbitrary field from metadata instead of an auto-increment.
+    /// Use an arbitrary field from metadata as a custom 16-byte key.
     ///
     /// The field must be less than or equal to 16 bytes long or operations will fail. This is intended for use with
     /// alphanumeric identifiers. The argument takes a string that contains the JSON Pointer definition to a string
     /// field.
-    #[clap(long, short = 'y', conflicts_with = "key_json_id")]
-    pub key_bytes: Option<String>,
-
-    /// Use the id field from the GeoJSON feature as the numeric id instead of an auto-increment.
-    ///
-    /// The ids must be integers or parsable as unqiue u32s, or operations will fail.
-    #[clap(long, short = 'j')]
-    pub key_json_id: bool,
+    #[clap(long)]
+    pub byte_keys: Option<String>,
 
     #[clap(long, short)]
     pub force: bool,

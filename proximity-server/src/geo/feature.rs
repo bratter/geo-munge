@@ -3,60 +3,20 @@
 //! Contains the core [`Feature`] struct that represents a parsed spatial feature
 //! with coordinates converted to radians for internal processing.
 
-use std::sync::atomic::{AtomicU32, Ordering};
-
 use anyhow::{anyhow, Result};
 use geo::{Geometry, ToDegrees, ToRadians};
 use protocol::prelude::*;
 
-pub enum KeyGenerator {
-    AutoIncrement(AtomicU32),
-    U32Pointer(String),
-    MetaPointer(AtomicU32, String),
-    GeoJsonId,
-}
-
-// TODO: Where should these conversions sit? Maybe better in the Request module?
-impl From<KeyMode> for KeyGenerator {
-    fn from(value: KeyMode) -> Self {
-        match value {
-            KeyMode::AutoIncrement => Self::AutoIncrement(0.into()),
-            KeyMode::U32Pointer(ptr) => Self::U32Pointer(ptr),
-            KeyMode::MetaPointer(ptr) => Self::MetaPointer(0.into(), ptr),
-            KeyMode::GeoJsonId => Self::GeoJsonId,
-        }
-    }
-}
-
-impl From<&KeyGenerator> for KeyMode {
-    fn from(value: &KeyGenerator) -> Self {
-        match value {
-            KeyGenerator::AutoIncrement(_) => KeyMode::AutoIncrement,
-            KeyGenerator::U32Pointer(ptr) => KeyMode::U32Pointer(ptr.clone()),
-            KeyGenerator::MetaPointer(_, ptr) => KeyMode::MetaPointer(ptr.clone()),
-            KeyGenerator::GeoJsonId => KeyMode::GeoJsonId,
-        }
-    }
-}
-
-impl Default for KeyGenerator {
-    fn default() -> Self {
-        Self::AutoIncrement(0.into())
-    }
-}
-
 /// A parsed spatial feature without ID assignment, with coordinates in radians.
 ///
-/// This represents a GeoJSON feature that has been parsed and had its coordinates
+/// This represents a feature that has been parsed and had its coordinates
 /// converted to radians, but doesn't yet have a server-assigned ID.
-/// FIX: geojson shouldn't be in the server at all - check if this type is used on the server - it might be now, but
-/// then should go away when we change the encoding protocol.
-/// FIX: In the server at least, this concept should be called AnonymousFeature or something
+/// May contain an optional provided_key for client-specified primary keys.
 #[derive(Debug, Clone)]
 pub struct ParsedFeature {
     pub geometry: Geometry<f64>,
     pub properties: Option<Properties>,
-    pub native_id: Option<geojson::feature::Id>,
+    pub provided_key: Option<Uid>, // Optional client-provided primary key
 }
 
 /// A fully identified spatial feature with coordinates in radians.
@@ -100,78 +60,14 @@ impl TryFrom<geojson::Feature> for ParsedFeature {
         // Convert coordinates from degrees to radians in-place
         geometry.to_radians_in_place();
 
-        // Extract properties and preserve native ID
+        // Extract properties - GeoJSON doesn't have provided_key concept
         let properties = feature.properties.map(Properties::from);
-        let native_id = feature.id;
 
         Ok(ParsedFeature {
             geometry,
             properties,
-            native_id,
+            provided_key: None, // GeoJSON doesn't support provided keys
         })
-    }
-}
-
-impl ParsedFeature {
-    /// Convery into a Feature with an id given the passed [`KeyGenerator`].
-    pub fn with_key_generator(self, key_gen: &KeyGenerator) -> Result<Feature> {
-        let id = self.resolve_id(key_gen)?;
-
-        Ok(Feature {
-            id,
-            geometry: self.geometry,
-            properties: self.properties,
-        })
-    }
-
-    /// Resolve the ID for this feature using the given KeyGenerator.
-    ///
-    /// This method handles all ID assignment logic including auto-increment.
-    ///
-    /// Because it handles side effects, this means that it should not be called arbitrarily and is therefore a private
-    /// function.
-    fn resolve_id(&self, key_gen: &KeyGenerator) -> Result<Uid> {
-        match key_gen {
-            KeyGenerator::AutoIncrement(counter) => Ok(counter.fetch_add(1, Ordering::Relaxed)),
-            KeyGenerator::U32Pointer(pointer) => self.extract_u32_from_properties(&pointer),
-            KeyGenerator::MetaPointer(counter, _) => Ok(counter.fetch_add(1, Ordering::Relaxed)),
-            KeyGenerator::GeoJsonId => self.extract_from_native_id(),
-        }
-    }
-
-    fn extract_u32_from_properties(&self, pointer: &str) -> Result<Uid> {
-        let properties = self
-            .properties
-            .as_ref()
-            .ok_or_else(|| anyhow!("Properties required for custom key extraction"))?;
-
-        let value = properties
-            .pointer(pointer)
-            .ok_or_else(|| anyhow!("Value not available at pointer {}", pointer))?;
-
-        match value {
-            geojson::JsonValue::Number(n) => {
-                let num = n
-                    .as_u64()
-                    .ok_or_else(|| anyhow!("Property value must be a positive integer"))?;
-                Ok(u32::try_from(num)?)
-            }
-            geojson::JsonValue::String(s) => Ok(s.parse::<u32>()?),
-            _ => Err(anyhow!("Property must be a number or string")),
-        }
-    }
-
-    fn extract_from_native_id(&self) -> Result<Uid> {
-        match &self.native_id {
-            Some(geojson::feature::Id::Number(n)) => {
-                let num = n
-                    .as_u64()
-                    .ok_or_else(|| anyhow!("GeoJSON ID must be a positive integer"))?;
-                Ok(u32::try_from(num)?)
-            }
-            Some(geojson::feature::Id::String(s)) => Ok(s.parse::<u32>()?),
-            None => Err(anyhow!("GeoJSON ID mode requires a feature ID")),
-        }
     }
 }
 
@@ -226,6 +122,8 @@ impl AsRef<Geometry<f64>> for Feature {
 
 #[cfg(test)]
 mod tests {
+    use crate::geo::GeoStore;
+
     use super::*;
 
     #[test]
@@ -236,18 +134,21 @@ mod tests {
             geometry: Some(geojson::Geometry::new(geojson::Value::Point(vec![
                 45.0, 90.0,
             ]))),
+            // FIX: Currently not handling geojson id, when protocol is updated, this behavior will need to be built
+            // into the client
             id: Some(geojson::feature::Id::Number(123.into())),
             properties: None,
             foreign_members: None,
         };
-        let key_gen = KeyGenerator::GeoJsonId;
-
-        // Convert to our internal representation
         let parsed_feature = ParsedFeature::try_from(geojson_feature.clone()).unwrap();
-        let geo_feature = parsed_feature.with_key_generator(&key_gen).unwrap();
+
+        // Create a store and insert the feature, then extract it
+        let store = GeoStore::default();
+        store.insert(parsed_feature).unwrap();
+        let geo_feature = &store.get(&0).unwrap().data;
 
         // Verify ID is correct
-        assert_eq!(geo_feature.id, 123);
+        assert_eq!(geo_feature.id, 0);
 
         // Verify geometry is converted to radians
         if let Geometry::Point(p) = &geo_feature.geometry {
@@ -258,7 +159,7 @@ mod tests {
         }
 
         // Convert back to GeoJSON
-        let roundtrip_feature = geojson::Feature::from(&geo_feature);
+        let roundtrip_feature = geojson::Feature::from(geo_feature);
 
         // Verify coordinates are back in degrees
         if let Some(geojson::Geometry {

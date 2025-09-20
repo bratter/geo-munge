@@ -13,9 +13,8 @@ use super::Context;
 pub fn insert(handler: Context, insert: Vec<JsonFeature>) {
     let mut error_count: usize = 0;
 
-    let key_gen = &**handler.key_gen.load();
     let insert_iter = insert.into_iter().filter_map(|json| {
-        let feature = ParsedFeature::try_from(json.0).and_then(|f| f.with_key_generator(key_gen));
+        let feature = ParsedFeature::try_from(json.0);
 
         match feature {
             Ok(value) => Some(value),

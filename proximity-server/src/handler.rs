@@ -1,40 +1,26 @@
 //! Handler to manage dispatch logic between requests and their controllers.
 
-use std::sync::Arc;
-
 use arc_swap::ArcSwap;
 use network::connection::{MsgToken, Traffic};
 use protocol::{prelude::BasicResult, ContentMode, Request, Response};
 use proximity_ipc::channel::ResponseSender;
 
 use super::controllers;
-use crate::geo::{Feature, GeoStore, KeyGenerator};
+use crate::geo::{Feature, GeoStore};
 
 pub struct Handler {
     store: ArcSwap<GeoStore>,
     response_tx: ResponseSender,
-    key_gen: ArcSwap<KeyGenerator>,
 }
 
 impl Handler {
     pub fn new(store: ArcSwap<GeoStore>, response_tx: ResponseSender) -> Self {
-        let key_gen = ArcSwap::from(Arc::new(KeyGenerator::default()));
-
-        Self {
-            store,
-            response_tx,
-            key_gen,
-        }
+        Self { store, response_tx }
     }
 
     /// Generate a [`Context`] to pass around with this request.
     pub fn context(&self, msg_token: MsgToken) -> Context {
-        Context::new(
-            &self.store,
-            &self.key_gen,
-            self.response_tx.clone(),
-            msg_token,
-        )
+        Context::new(&self.store, self.response_tx.clone(), msg_token)
     }
 
     /// Handle an incoming request.
@@ -64,7 +50,6 @@ impl Handler {
 /// Cheap container for data structure and channel access.
 pub struct Context<'a> {
     pub store: &'a ArcSwap<GeoStore>,
-    pub key_gen: &'a ArcSwap<KeyGenerator>,
     response_tx: ResponseSender,
     msg_token: MsgToken,
 }
@@ -72,13 +57,11 @@ pub struct Context<'a> {
 impl<'a> Context<'a> {
     pub fn new(
         store: &'a ArcSwap<GeoStore>,
-        key_gen: &'a ArcSwap<KeyGenerator>,
         response_tx: ResponseSender,
         msg_token: MsgToken,
     ) -> Self {
         Self {
             store,
-            key_gen,
             response_tx,
             msg_token,
         }
@@ -102,27 +85,26 @@ pub fn feature_to_basic_result(content_mode: ContentMode, record: &Feature) -> B
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
     use crossbeam::channel::Receiver;
     use proximity_ipc::{channel::ServerChannels, codec::IpcResponse};
 
     use super::*;
 
     impl<'a> Context<'a> {
-        pub fn make_store() -> (ArcSwap<GeoStore>, ArcSwap<KeyGenerator>) {
-            (
-                ArcSwap::from(Arc::new(GeoStore::default())),
-                ArcSwap::from(Arc::new(KeyGenerator::default())),
-            )
+        pub fn make_store() -> ArcSwap<GeoStore> {
+            ArcSwap::from(Arc::new(GeoStore::default()))
         }
 
         /// Implementation to make a dummy context for testing purposes only using a fresh quadtree and a also returning
         /// the rx end of the response channel.
         pub fn test_new(
-            (store, key_gen): &'a (ArcSwap<GeoStore>, ArcSwap<KeyGenerator>),
+            store: &'a ArcSwap<GeoStore>,
             token: MsgToken,
         ) -> (Receiver<(MsgToken, IpcResponse)>, Self) {
             let channels = ServerChannels::new(1024, 1024);
-            let context = Self::new(&store, &key_gen, channels.response_tx, token);
+            let context = Self::new(&store, channels.response_tx, token);
 
             (channels.response_rx, context)
         }

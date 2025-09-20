@@ -4,11 +4,18 @@ use std::time::Duration;
 
 use anyhow::Result;
 use network::{server::IoLoopConfig, stream::SocketMode};
+use protocol::request::{DegreeBbox, KeyMode};
 
 /// Proximity server configuration.
 pub struct Config {
     /// Configuration for the server io loop.
     pub io: IoLoopConfig,
+
+    /// Initial bbox for the GeoStore.
+    pub initial_bbox: DegreeBbox,
+
+    /// Initial KeyMode for the GeoStore.
+    pub initial_key_mode: KeyMode,
 
     /// Timeout for when to check whether a shutdown has been triggered. Only use this when the work prevented by
     /// blocking is a shutdown check. The value can be high as manual shutdown is not performance critical.
@@ -51,6 +58,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             io: IoLoopConfig::default(),
+            initial_bbox: DegreeBbox::default(),
+            initial_key_mode: KeyMode::AutoIncrement,
             shutdown_timeout: Duration::from_millis(500),
             request_capacity: 1024,
             response_capacity: 1024,

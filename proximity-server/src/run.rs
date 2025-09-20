@@ -1,5 +1,3 @@
-//! Server handler for GM-Proximity.
-
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -50,9 +48,11 @@ pub fn run(context: Context<Config>) -> Result<()> {
     // graceful shutdown - this timeout can be relatively long as the shutdown is not time-critical
     // Note that the handle function takes the channel rather than just returning the response as the server may choose
     // to chunk responses
-    // TODO: Initializing with the default GeoStore options. This should be considered and aligned with bounding box and
-    // key mode before finalizing (esp. given key mode is stored in the handler)
-    let geo_store = ArcSwap::from(Arc::new(GeoStore::default()));
+    // Initialize GeoStore with startup configuration
+    let bbox = config.initial_bbox.clone().into();
+
+    let geo_store = Arc::new(GeoStore::new(bbox, config.initial_key_mode.clone()));
+    let geo_store = ArcSwap::from(geo_store);
     let handler = Handler::new(geo_store, server_channels.response_tx);
 
     // TODO: Add parallelism back with better threading mechanism, note need to keep handler lightweight and clonable
