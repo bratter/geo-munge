@@ -59,7 +59,7 @@ impl Tracker {
         self.lock().len()
     }
 
-    fn lock(&self) -> MutexGuard<HashMap<u32, Arc<TrackerData>>> {
+    fn lock(&self) -> MutexGuard<'_, HashMap<u32, Arc<TrackerData>>> {
         self.0.lock().expect("Lock poisoned")
     }
 

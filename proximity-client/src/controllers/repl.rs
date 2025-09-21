@@ -386,7 +386,7 @@ fn change_settings(settings: &mut Settings) -> Result<()> {
 fn build_reset() -> Option<ResetArgs> {
     let key_type = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("What key type (esc/q to cancel)?")
-        .items(&["Auto", "Custom Increment", "Custom Value", "GeoJSON Id"])
+        .items(&["Auto", "Provided Number", "Custom Bytes"])
         .default(0)
         .interact_opt()
         .unwrap()?;
@@ -401,11 +401,10 @@ fn build_reset() -> Option<ResetArgs> {
         None
     };
 
-    let (key_int, key_bytes, key_json_id) = match key_type {
-        0 => (None, None, false),
-        1 => (json_ptr, None, false),
-        2 => (None, json_ptr, false),
-        3 => (None, None, true),
+    let (provided_keys, byte_keys) = match key_type {
+        0 => (false, None),
+        1 => (true, None),
+        2 => (false, json_ptr),
         _ => unreachable!(),
     };
 
@@ -434,9 +433,8 @@ fn build_reset() -> Option<ResetArgs> {
         eprintln!("Resetting geo store");
         Some(ResetArgs {
             bbox,
-            key_int,
-            key_bytes,
-            key_json_id,
+            provided_keys,
+            byte_keys,
             force: true,
         })
     } else {

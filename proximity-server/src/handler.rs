@@ -19,7 +19,7 @@ impl Handler {
     }
 
     /// Generate a [`Context`] to pass around with this request.
-    pub fn context(&self, msg_token: MsgToken) -> Context {
+    pub fn context(&self, msg_token: MsgToken) -> Context<'_> {
         Context::new(&self.store, self.response_tx.clone(), msg_token)
     }
 
