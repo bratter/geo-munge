@@ -138,12 +138,22 @@ pub enum KeyMode {
 /// This struct is designed to be parsed as lng_min, lat_min, lnhg_max, lat_max in decimal degrees.
 ///
 /// Producing a [`Rect`] from this bounding box will automatically convert to Radians.
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, serde::Serialize, serde::Deserialize)]
 pub struct DegreeBbox {
     x1: f64,
     y1: f64,
     x2: f64,
     y2: f64,
+}
+
+impl DegreeBbox {
+    pub fn min(&self) -> (f64, f64) {
+        (self.x1, self.y1)
+    }
+
+    pub fn max(&self) -> (f64, f64) {
+        (self.x2, self.y2)
+    }
 }
 
 impl Default for DegreeBbox {

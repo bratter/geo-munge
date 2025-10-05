@@ -8,3 +8,4 @@ anyhow.workspace = true
 bincode = "2.0.1"
 geo.workspace = true
 geojson.workspace = true
+serde = { version = "1.0", features = ["derive"] }

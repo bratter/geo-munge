@@ -12,9 +12,9 @@ use anyhow::Result;
 ///
 /// The returned [`RunToken`] can also be used to signal shutdown manually.
 pub fn set_ctrlc_handler() -> Result<RunToken> {
-    let running = Arc::new(AtomicBool::new(true));
+    let running = RunToken::new();
     let term_now = Arc::new(AtomicBool::new(false));
-    let r = Arc::clone(&running);
+    let r = running.clone();
 
     ctrlc::set_handler(move || {
         // If we have already entered the handler once and are now back a second time, we want to perform a hard
@@ -28,11 +28,11 @@ pub fn set_ctrlc_handler() -> Result<RunToken> {
         // If we are not terminating immediately, then try to gracefully exit, but inform the handler that another
         // ctrl-c will terminate immediately.
         tracing::warn!("Ctrl-c detected, attempting graceful shutdown...");
-        r.store(false, Ordering::SeqCst);
+        r.shutdown();
         term_now.store(true, Ordering::SeqCst);
     })?;
 
-    Ok(RunToken::from(running))
+    Ok(running)
 }
 
 /// A simple token to indicate whether the application should be attempting to shutdown.
@@ -51,6 +51,10 @@ pub fn set_ctrlc_handler() -> Result<RunToken> {
 pub struct RunToken(Arc<AtomicBool>);
 
 impl RunToken {
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
     pub fn is_running(&self) -> bool {
         self == &true
     }
@@ -63,11 +67,5 @@ impl RunToken {
 impl PartialEq<bool> for RunToken {
     fn eq(&self, other: &bool) -> bool {
         self.0.load(Ordering::SeqCst) == *other
-    }
-}
-
-impl From<Arc<AtomicBool>> for RunToken {
-    fn from(value: Arc<AtomicBool>) -> Self {
-        RunToken(value)
     }
 }
