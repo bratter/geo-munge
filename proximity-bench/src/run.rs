@@ -1,87 +1,107 @@
-use std::time::{Duration, Instant};
-
-use anyhow::{bail, Result};
-use crossbeam::channel;
+use anyhow::Result;
 use network::signals::RunToken;
-use proximity_client::{args::BenchClient, config::Config as ClientConfig};
-use proximity_ipc::Context;
-use proximity_server::config::Config as ServerConfig;
 
-use crate::args::Args;
+use crate::{
+    args::Args,
+    runner::BenchRunner,
+    specs::{BenchSpec, BenchmarkType, DataSize},
+};
 
-/// TODO: Improve bench routine
-/// - Move the bench client settings out of the args in client and inject some other way, maybe with a feature
-/// - More parameters for the configs
-/// - Should we take a config file also so less CLI params?
-/// - Work out why the server is closing the client connection
-/// - Run multiple iterations potentially with different params
-/// - Add data generation and actual knn calculation
+/// Run benchmarks using the new unified BenchRunner framework.
+/// Converts legacy Args into BenchSpec and uses BenchRunner for execution.
 pub fn run(bench: Args, running: RunToken) -> Result<()> {
-    let (ready_send, ready_recv) = channel::bounded(0);
-    let mut server_context = Context {
-        config: ServerConfig::default(),
-        ready: Some(ready_send),
-        running: running.clone(),
-    };
-    server_context.config.request_capacity = 1024;
-    //server_context.config.response_capacity = 4;
-    let client_context = Context {
-        config: ClientConfig::default(),
-        ready: None,
-        running: running.clone(),
-    };
-    let bench_client = BenchClient {
-        total_data: bench.total_data.unwrap_or(1),
-        request_size: bench.request_size.unwrap_or(256),
-        response_size: bench.response_size.unwrap_or(256),
-        response_ratio: bench.response_ratio.unwrap_or(1),
-        handle_delay: bench.handle_delay,
-        send_delay: bench.send_delay,
-        receive_delay: bench.receive_delay,
-    };
+    // Convert legacy Args into new BenchSpec format
+    let spec = create_spec_from_args(&bench);
 
-    let total_data = bench_client.total_data * 1024 * 1024;
-    let request_count = total_data / (bench_client.request_size as usize);
-    if request_count == 0 {
-        bail!(
-            "total data of {}mb too low for request size {}b",
-            bench_client.total_data,
-            bench_client.request_size
-        );
-    }
+    // Create and run the benchmark
+    let mut runner = BenchRunner::new(running)?;
+    let results = runner.run_spec(spec)?;
 
-    println!(
-        "Starting bench: {}Mb total data; processing time {:?}ms/req\nRequests: {}; {}b/req; {:?}ms delay",
-        bench_client.total_data, bench_client.handle_delay, request_count, bench_client.request_size, bench_client.send_delay
-    );
-    println!(
-        "Responses: {}; {}b/res; {:?}ms delay",
-        request_count * bench_client.response_ratio as usize,
-        bench_client.response_size,
-        bench_client.receive_delay
-    );
+    // Print results summary
+    print_results_summary(&results);
 
-    // Start the server and wait for it to come online before spawning the client
-    let server_handle = std::thread::spawn(|| proximity_server::run(server_context));
-    ready_recv.recv_timeout(Duration::from_millis(50))?;
-    tracing::info!("Server online, starting bench client");
-
-    let start = Instant::now();
-    let client_handle = std::thread::spawn(|| {
-        proximity_client::run(
-            proximity_client::args::ClientCommand::Bench(bench_client),
-            client_context,
-        )
-    });
-
-    // TODO: Do something with all these results
-    let _ = client_handle.join().expect("Join failed");
-    let total_duration = start.elapsed();
-
-    running.shutdown();
-    let _ = server_handle.join().expect("Join failed");
-
-    println!("Bench complete: {}ms", total_duration.as_millis());
     Ok(())
 }
 
+/// Convert legacy Args into a BenchSpec for backward compatibility.
+fn create_spec_from_args(args: &Args) -> BenchSpec {
+    BenchSpec {
+        name: "legacy_ipc_benchmark".to_string(),
+        // FIX: The extra fields here should be filled out
+        runs: 10,
+        seed: None,
+        data_size: DataSize::Megabytes(args.total_data.unwrap_or(1)),
+        bbox: None,
+        description: Some("Legacy IPC benchmark converted from Args".to_string()),
+        benchmark_type: BenchmarkType::Ipc {
+            request_size: args.request_size.unwrap_or(256),
+            response_size: args.response_size.unwrap_or(256),
+            response_ratio: args.response_ratio.unwrap_or(1),
+            handle_delay: args.handle_delay,
+            send_delay: args.send_delay,
+            receive_delay: args.receive_delay,
+        },
+    }
+}
+
+/// Print a summary of benchmark results.
+fn print_results_summary(results: &[crate::runner::BenchResult]) {
+    if results.is_empty() {
+        println!("No benchmark results to display");
+        return;
+    }
+
+    println!("\n=== Benchmark Results Summary ===");
+
+    for result in results {
+        if result.success {
+            println!(
+                "✅ {} (run {}): {:.2}ms | {:.2} MB/s | {:.0} ops/s | {} ops",
+                result.spec_name,
+                result.run_index,
+                result.duration.as_millis(),
+                result.throughput_mbps,
+                result.ops_per_second,
+                result.operations_completed
+            );
+        } else {
+            println!(
+                "❌ {} (run {}): FAILED - {}",
+                result.spec_name,
+                result.run_index,
+                result.error_message.as_deref().unwrap_or("Unknown error")
+            );
+        }
+    }
+
+    // Calculate and display aggregate statistics for successful runs
+    let successful_results: Vec<_> = results.iter().filter(|r| r.success).collect();
+    if successful_results.len() > 1 {
+        let avg_duration = successful_results
+            .iter()
+            .map(|r| r.duration.as_millis())
+            .sum::<u128>() as f64
+            / successful_results.len() as f64;
+        let avg_throughput = successful_results
+            .iter()
+            .map(|r| r.throughput_mbps)
+            .sum::<f64>()
+            / successful_results.len() as f64;
+        let avg_ops_per_sec = successful_results
+            .iter()
+            .map(|r| r.ops_per_second)
+            .sum::<f64>()
+            / successful_results.len() as f64;
+
+        println!(
+            "\n📊 Averages across {} successful runs:",
+            successful_results.len()
+        );
+        println!(
+            "   Duration: {:.2}ms | Throughput: {:.2} MB/s | Ops/sec: {:.0}",
+            avg_duration, avg_throughput, avg_ops_per_sec
+        );
+    }
+
+    println!("=================================\n");
+}

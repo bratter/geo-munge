@@ -11,9 +11,15 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 crossbeam.workspace = true
+geojson.workspace = true
 network.workspace = true
+protocol.workspace = true
 proximity-ipc.workspace = true
 proximity-client = { path = "../proximity-client" }
 proximity-server = { path = "../proximity-server" }
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json.workspace = true
+tempfile = "3.0"
 tracing.workspace = true
 tracing-subscriber.workspace = true

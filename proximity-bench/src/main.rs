@@ -1,5 +1,9 @@
 mod args;
+mod builder;
+mod generate;
 mod run;
+mod runner;
+mod specs;
 
 use anyhow::Result;
 use clap::Parser;
@@ -22,4 +26,3 @@ fn main() -> Result<()> {
 
     run::run(args, running)
 }
-
