@@ -299,4 +299,8 @@ pub struct BenchClient {
 
     #[clap(long, short = 'v')]
     pub receive_delay: Option<u64>,
+
+    /// Optional file path to read data from instead of generating empty vectors.
+    /// Used for disk I/O benchmarks.
+    pub data_file: Option<PathBuf>,
 }

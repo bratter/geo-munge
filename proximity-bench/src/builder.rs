@@ -11,7 +11,7 @@ use tempfile::{NamedTempFile, TempDir};
 
 use crate::{
     generate::PointGenerator,
-    specs::{BenchSpec, BenchmarkType},
+    specs::{BenchSpec, BenchmarkType, DataSize, ProximitySearch},
 };
 
 /// Manages temporary files for benchmark datasets.
@@ -29,30 +29,30 @@ impl DataSetBuilder {
     /// Build dataset files for a specific run of the given benchmark specification.
     /// Returns None if the benchmark type doesn't require file generation.
     /// Each run gets unique data based on the run index for better statistical analysis.
-    pub fn build_for_run(&self, spec: &BenchSpec, run_index: usize) -> Result<Option<TempDataSet>> {
+    pub fn build_for_run(&self, spec: &BenchSpec, run_index: usize) -> Result<TempDataSet> {
         let run_seed = self.calculate_run_seed(spec.seed, run_index);
 
         match &spec.benchmark_type {
-            BenchmarkType::Ipc { .. } | BenchmarkType::Disk { .. } => {
-                // These benchmark types don't require data file generation
-                Ok(None)
-            }
-            BenchmarkType::Protocol { .. } => {
-                // Protocol benchmarks only need data files for encoding/decoding
+            // These benchmark types don't require data file generation
+            BenchmarkType::Ipc(_) => Ok(TempDataSet::with_size(spec.data_size)),
+            // Disk and Protocol benchmarks only need data files for encoding/decoding
+            &BenchmarkType::Disk(_) | BenchmarkType::Protocol(_) => {
                 let data_file = self.generate_data_file(spec, run_seed)?;
-                Ok(Some(TempDataSet {
+                Ok(TempDataSet {
                     data_file: Some(data_file),
                     query_file: None,
-                }))
+                    data_size: spec.data_size,
+                })
             }
-            BenchmarkType::ProximitySearch { query_count, .. } => {
+            BenchmarkType::ProximitySearch(ProximitySearch { query_count, .. }) => {
                 // Proximity search benchmarks need both data and query files
                 let data_file = self.generate_data_file(spec, run_seed)?;
                 let query_file = self.generate_query_file(spec, run_seed, *query_count)?;
-                Ok(Some(TempDataSet {
+                Ok(TempDataSet {
                     data_file: Some(data_file),
                     query_file: Some(query_file),
-                }))
+                    data_size: spec.data_size,
+                })
             }
         }
     }
@@ -114,9 +114,20 @@ pub struct TempDataSet {
     pub data_file: Option<NamedTempFile>,
     /// Optional query file (for benchmarks that need query points).
     pub query_file: Option<NamedTempFile>,
+    /// The size of the dataset.
+    pub data_size: DataSize,
 }
 
 impl TempDataSet {
+    /// Create an empty data set that only has a size.
+    pub fn with_size(data_size: DataSize) -> Self {
+        Self {
+            data_file: None,
+            query_file: None,
+            data_size,
+        }
+    }
+
     /// Get the path to the data file, if it exists.
     pub fn data_path(&self) -> Option<&std::path::Path> {
         self.data_file.as_ref().map(|f| f.path())
@@ -140,8 +151,9 @@ impl TempDataSet {
 
 #[cfg(test)]
 mod tests {
+    use crate::specs::{Ipc, Protocol};
+
     use super::*;
-    use crate::specs::{BenchmarkType, DataSize};
 
     fn create_test_spec(benchmark_type: BenchmarkType) -> BenchSpec {
         BenchSpec {
@@ -158,28 +170,27 @@ mod tests {
     #[test]
     fn test_ipc_benchmark_no_files() {
         let builder = DataSetBuilder::new().unwrap();
-        let spec = create_test_spec(BenchmarkType::Ipc {
+        let spec = create_test_spec(BenchmarkType::Ipc(Ipc {
             request_size: 256,
             response_size: 256,
             response_ratio: 1,
             handle_delay: None,
             send_delay: None,
             receive_delay: None,
-        });
+        }));
 
         let dataset = builder.build_for_run(&spec, 0).unwrap();
-        assert!(dataset.is_none());
+        assert!(dataset.has_data_file());
+        assert!(dataset.has_query_file());
     }
 
     #[test]
     fn test_protocol_benchmark_data_file_only() {
         let builder = DataSetBuilder::new().unwrap();
-        let spec = create_test_spec(BenchmarkType::Protocol {});
+        let spec = create_test_spec(BenchmarkType::Protocol(Protocol {}));
 
         let dataset = builder.build_for_run(&spec, 0).unwrap();
-        assert!(dataset.is_some());
 
-        let dataset = dataset.unwrap();
         assert!(dataset.has_data_file());
         assert!(!dataset.has_query_file());
         assert!(dataset.data_path().unwrap().exists());
@@ -188,16 +199,14 @@ mod tests {
     #[test]
     fn test_proximity_search_both_files() {
         let builder = DataSetBuilder::new().unwrap();
-        let spec = create_test_spec(BenchmarkType::ProximitySearch {
+        let spec = create_test_spec(BenchmarkType::ProximitySearch(ProximitySearch {
             query_count: 10,
             k: 5,
             radius: None,
-        });
+        }));
 
         let dataset = builder.build_for_run(&spec, 0).unwrap();
-        assert!(dataset.is_some());
 
-        let dataset = dataset.unwrap();
         assert!(dataset.has_data_file());
         assert!(dataset.has_query_file());
         assert!(dataset.data_path().unwrap().exists());
@@ -207,10 +216,10 @@ mod tests {
     #[test]
     fn test_different_data_per_run() {
         let builder = DataSetBuilder::new().unwrap();
-        let spec = create_test_spec(BenchmarkType::Protocol {});
+        let spec = create_test_spec(BenchmarkType::Protocol(Protocol {}));
 
-        let dataset1 = builder.build_for_run(&spec, 0).unwrap().unwrap();
-        let dataset2 = builder.build_for_run(&spec, 1).unwrap().unwrap();
+        let dataset1 = builder.build_for_run(&spec, 0).unwrap();
+        let dataset2 = builder.build_for_run(&spec, 1).unwrap();
 
         let content1 = std::fs::read_to_string(dataset1.data_path().unwrap()).unwrap();
         let content2 = std::fs::read_to_string(dataset2.data_path().unwrap()).unwrap();
@@ -223,10 +232,10 @@ mod tests {
     fn test_reproducible_runs() {
         let builder1 = DataSetBuilder::new().unwrap();
         let builder2 = DataSetBuilder::new().unwrap();
-        let spec = create_test_spec(BenchmarkType::Protocol {});
+        let spec = create_test_spec(BenchmarkType::Protocol(Protocol {}));
 
-        let dataset1 = builder1.build_for_run(&spec, 0).unwrap().unwrap();
-        let dataset2 = builder2.build_for_run(&spec, 0).unwrap().unwrap();
+        let dataset1 = builder1.build_for_run(&spec, 0).unwrap();
+        let dataset2 = builder2.build_for_run(&spec, 0).unwrap();
 
         let content1 = std::fs::read_to_string(dataset1.data_path().unwrap()).unwrap();
         let content2 = std::fs::read_to_string(dataset2.data_path().unwrap()).unwrap();
@@ -238,9 +247,9 @@ mod tests {
     #[test]
     fn test_file_content_generation() {
         let builder = DataSetBuilder::new().unwrap();
-        let spec = create_test_spec(BenchmarkType::Protocol {});
+        let spec = create_test_spec(BenchmarkType::Protocol(Protocol {}));
 
-        let dataset = builder.build_for_run(&spec, 0).unwrap().unwrap();
+        let dataset = builder.build_for_run(&spec, 0).unwrap();
         let data_path = dataset.data_path().unwrap();
 
         let content = std::fs::read_to_string(data_path).unwrap();
@@ -255,4 +264,3 @@ mod tests {
         }
     }
 }
-

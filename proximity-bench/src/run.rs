@@ -1,107 +1,168 @@
-use anyhow::Result;
+use std::{fs, path::PathBuf};
+
+use anyhow::{bail, Context, Result};
 use network::signals::RunToken;
 
 use crate::{
     args::Args,
-    runner::BenchRunner,
-    specs::{BenchSpec, BenchmarkType, DataSize},
+    runner::{BenchResult, BenchRunner},
+    specs::BenchSpec,
 };
 
 /// Run benchmarks using the new unified BenchRunner framework.
-/// Converts legacy Args into BenchSpec and uses BenchRunner for execution.
-pub fn run(bench: Args, running: RunToken) -> Result<()> {
-    // Convert legacy Args into new BenchSpec format
-    let spec = create_spec_from_args(&bench);
+/// Loads benchmark specification from JSON file.
+pub fn run(args: Args, running: RunToken) -> Result<()> {
+    // Load benchmark specification from JSON
+    let spec = load_spec(&args.spec_file)?;
+
+    print_spec_info(&spec);
 
     // Create and run the benchmark
     let mut runner = BenchRunner::new(running)?;
-    let results = runner.run_spec(spec)?;
+    let results = runner.run_spec(&spec)?;
 
-    // Print results summary
-    print_results_summary(&results);
+    print_results_summary(&spec, &results);
 
     Ok(())
 }
 
-/// Convert legacy Args into a BenchSpec for backward compatibility.
-fn create_spec_from_args(args: &Args) -> BenchSpec {
-    BenchSpec {
-        name: "legacy_ipc_benchmark".to_string(),
-        // FIX: The extra fields here should be filled out
-        runs: 10,
-        seed: None,
-        data_size: DataSize::Megabytes(args.total_data.unwrap_or(1)),
-        bbox: None,
-        description: Some("Legacy IPC benchmark converted from Args".to_string()),
-        benchmark_type: BenchmarkType::Ipc {
-            request_size: args.request_size.unwrap_or(256),
-            response_size: args.response_size.unwrap_or(256),
-            response_ratio: args.response_ratio.unwrap_or(1),
-            handle_delay: args.handle_delay,
-            send_delay: args.send_delay,
-            receive_delay: args.receive_delay,
-        },
-    }
-}
+/// Load a benchmark specification from JSON file with fallback to specs directory.
+fn load_spec(spec_file: &str) -> Result<BenchSpec> {
+    // Try the provided path first
+    let mut path = PathBuf::from(spec_file);
 
-/// Print a summary of benchmark results.
-fn print_results_summary(results: &[crate::runner::BenchResult]) {
-    if results.is_empty() {
-        println!("No benchmark results to display");
-        return;
-    }
+    if !path.exists() {
+        // If not found, try in the specs directory
+        // TODO: What to do in non-dev environments? Use the non-compiled version?
+        path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("specs")
+            .join(spec_file);
 
-    println!("\n=== Benchmark Results Summary ===");
-
-    for result in results {
-        if result.success {
-            println!(
-                "✅ {} (run {}): {:.2}ms | {:.2} MB/s | {:.0} ops/s | {} ops",
-                result.spec_name,
-                result.run_index,
-                result.duration.as_millis(),
-                result.throughput_mbps,
-                result.ops_per_second,
-                result.operations_completed
-            );
-        } else {
-            println!(
-                "❌ {} (run {}): FAILED - {}",
-                result.spec_name,
-                result.run_index,
-                result.error_message.as_deref().unwrap_or("Unknown error")
+        if !path.exists() {
+            bail!(
+                "Spec file '{}' not found. Tried:\n  - {}\n  - specs/{}",
+                spec_file,
+                spec_file,
+                spec_file
             );
         }
     }
 
-    // Calculate and display aggregate statistics for successful runs
-    let successful_results: Vec<_> = results.iter().filter(|r| r.success).collect();
-    if successful_results.len() > 1 {
-        let avg_duration = successful_results
-            .iter()
-            .map(|r| r.duration.as_millis())
-            .sum::<u128>() as f64
-            / successful_results.len() as f64;
-        let avg_throughput = successful_results
-            .iter()
-            .map(|r| r.throughput_mbps)
-            .sum::<f64>()
-            / successful_results.len() as f64;
-        let avg_ops_per_sec = successful_results
-            .iter()
-            .map(|r| r.ops_per_second)
-            .sum::<f64>()
-            / successful_results.len() as f64;
+    let content = fs::read_to_string(&path)?;
+    let spec: BenchSpec = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "Failure deserializing bench spec {}",
+            path.to_string_lossy()
+        )
+    })?;
 
-        println!(
-            "\n📊 Averages across {} successful runs:",
-            successful_results.len()
-        );
-        println!(
-            "   Duration: {:.2}ms | Throughput: {:.2} MB/s | Ops/sec: {:.0}",
-            avg_duration, avg_throughput, avg_ops_per_sec
-        );
+    Ok(spec)
+}
+
+fn print_spec_info(spec: &BenchSpec) {
+    println!("📋 Benchmark Specification");
+    println!("   Name: {}", spec.name);
+    if let Some(description) = &spec.description {
+        println!("   Description: {}", description);
+    }
+    println!("   Runs: {}", spec.runs);
+    println!();
+}
+
+/// Print a summary of benchmark results.
+fn print_results_summary(spec: &BenchSpec, results: &[BenchResult]) {
+    if results.is_empty() {
+        println!("\n📊 No benchmark results to display");
+        return;
     }
 
-    println!("=================================\n");
+    // Collect and sort successful results by duration
+    let mut successful: Vec<_> = results
+        .iter()
+        .filter_map(|r| match r {
+            BenchResult::Success(success) => Some(success),
+            BenchResult::Failure(_) => None,
+        })
+        .collect();
+    if successful.is_empty() {
+        println!("\n📊 No successful runs to aggregate");
+        return;
+    }
+
+    successful.sort_by(|a, b| a.duration.partial_cmp(&b.duration).unwrap());
+    let count = successful.len();
+
+    // Calculate all statistics in a single pass
+    let mut sum_duration_secs = 0.0;
+    let mut sum_throughput = 0.0;
+    let mut sum_ops = 0.0;
+
+    for result in &successful {
+        let duration_secs = result.duration.as_secs_f64();
+        sum_duration_secs += duration_secs;
+        sum_throughput += result.throughput_mbps();
+        sum_ops += result.ops_per_sec();
+    }
+
+    // Calculate averages
+    let avg_duration = sum_duration_secs / count as f64;
+    let avg_throughput = sum_throughput / count as f64;
+    let avg_ops = sum_ops / count as f64;
+
+    // Calculate medians (already sorted by duration)
+    let median_idx = count / 2;
+    let medians = if count % 2 == 0 {
+        let duration = (successful[median_idx - 1].duration.as_secs_f64()
+            + successful[median_idx].duration.as_secs_f64())
+            / 2.0;
+        let throughput = (successful[median_idx - 1].throughput_mbps()
+            + successful[median_idx].throughput_mbps())
+            / 2.0;
+        let ops =
+            (successful[median_idx - 1].ops_per_sec() + successful[median_idx].ops_per_sec()) / 2.0;
+
+        (duration, throughput, ops)
+    } else {
+        (
+            successful[median_idx].duration.as_secs_f64(),
+            successful[median_idx].throughput_mbps(),
+            successful[median_idx].ops_per_sec(),
+        )
+    };
+
+    // Best/worst from sorted array
+    let best = successful[0];
+    let worst = successful[count - 1];
+
+    // Print table
+    println!(
+        "\n📊 Aggregates for spec: {} ({}/{} successes)",
+        spec.name,
+        count,
+        results.len()
+    );
+    println!();
+    println!("Metric                   Best       Worst         Avg      Median");
+    println!("─────────────────────────────────────────────────────────────────");
+    println!(
+        "Duration (ms)     {:11.2} {:11.2} {:11.2} {:11.2}",
+        best.duration.as_secs_f64() * 1000.0,
+        worst.duration.as_secs_f64() * 1000.0,
+        avg_duration * 1000.0,
+        medians.0 * 1000.0
+    );
+    println!(
+        "Throughput (MB/s) {:11.2} {:11.2} {:11.2} {:11.2}",
+        best.throughput_mbps(),
+        worst.throughput_mbps(),
+        avg_throughput,
+        medians.1
+    );
+    println!(
+        "Ops/sec           {:11.0} {:11.0} {:11.0} {:11.0}",
+        best.ops_per_sec(),
+        worst.ops_per_sec(),
+        avg_ops,
+        medians.2
+    );
 }

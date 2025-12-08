@@ -1,0 +1,17 @@
+{
+  "name": "Default IPC Benchmark",
+  "runs": 10,
+  "seed": null,
+  "dataSize": {
+    "megabytes": 10
+  },
+  "description": "Standard IPC throughput benchmark with 10MB data transfer",
+  "type": "ipc",
+  "requestSize": 256,
+  "responseSize": 256,
+  "responseRatio": 1,
+  "handleDelay": null,
+  "sendDelay": null,
+  "receiveDelay": null
+}
+

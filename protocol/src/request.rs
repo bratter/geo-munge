@@ -139,6 +139,7 @@ pub enum KeyMode {
 ///
 /// Producing a [`Rect`] from this bounding box will automatically convert to Radians.
 #[derive(Debug, Clone, Encode, Decode, serde::Serialize, serde::Deserialize)]
+#[serde(into = "[f64; 4]", try_from = "[f64; 4]")]
 pub struct DegreeBbox {
     x1: f64,
     y1: f64,
@@ -194,6 +195,29 @@ impl From<DegreeBbox> for Rect {
     }
 }
 
+impl From<DegreeBbox> for [f64; 4] {
+    fn from(value: DegreeBbox) -> Self {
+        [value.x1, value.y1, value.x2, value.y2]
+    }
+}
+
+const ERR_BB_ORDERING: &str =
+    "A bounding box must be four floats [x1, y1, x2, y2] with 1 being the min and 2 being the max";
+
+impl TryFrom<[f64; 4]> for DegreeBbox {
+    type Error = Error;
+
+    fn try_from(value: [f64; 4]) -> Result<Self, Self::Error> {
+        let [x1, y1, x2, y2] = value;
+
+        if x1 >= x2 || y1 >= y2 {
+            bail!(ERR_BB_ORDERING);
+        }
+
+        Ok(DegreeBbox { x1, y1, x2, y2 })
+    }
+}
+
 // TODO: Better error messages for floats on let entries, and better bounds checking
 impl FromStr for DegreeBbox {
     type Err = Error;
@@ -216,7 +240,7 @@ impl FromStr for DegreeBbox {
         let y2 = entries[3];
 
         if x1 >= x2 || y1 >= y2 {
-            bail!("A bounding box must be four floats x1,y1,x2,y2 with 1 being the top left and 2 being the bottom right");
+            bail!(ERR_BB_ORDERING);
         }
 
         Ok(DegreeBbox { x1, y1, x2, y2 })
